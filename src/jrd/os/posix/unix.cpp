@@ -428,6 +428,7 @@ void PIO_force_write(jrd_file* file, const bool forcedWrites, const bool notUseF
 		maybeCloseFile(file->fil_desc);
 		file->fil_desc = openFile(file->fil_string, forcedWrites,
 								  notUseFSCache, file->fil_flags & FIL_readonly);
+		file->fil_flags &= ~FIL_aio_init;
 		if (file->fil_desc == -1)
 		{
 			unix_error("re open() for SYNC/DIRECT", file, isc_io_open_err);
@@ -1239,3 +1240,304 @@ static int raw_devices_unlink_database(const PathName& file_name)
 	return 0;
 }
 #endif // SUPPORT_RAW_DEVICES
+
+
+void PIO_read_multy(Database* dbb, PIORequest** pReqs, int cnt)
+{
+	PIORequest** reqPtr = pReqs;
+	PIORequest** end = pReqs + cnt;
+	for (; reqPtr < end; reqPtr++)
+	{
+		PIORequest* req = *reqPtr;
+		if (req->postRead(dbb))
+			*reqPtr = NULL;
+	}
+}
+
+
+/// class PIOPort
+
+PIOPort::PIOPort()
+{
+	m_handle = 0;
+	m_eventfd = 0;
+	if (io_setup(256, &m_handle))
+	{
+		m_handle = 0;
+		ERR_post(Arg::Gds(isc_io_error) << Arg::Str("io_setup") << Arg::Str("") <<
+				 Arg::Gds(isc_io_create_err) << Arg::Unix(errno));
+	}
+
+	m_eventfd = eventfd(0, 0);
+	if (m_eventfd < 0)
+	{
+		m_eventfd = 0;
+		ERR_post(Arg::Gds(isc_io_error) << Arg::Str("eventfd") << Arg::Str("") <<
+				 Arg::Gds(isc_io_create_err) << Arg::Unix(errno));
+	}
+}
+
+PIOPort::~PIOPort()
+{
+	if (m_handle)
+	{
+		io_destroy(m_handle);
+		m_handle = 0;
+	}
+
+	if (m_eventfd > 0)
+	{
+		close(m_eventfd);
+		m_eventfd = 0;
+	}
+}
+
+void PIOPort::addFile(jrd_file* file)
+{
+	if (!(file->fil_flags & FIL_aio_init))
+		file->fil_flags |= FIL_aio_init;
+}
+
+void PIOPort::removeFile(jrd_file* file)
+{
+	if (file->fil_flags & FIL_aio_init)
+		file->fil_flags &= ~FIL_aio_init;
+}
+
+
+PIO_EVENT_T PIOPort::getCompletedRequest(thread_db* tdbb, PIORequest** pio, int timeout)
+{
+	*pio = NULL;
+
+	struct io_event events;
+	memset(&events, 0, sizeof(events));
+
+	struct timespec ts = {0, 0};
+
+	PIO_EVENT_T key = PIO_EVENT_WAKEUP;
+	{
+		EngineCheckout cout(tdbb, FB_FUNCTION);
+		while (true)
+		{
+			int ret = 0;
+
+			struct pollfd pfd;
+
+			pfd.fd = m_eventfd;
+			pfd.events = POLLIN;
+			pfd.revents = 0;
+
+			ret = poll(&pfd, 1, timeout);
+			if (ret < 0)
+				break; // error
+
+			if ((pfd.revents & POLLIN) == 0)
+			{
+				key = PIO_EVENT_TIMEOUT;
+				break; // timeout
+			}
+
+			eventfd_t e;
+			ret = eventfd_read(m_eventfd, &e);
+			if (ret < 0)
+				break; // error
+
+			do {
+				ret = io_getevents(m_handle, 1, 1, &events, &ts);
+			} while (-ret == EINTR);
+
+			if (ret < 0)
+			{
+				ERR_post(Arg::Gds(isc_io_error) << Arg::Str("io_getevents") << Arg::Str("") <<
+					Arg::Gds(isc_io_create_err) << Arg::Unix(-ret));
+			}
+
+			if (ret > 0)
+			{
+				key = events.obj->data;
+				if (e > 1)
+				{
+					e--;
+					ret = eventfd_write(m_eventfd, e);
+				}
+			}
+
+			break;
+		}
+	}
+
+	if (key == PIO_EVENT_IO)
+	{
+		PIORequest* req = PIORequest::fromOSData(events.obj);
+		req->markCompletion(false, events.res);
+
+		*pio = req;
+	}
+
+	return key;
+}
+
+
+void PIOPort::postEvent(PIO_EVENT_T pioEvent)
+{
+	eventfd_t e = 1;
+	int ret = eventfd_write(m_eventfd, e);
+}
+
+
+class SysInfo
+{
+public:
+	SysInfo(MemoryPool& pool) :
+		buffer(pool)
+	{
+		sysPageSize = 4096; // TODO: detect from OS
+		sysPageBuffer = buffer.getBuffer(sysPageSize * 2);
+		sysPageBuffer = (SCHAR*) FB_ALIGN((IPTR) sysPageBuffer, sysPageSize);
+	}
+
+	int	sysPageSize;
+	SCHAR* sysPageBuffer;
+
+private:
+	Array<SCHAR> buffer;
+};
+
+Firebird::InitInstance<SysInfo> sysInfo;
+
+
+bool PIORequest::postRead(Database* dbb)
+{
+	int ret = 0;
+    FB_UINT64 offset;
+
+	m_state = PIORequest::PIOR_PENDING;
+	m_osError = 0;
+	m_count = 0;
+	m_ioSize = 0;
+
+	int i = m_startIdx;
+	ULONG firstPageNo = m_pages[i]->bdb_page.getPageNum();
+	ULONG lastPageNo = firstPageNo;
+	ULONG prevPageNo = firstPageNo - 1;
+
+	jrd_file* file = seek_file(m_file, m_pages[i], &offset, NULL);
+	dbb->dbb_page_manager.pioPort.addFile(file);
+
+	if (true)
+	{
+		SCHAR* dummyBuffer = sysInfo().sysPageBuffer;
+
+		const int sysPageSize = sysInfo().sysPageSize;
+		int sysPagesPerBDB = dbb->dbb_page_size / sysPageSize;
+		int segCnt = sysPagesPerBDB * (maxPage() - firstPageNo + 1);
+		iovec *segArray = m_segments.getBuffer(segCnt);
+		iovec *currSeg = segArray;
+
+		for (; i < m_pages.getCount(); i++)
+		{
+			BufferDesc* bdb = m_pages[i];
+			ULONG pageNo = bdb->bdb_page.getPageNum();
+
+			// fill gap between prior page and current one
+			int gap = sysPagesPerBDB * (pageNo - prevPageNo - 1);
+			if (gap > 0) {
+				for (int s = 0; s < gap; s++)
+				{
+					currSeg->iov_base = dummyBuffer;
+					currSeg->iov_len = sysPageSize;
+					currSeg++;
+				}
+			}
+
+			// make segmrnt for current page buffer
+			SCHAR* p = (SCHAR*) bdb->bdb_buffer;
+			currSeg->iov_base = bdb->bdb_buffer;
+			currSeg->iov_len = dbb->dbb_page_size;
+			currSeg++;
+
+			lastPageNo = prevPageNo = pageNo;
+			m_count++;
+		}
+		fb_assert(currSeg <= segArray + segCnt);
+
+		segCnt = currSeg - segArray;
+
+		m_ioSize = dbb->dbb_page_size * (lastPageNo - firstPageNo + 1);
+
+		io_prep_preadv(&m_osData, file->fil_desc, segArray, segCnt, offset);
+	}
+	else
+	{
+		int pagesInBuffer = OS_CACHED_IO_SIZE / dbb->dbb_page_size;
+		for (; i < m_pages.getCount() && pagesInBuffer; i++)
+		{
+			BufferDesc* bdb = m_pages[i];
+			ULONG pageNo = bdb->bdb_page.getPageNum();
+
+			// account gap between prior page and current one
+			int gap = pageNo - prevPageNo - 1;
+			if (gap > 0)
+			{
+				if (gap > pagesInBuffer - 1)
+					break;
+				pagesInBuffer -= gap;
+				m_ioSize += gap * dbb->dbb_page_size;
+			}
+			pagesInBuffer--;
+
+			lastPageNo = prevPageNo = pageNo;
+			m_count++;
+			m_ioSize += dbb->dbb_page_size;
+		}
+		fb_assert(m_ioSize <= OS_CACHED_IO_SIZE);
+
+		void* ioBuffer = m_pages[m_startIdx]->bdb_buffer;
+		if (m_count > 1)
+			ioBuffer = allocIOBuffer(sysInfo().sysPageSize);
+
+		io_prep_pread(&m_osData, file->fil_desc, ioBuffer, m_ioSize, offset);
+	}
+
+	m_osData.data = PIO_EVENT_IO;
+	io_set_eventfd(&m_osData, dbb->dbb_page_manager.pioPort.getEventFD());
+
+	iocb* pIO = &m_osData;
+	do
+	{
+		ret = io_submit(dbb->dbb_page_manager.pioPort.getIOContext(), 1, &pIO);
+	}
+	while (-ret == EAGAIN);
+
+	PIORequest::PIOR_STATE newState = PIORequest::PIOR_PENDING;
+	if (ret != 1)
+	{
+		newState = PIORequest::PIOR_ERROR;
+	}
+
+/**
+	string s("read ahead post: ");
+	s.append(dump());
+	gds__trace_raw(s.c_str(), s.length());
+**/
+	if (newState == PIORequest::PIOR_PENDING)
+		return true;
+
+	m_state = newState;
+	return false;
+}
+
+
+void PIORequest::markCompletion(bool error, size_t ioSize)
+{
+	if (error || ioSize != m_ioSize)
+	{
+		m_osError = errno;
+		m_state = PIORequest::PIOR_ERROR;
+	}
+	else
+	{
+		m_osError = 0;
+		m_state = PIORequest::PIOR_COMPLETED;
+	}
+}

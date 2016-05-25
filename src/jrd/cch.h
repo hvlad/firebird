@@ -147,12 +147,15 @@ public:
 	Firebird::Semaphore bcb_writer_sem;		// Wake up cache writer
 	Firebird::Semaphore bcb_writer_init;	// Cache writer initialization
 	Firebird::Semaphore bcb_writer_fini;	// Cache writer finalization
-#ifdef SUPERSERVER_V2
 	// the code in cch.cpp is not tested for semaphore instead event !!!
 	Firebird::Semaphore bcb_reader_sem;		// Wake up cache reader
 	Firebird::Semaphore bcb_reader_init;	// Cache reader initialization
 	Firebird::Semaphore bcb_reader_fini;	// Cache reader finalization
 
+	Firebird::AtomicCounter bcb_thd_starting;	// number of initializing background threads
+	Firebird::AtomicCounter bcb_reader_cnt;		// number of cache reader threads
+
+#ifdef SUPERSERVER_V2
 	PageBitmap*	bcb_prefetch;		// Bitmap of pages to prefetch
 #endif
 
@@ -169,6 +172,7 @@ const int BCB_reader_active	= 32;	// cache reader not blocked on event
 #endif
 const int BCB_free_pending	= 64;	// request cache writer to free pages
 const int BCB_exclusive		= 128;	// there is only BCB in whole system
+const int BCB_prefetch		= 256;	// prefetch threads are worked
 
 
 // BufferDesc -- Buffer descriptor block
@@ -221,6 +225,8 @@ public:
 	{
 		return bdb_syncIO.ourExclusiveLock();
 	}
+
+	void readComplete(thread_db* tdbb, bool error, const void* data);
 
 	BufferControl*	bdb_bcb;
 	Firebird::SyncObject	bdb_syncPage;

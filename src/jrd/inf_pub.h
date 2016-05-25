@@ -142,6 +142,14 @@ enum db_info_types
 
 	fb_info_crypt_state = 126,
 
+	fb_info_reads_wait_async_cnt	= 127,
+	fb_info_reads_wait_async_time	= 128,
+	fb_info_reads_wait_cnt			= 129,
+	fb_info_reads_wait_time			= 130,
+	fb_info_reads_multy_cnt			= 131,
+	fb_info_reads_multy_pages		= 132,
+	fb_info_reads_multy_iosize		= 133,
+
 	isc_info_db_last_value   /* Leave this LAST! */
 };
 

@@ -15,4 +15,4 @@
 #define FB_REV_NO "0"
 #define FB_BUILD_NO "167"
 #define FB_BUILD_TYPE "T"
-#define FB_BUILD_SUFFIX "Firebird 4.0 Unstable"
+#define FB_BUILD_SUFFIX "Firebird 4.0 Unstable prefetch"

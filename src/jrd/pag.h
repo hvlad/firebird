@@ -37,8 +37,10 @@
 #include "../include/fb_blk.h"
 #include "../common/classes/array.h"
 #include "../common/classes/locks.h"
+#include "../common/classes/fb_string.h"
 #include "../jrd/ods.h"
 #include "../jrd/lls.h"
+#include "../jrd/os/pio.h"
 
 namespace Jrd {
 
@@ -70,23 +72,91 @@ const USHORT PAGES_IN_EXTENT	= 8;
 class jrd_file;
 class Database;
 class thread_db;
+class PageSpace;
 class PageManager;
+//class PIORequest;
+
+// maximum pages to prefetch at once
+const int MAX_PREFETCH_PAGES = 16;
+
+// number of concurrent PIO requests when database is 
+const int MAX_PIOREQ_PER_PAGESPACE_SS = 64;		// in shared mode
+const int MAX_PIOREQ_PER_PAGESPACE_CS = 8;		// not in shared mode
+
+// Top level code (dpm, btr, etc) create prefetch requests and put it into common que:
+// prf = pageSpace->getPrefetchReq();
+// prf->m_pageNumbers.push(page_num); 
+// ...
+// prf->m_pageNumbers.push(page_num); 
+// pageMgr->addPrefetchReq(prf);
+
+extern "C" {
+static int cmpULong(const void* a, const void* b)
+{
+	const ULONG* ulA = (ULONG*) a;
+	const ULONG* ulB = (ULONG*) b;
+
+	if (*ulA > *ulB)
+		return 1;
+
+	if (*ulA < *ulB)
+		return -1;
+
+	return 0;
+}
+} // extern C
+
+
+typedef Firebird::HalfStaticArray<ULONG, MAX_PREFETCH_PAGES> PrefetchArray;
+
+class PrefetchReq : public PrefetchArray
+{
+typedef PrefetchArray inherited;
+
+public:
+	PrefetchReq(Firebird::MemoryPool& pool, const size_type InitialCapacity, PageSpace* pageSpace) :
+		inherited(pool, InitialCapacity),
+		m_pageSpace(pageSpace),
+		m_sorted(false),
+		m_next(NULL)
+	{
+	}
+
+	void sort()
+	{
+		if (!m_sorted)
+		{
+			qsort(begin(), getCount(), sizeof(ULONG), cmpULong);
+			m_sorted = true;
+		}
+	}
+
+	void clear()
+	{
+		inherited::clear();
+		m_sorted = false;
+	}
+
+	PageSpace* getPageSpace() const
+	{
+		return m_pageSpace;
+	}
+
+	Firebird::string dump() const;
+
+private:
+	PageSpace*	m_pageSpace;
+	bool		m_sorted;
+	PrefetchReq*	m_next;
+
+	friend class PageSpace;
+};
+
 
 class PageSpace : public pool_alloc<type_PageSpace>
 {
 public:
-	explicit PageSpace(Database* aDbb, USHORT aPageSpaceID)
-	{
-		pageSpaceID = aPageSpaceID;
-		pipHighWater = 0;
-		pipWithExtent = 0;
-		pipFirst = 0;
-		scnFirst = 0;
-		file = 0;
-		dbb = aDbb;
-		maxPageNumber = 0;
-	}
-
+	explicit PageSpace(Database* aDbb, USHORT aPageSpaceID);
 	~PageSpace();
 
 	USHORT pageSpaceID;
@@ -135,9 +205,22 @@ public:
 	ULONG getSCNPageNum(ULONG sequence);
 	static ULONG getSCNPageNum(const Database* dbb, ULONG sequence);
 
+	bool prefetchEnabled() const;
+	void registerPrefetch(const PrefetchArray& prf);
+
+	PrefetchReq* newPrefetchReq();
+	void freePrefetchReq(PrefetchReq* prf);
+
+	PIORequest* newPIORequest();
+	void freePIORequest(PIORequest* pio);
+
 private:
 	ULONG	maxPageNumber;
 	Database* dbb;
+	Firebird::Array<PrefetchReq*> allPrefetch;
+	Firebird::AtomicPointer<PrefetchReq> freePrefetch;
+	Firebird::Array<PIORequest*> allPIOReqs;
+	Firebird::AtomicPointer<PIORequest> freePIOReqs;
 };
 
 class PageManager : public pool_alloc<type_PageManager>
@@ -146,7 +229,8 @@ public:
 	explicit PageManager(Database* aDbb, Firebird::MemoryPool& aPool) :
 		dbb(aDbb),
 		pageSpaces(aPool),
-		pool(aPool)
+		pool(aPool),
+		prefetchQue(aPool)
 	{
 		pagesPerPIP = 0;
 		bytesBitPIP = 0;
@@ -172,11 +256,17 @@ public:
 
 	void closeAll();
 
+	void addPrefetchReq(PrefetchReq* prf, bool ahead = false);
+	PrefetchReq* getPrefetchReq();
+	PrefetchReq* nextPrefetchReq(PageSpace* pageSpace);
+
 	ULONG pagesPerPIP;			// Pages per pip
 	ULONG bytesBitPIP;			// Number of bytes of bit in PIP
 	ULONG transPerTIP;			// Transactions per TIP
 	ULONG gensPerPage;			// Generators per generator page
 	ULONG pagesPerSCN;			// Slots per SCN's page
+
+	PIOPort pioPort;
 
 private:
 	typedef Firebird::SortedArray<PageSpace*, Firebird::EmptyStorage<PageSpace*>,
@@ -191,6 +281,9 @@ private:
 	Firebird::Mutex	initTmpMtx;
 	USHORT tempPageSpaceID;
 	bool tempFileCreated;
+
+	Firebird::SyncObject syncReqQue;
+	Firebird::Array<PrefetchReq*> prefetchQue;
 };
 
 class PageNumber

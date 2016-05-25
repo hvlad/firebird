@@ -2013,6 +2013,43 @@ static bool find_type(thread_db* tdbb,
 
 // Class PageSpace starts here
 
+PageSpace::PageSpace(Database* aDbb, USHORT aPageSpaceID) :
+	dbb(aDbb),
+	allPrefetch(*aDbb->dbb_permanent),
+	allPIOReqs(*aDbb->dbb_permanent)
+{
+	pageSpaceID = aPageSpaceID;
+	pipHighWater = 0;
+	pipWithExtent = 0;
+	pipFirst = 0;
+	scnFirst = 0;
+	file = 0;
+	dbb = aDbb;
+	maxPageNumber = 0;
+
+	MemoryPool* p = dbb->dbb_permanent;
+	const int MAX_PIOREQS = (Config::getServerMode() == MODE_SUPER) ?
+		MAX_PIOREQ_PER_PAGESPACE_SS : MAX_PIOREQ_PER_PAGESPACE_CS;
+
+	for (int i = 0; i < MAX_PIOREQS * 2; i++)
+	{
+		PrefetchReq* r = FB_NEW_POOL(*p) PrefetchReq(*p, MAX_PREFETCH_PAGES, this);
+
+		allPrefetch.push(r);
+		r->m_next = freePrefetch;
+		freePrefetch = r;
+	}
+
+	for (int i = 0; i < MAX_PIOREQS; i++)
+	{
+		PIORequest* r = FB_NEW_POOL(*p) PIORequest(*p);
+
+		allPIOReqs.push(r);
+		r->m_next = freePIOReqs;
+		freePIOReqs = r;
+	}
+}
+
 PageSpace::~PageSpace()
 {
 	if (file)
@@ -2025,6 +2062,18 @@ PageSpace::~PageSpace()
 			delete file;
 			file = next;
 		}
+	}
+
+	while (allPrefetch.hasData())
+	{
+		PrefetchReq* r = allPrefetch.pop();
+		delete r;
+	}
+
+	while (allPIOReqs.hasData())
+	{
+		PIORequest* r = allPIOReqs.pop();
+		delete r;
 	}
 }
 
@@ -2320,6 +2369,81 @@ ULONG PageSpace::getSCNPageNum(const Database* dbb, ULONG sequence)
 	return pgSpace->getSCNPageNum(sequence);
 }
 
+
+bool PageSpace::prefetchEnabled() const
+{
+	//return false;
+	static bool x = true;
+	return x;
+	return (file->fil_flags & FIL_no_fs_cache);
+}
+
+void PageSpace::registerPrefetch(const PrefetchArray& prf)
+{
+	PrefetchReq* req = newPrefetchReq();
+	if (req)
+	{
+		req->assign(prf);
+		dbb->dbb_page_manager.addPrefetchReq(req);
+	}
+}
+
+PrefetchReq* PageSpace::newPrefetchReq()
+{
+	if (!prefetchEnabled())
+		return NULL;
+
+	PrefetchReq* prf;
+	while (prf = freePrefetch) {
+		if (freePrefetch.compareExchange(prf, prf->m_next))
+		{
+			prf->m_next = NULL;
+			break;
+		}
+	}
+	return prf;
+}
+
+void PageSpace::freePrefetchReq(PrefetchReq* prf)
+{
+	prf->clear();
+	while (true)
+	{
+		prf->m_next = freePrefetch;
+		if (freePrefetch.compareExchange(prf->m_next, prf))
+			break;
+	}
+}
+
+
+PIORequest* PageSpace::newPIORequest()
+{
+	PIORequest* pio;
+	while (pio = freePIOReqs) {
+		if (freePIOReqs.compareExchange(pio, pio->m_next))
+		{
+			pio->m_next = NULL;
+			pio->setFile(file);
+			break;
+		}
+	}
+	return pio;
+}
+
+void PageSpace::freePIORequest(PIORequest* pio)
+{
+	pio->clear();
+	while (true)
+	{
+		pio->m_next = freePIOReqs;
+		if (freePIOReqs.compareExchange(pio->m_next, pio))
+			break;
+	}
+}
+
+
+// PageManager
+
 PageSpace* PageManager::addPageSpace(const USHORT pageSpaceID)
 {
 	PageSpace* newPageSpace = findPageSpace(pageSpaceID);
@@ -2420,6 +2544,82 @@ USHORT PageManager::getTempPageSpaceID(thread_db* tdbb)
 	}
 	return tempPageSpaceID;
 }
+
+string PrefetchReq::dump() const
+{
+	string s1, s2;
+	s1.printf("prf 0x%x, pages %2d :", this, getCount());
+	for (const ULONG *p = begin(); p < end(); p++)
+	{
+		s2.printf(" %6d", *p);
+		s1.append(s2);
+	}
+	return s1;
+}
+
+void logPrfOp(const PrefetchReq* prf, const char* op)
+{
+/*
+	string s(op);
+	s.append(", ");
+	s.append(prf->dump());
+	s.append("\n");
+	gds__trace_raw(s.c_str(), s.length());
+*/
+}
+
+void PageManager::addPrefetchReq(PrefetchReq* prf, bool ahead)
+{
+	if (prf->isEmpty())
+	{
+		prf->getPageSpace()->freePrefetchReq(prf);
+		return;
+	}
+
+	{
+		SyncLockGuard guard(&syncReqQue, SYNC_EXCLUSIVE, "PageManager::addPrefetchReq");
+		if (ahead)
+			prefetchQue.push(prf);
+		else
+			prefetchQue.insert(0, prf);
+	}
+	pioPort.postEvent(PIO_EVENT_WAKEUP);
+
+	logPrfOp(prf, ahead ? "Prf push ahead" : "Prf push");
+}
+
+PrefetchReq* PageManager::getPrefetchReq()
+{
+	SyncLockGuard guard(&syncReqQue, SYNC_EXCLUSIVE, "PageManager::getPrefetchReq");
+	if (prefetchQue.isEmpty())
+		return NULL;
+
+	PrefetchReq* prf = prefetchQue.pop();
+	if (prf)
+		logPrfOp(prf, "Prf pop ");
+	return prf;
+}
+
+PrefetchReq* PageManager::nextPrefetchReq(PageSpace* pageSpace)
+{
+	SyncLockGuard guard(&syncReqQue, SYNC_EXCLUSIVE, "PageManager::nextPrefetchReq");
+	if (prefetchQue.isEmpty())
+		return NULL;
+
+	PrefetchReq** reqPtr = prefetchQue.begin();
+	for (; reqPtr < prefetchQue.end(); reqPtr++)
+		if ((*reqPtr)->getPageSpace() == pageSpace)
+		{
+			PrefetchReq* prf = *reqPtr;
+			prefetchQue.remove(reqPtr);
+
+			logPrfOp(prf, "Prf pop next");
+			return prf;
+		}
+
+	return NULL;
+}
+
 
 ULONG PAG_page_count(thread_db* tdbb, PageCountCallback* cb)
 {

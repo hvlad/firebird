@@ -769,6 +769,41 @@ void INF_database_info(thread_db* tdbb,
 				dbb->dbb_crypto_manager->getCurrentState() : 0, buffer);
 			break;
 
+		case fb_info_reads_wait_async_cnt:
+			length = get_counts(tdbb, RuntimeStatistics::PAGE_READS_WAIT_ASYNC_CNT, counts_buffer);
+			buffer = counts_buffer.begin();
+			break;
+
+		case fb_info_reads_wait_async_time:
+			length = get_counts(tdbb, RuntimeStatistics::PAGE_READS_WAIT_ASYNC_TIME, counts_buffer);
+			buffer = counts_buffer.begin();
+			break;
+
+		case fb_info_reads_wait_cnt:
+			length = get_counts(tdbb, RuntimeStatistics::PAGE_READS_WAIT_CNT, counts_buffer);
+			buffer = counts_buffer.begin();
+			break;
+
+		case fb_info_reads_wait_time:
+			length = get_counts(tdbb, RuntimeStatistics::PAGE_READS_WAIT_TIME, counts_buffer);
+			buffer = counts_buffer.begin();
+			break;
+
+		case fb_info_reads_multy_cnt:
+			length = get_counts(tdbb, RuntimeStatistics::PAGE_READS_MULTY_CNT, counts_buffer);
+			buffer = counts_buffer.begin();
+			break;
+
+		case fb_info_reads_multy_pages:
+			length = get_counts(tdbb, RuntimeStatistics::PAGE_READS_MULTY_PAGES, counts_buffer);
+			buffer = counts_buffer.begin();
+			break;
+
+		case fb_info_reads_multy_iosize:
+			length = get_counts(tdbb, RuntimeStatistics::PAGE_READS_MULTY_IOSIZE, counts_buffer);
+			buffer = counts_buffer.begin();
+			break;
+
 		default:
 			buffer[0] = item;
 			item = isc_info_error;

@@ -54,7 +54,33 @@ void BitmapTableScan::open(thread_db* tdbb) const
 	impure->irsb_flags = irsb_open;
 	impure->irsb_bitmap = EVL_bitmap(tdbb, m_inversion, NULL);
 
+	impure->irsb_prfInfo.reset(*impure->irsb_bitmap, false);
+
 	record_param* const rpb = &request->req_rpb[m_stream];
+	rpb->rpb_prf_info = NULL;
+
+	// allow prefetch only if bitmap contains records from at least 8 pages
+	//if (*impure->irsb_bitmap)
+	//{
+	//	RecordBitmap::Accessor recs(*impure->irsb_bitmap);
+	//	if (recs.getFirst())
+	//	{
+	//		Database* dbb = tdbb->getDatabase();
+	//		int pages = 0;
+	//		FB_UINT64 recno;
+	//		do
+	//		{
+	//			recno = recs.current();
+	//			if (++pages == 8)
+	//			{
+					rpb->rpb_prf_info = &impure->irsb_prfInfo;
+	//				break;
+	//			}
+	//			recno -= recno % dbb->dbb_max_records;
+	//		} while (recs.locate(locGreatEqual, recno + dbb->dbb_max_records));
+	//	}
+	//}
+
 	RLCK_reserve_relation(tdbb, request->req_transaction, m_relation, false);
 
 	rpb->rpb_number.setValue(BOF_NUMBER);

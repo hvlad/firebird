@@ -54,6 +54,7 @@
 #include "../jrd/cch_proto.h"
 #include "../jrd/cmp_proto.h"
 #include "../jrd/dpm_proto.h"
+#include "../jrd/DpmPrefetch.h"
 #include "../jrd/err_proto.h"
 #include "../jrd/exe_proto.h"
 #include "../jrd/lck_proto.h"
@@ -596,6 +597,7 @@ ULONG DPM_data_pages(thread_db* tdbb, jrd_rel* relation)
  *
  **************************************/
 	SET_TDBB(tdbb);
+	Database* dbb = tdbb->getDatabase();
 
 #ifdef VIO_DEBUG
 	VIO_trace(DEBUG_TRACE_ALL,
@@ -603,12 +605,33 @@ ULONG DPM_data_pages(thread_db* tdbb, jrd_rel* relation)
 #endif
 
 	RelationPages* relPages = relation->getPages(tdbb);
+	PageSpace* pageSpace = dbb->dbb_page_manager.findPageSpace(relPages->rel_pg_space_id);
+	vcl* pPages = relPages->rel_pages;
 	ULONG pages = relPages->rel_data_pages;
 	if (!pages)
 	{
+		// prefetch pointer pages
+		ULONG prf_sequence = 0;
+		const int prf_len = 8;
+
 		WIN window(relPages->rel_pg_space_id, -1);
 		for (ULONG sequence = 0; true; sequence++)
 		{
+			if (prf_sequence <= sequence && pPages && pPages->count() > sequence + 1)
+			{
+				PrefetchReq* prf = pageSpace->newPrefetchReq();
+				if (prf)
+				{
+					ULONG seq = sequence + 1; 
+					for (; seq < sequence + 1 + prf_len && seq < pPages->count(); seq++)
+						prf->push((*pPages)[seq]);
+					prf_sequence += prf_len;
+					dbb->dbb_page_manager.addPrefetchReq(prf);
+				}
+				else
+					prf_sequence++;
+			}
+
 			const pointer_page* ppage =
 				get_pointer_page(tdbb, relation, relPages, &window, sequence, LCK_read);
 			if (!ppage)
@@ -617,11 +640,11 @@ ULONG DPM_data_pages(thread_db* tdbb, jrd_rel* relation)
 				 // msg 243 missing pointer page in DPM_data_pages
 			}
 
-			const ULONG* page = ppage->ppg_page;
-			const ULONG* const end_page = page + ppage->ppg_count;
-			while (page < end_page)
+			const UCHAR* bits = (UCHAR*) (ppage->ppg_page + dbb->dbb_dp_per_pp);
+			
+			for (USHORT slot = 0; slot >= 0 && slot < ppage->ppg_count; slot++)
 			{
-				if (*page++)
+				if (ppage->ppg_page[slot] && !PPG_DP_BIT_TEST(bits, slot, ppg_dp_secondary))
 					pages++;
 			}
 
@@ -1391,8 +1414,9 @@ bool DPM_get(thread_db* tdbb, record_param* rpb, SSHORT lock_type)
 		return false;
 
 	// Find the next pointer page, data page, and record
-	pointer_page* page = get_pointer_page(tdbb, rpb->rpb_relation,
-		rpb->rpb_relation->getPages(tdbb), window, pp_sequence, LCK_read);
+	RelationPages* relPages = rpb->rpb_relation->getPages(tdbb);
+	pointer_page* page = 
+		get_pointer_page(tdbb, rpb->rpb_relation, relPages, window, pp_sequence, LCK_read);
 	if (!page)
 		return false;
 
@@ -1402,6 +1426,11 @@ bool DPM_get(thread_db* tdbb, record_param* rpb, SSHORT lock_type)
 #endif
 
 	const ULONG page_number = page->ppg_page[slot];
+
+	DPMPrefetchInfo* prfInfo = rpb->rpb_prf_info;
+	if (prfInfo)
+		prfInfo->nextDP(tdbb, relPages, page, slot);
+
 	if (page_number)
 	{
 		CCH_HANDOFF(tdbb, window, page_number, lock_type, pag_data);
@@ -1631,29 +1660,10 @@ bool DPM_next(thread_db* tdbb, record_param* rpb, USHORT lock_type, bool onepage
 				!PPG_DP_BIT_TEST(bits, slot, ppg_dp_empty) &&
 				(!sweeper || !PPG_DP_BIT_TEST(bits, slot, ppg_dp_swept)) )
 			{
-#ifdef SUPERSERVER_V2
-				// Perform sequential prefetch of relation's data pages.
-				// This may need more work for scrollable cursors.
+				DPMPrefetchInfo* prfInfo = rpb->rpb_prf_info;
+				if (prfInfo)
+					prfInfo->nextDP(tdbb, relPages, ppage, slot);
 
-				if (!onepage && !line)
-				{
-					if (!(slot % dbb->dbb_prefetch_sequence))
-					{
-                        ULONG pages[PREFETCH_MAX_PAGES + 1];
-						USHORT slot2 = slot;
-						USHORT i;
-						for (i = 0; i < dbb->dbb_prefetch_pages && slot2 < ppage->ppg_count;)
-							pages[i++] = ppage->ppg_page[slot2++];
-
-						// If no more data pages, piggyback next pointer page.
-
-						if (slot2 >= ppage->ppg_count)
-							pages[i++] = ppage->ppg_next;
-
-						CCH_PREFETCH(tdbb, pages, i);
-					}
-				}
-#endif
 				const data_page* dpage = (data_page*) CCH_HANDOFF(tdbb, window,
 									page_number, lock_type, pag_data);
 

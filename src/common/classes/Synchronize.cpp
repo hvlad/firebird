@@ -58,6 +58,7 @@ Synchronize::Synchronize()
 {
 #ifdef WIN_NT
 	evnt = CreateEvent(NULL, false, false, NULL);
+	ioEvent = INVALID_HANDLE_VALUE;
 #else
 	int ret = pthread_mutex_init(&mutex, NULL);
 	pthread_cond_init(&condition, NULL);
@@ -68,6 +69,7 @@ Synchronize::~Synchronize()
 {
 #ifdef WIN_NT
 	CloseHandle(evnt);
+	CloseHandle(ioEvent);
 #else
 	int ret = pthread_mutex_destroy(&mutex);
 	ret = pthread_cond_destroy(&condition);
@@ -188,7 +190,7 @@ TLS_DECLARE(ThreadSync*, threadIndex);
 
 ThreadSync::ThreadSync(const char* desc)
 	: threadId(getCurrentThreadId()), nextWaiting(NULL), prevWaiting(NULL),
-	  lockType(SYNC_NONE), lockGranted(false), lockPending(NULL), locks(NULL),
+	  lockType(SYNC_NONE), lockGranted(false), lockPending(NULL), //locks(NULL),
 	  description(desc)
 {
 	setThread(this);

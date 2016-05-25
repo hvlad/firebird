@@ -50,6 +50,7 @@ class jrd_tra;
 class Savepoint;
 class Cursor;
 class thread_db;
+struct DPMPrefetchInfo;
 
 // record parameter block
 
@@ -63,7 +64,8 @@ struct record_param
 		  rpb_b_page(0), rpb_b_line(0),
 		  rpb_address(NULL), rpb_length(0),
 		  rpb_flags(0), rpb_stream_flags(0), rpb_runtime_flags(0),
-		  rpb_org_scans(0), rpb_window(DB_PAGE_SPACE, -1)
+		  rpb_org_scans(0), rpb_prf_info(NULL), 
+		  rpb_window(DB_PAGE_SPACE, -1)
 	{
 	}
 
@@ -90,6 +92,8 @@ struct record_param
 	USHORT rpb_stream_flags;		// stream flags
 	USHORT rpb_runtime_flags;		// runtime flags
 	SSHORT rpb_org_scans;			// relation scan count at stream open
+
+	DPMPrefetchInfo* rpb_prf_info;	// prefetch info for scans
 
 	inline WIN& getWindow(thread_db* tdbb)
 	{

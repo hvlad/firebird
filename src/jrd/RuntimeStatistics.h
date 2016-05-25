@@ -50,6 +50,13 @@ public:
 		PAGE_READS,
 		PAGE_MARKS,
 		PAGE_WRITES,
+		PAGE_READS_WAIT_CNT,
+		PAGE_READS_WAIT_TIME,
+		PAGE_READS_WAIT_ASYNC_CNT,
+		PAGE_READS_WAIT_ASYNC_TIME,
+		PAGE_READS_MULTY_CNT,
+		PAGE_READS_MULTY_PAGES,
+		PAGE_READS_MULTY_IOSIZE,
 		RECORD_SEQ_READS,
 		RECORD_IDX_READS,
 		RECORD_UPDATES,
@@ -296,7 +303,7 @@ public:
 			return *m_counts;
 		}
 
-	private:
+private:
 		const RelationCounts* m_counts;
 	};
 

@@ -47,6 +47,7 @@ class JrdStatement;
 struct temporary_key;
 class jrd_tra;
 class BtrPageGCLock;
+struct BtrPrefetchCtrl;
 class Sort;
 
 // Index descriptor block -- used to hold info from index root page
@@ -182,10 +183,18 @@ class IndexRetrieval
 public:
 	IndexRetrieval(jrd_rel* relation, const index_desc* idx, USHORT count, temporary_key* key)
 		: irb_relation(relation), irb_index(idx->idx_id),
-		  irb_generic(0), irb_lower_count(count), irb_upper_count(count), irb_key(key),
-		  irb_name(NULL), irb_value(NULL)
+		irb_generic(0), irb_lower_count(count), irb_upper_count(count), irb_key(key),
+		irb_name(NULL), irb_prefetch(NULL), irb_value(NULL)
 	{
 		memcpy(&irb_desc, idx, sizeof(irb_desc));
+	}
+
+	IndexRetrieval(jrd_rel* relation, USHORT idx_id, BtrPrefetchCtrl* prefetch)
+		: irb_relation(relation), irb_index(idx_id),
+		irb_generic(0), irb_lower_count(0), irb_upper_count(0), irb_key(NULL),
+		irb_name(NULL), irb_prefetch(prefetch), irb_value(NULL)
+	{
+		memset(&irb_desc, 0, sizeof(irb_desc));
 	}
 
 	IndexRetrieval(MemoryPool& pool, jrd_rel* relation, const index_desc* idx,
@@ -212,6 +221,7 @@ public:
 	USHORT irb_upper_count;			// Number of segments for retrieval
 	temporary_key* irb_key;			// Key for equality retrieval
 	Firebird::MetaName* irb_name;	// Index name
+	BtrPrefetchCtrl* irb_prefetch;
 	ValueExprNode** irb_value;
 };
 

@@ -30,6 +30,7 @@
 #include "../jrd/req.h"
 #include "../jrd/rse.h"
 #include "../jrd/inf_pub.h"
+#include "../jrd/DpmPrefetch.h"
 
 namespace Jrd
 {
@@ -144,6 +145,11 @@ namespace Jrd
 
 	class FullTableScan : public RecordStream
 	{
+		struct Impure : public RecordSource::Impure
+		{
+			DPMPrefetchInfo irsb_prfInfo;
+		};
+
 	public:
 		FullTableScan(CompilerScratch* csb, const Firebird::string& alias,
 					  StreamType stream, jrd_rel* relation);
@@ -166,6 +172,7 @@ namespace Jrd
 		struct Impure : public RecordSource::Impure
 		{
 			RecordBitmap** irsb_bitmap;
+			DPMPrefetchInfo irsb_prfInfo;
 		};
 
 	public:

@@ -151,6 +151,7 @@ static bool set_diff_page(thread_db*, BufferDesc*);
 static void set_dirty_flag(thread_db*, BufferDesc*);
 static void clear_dirty_flag(thread_db*, BufferDesc*);
 
+static THREAD_ENTRY_DECLARE prefetch_thread(THREAD_ENTRY_PARAM arg);
 
 
 static inline void insertDirty(BufferControl* bcb, BufferDesc* bdb)
@@ -754,6 +755,8 @@ void CCH_fetch_page(thread_db* tdbb, WIN* window, const bool read_shadow)
 	BufferDesc* bdb = window->win_bdb;
 	BufferControl* bcb = bdb->bdb_bcb;
 
+	SINT64 timeRead = fb_utils::query_performance_counter();
+
 	FbStatusVector* const status = tdbb->tdbb_status_vector;
 
 	pag* page = bdb->bdb_buffer;
@@ -891,6 +894,14 @@ void CCH_fetch_page(thread_db* tdbb, WIN* window, const bool read_shadow)
 				}
 			}
 		}
+	}
+
+	timeRead = (fb_utils::query_performance_counter() - timeRead) * 1000;
+	if (timeRead > fb_utils::query_performance_frequency())
+	{
+		tdbb->bumpStats(RuntimeStatistics::PAGE_READS_WAIT_CNT);
+		tdbb->bumpStats(RuntimeStatistics::PAGE_READS_WAIT_TIME, 
+			timeRead / fb_utils::query_performance_frequency());
 	}
 
 	bdb->bdb_flags &= ~(BDB_not_valid | BDB_read_pending);
@@ -1463,6 +1474,26 @@ void CCH_init2(thread_db* tdbb)
 
 		bcb->bcb_writer_init.enter();
 	}
+
+	if (bcb->bcb_flags & BCB_exclusive && !(att->att_flags & ATT_security_db))
+	{
+		for (int t = 0; t < 1; t++)
+		{
+			++bcb->bcb_thd_starting;
+
+			try
+			{
+				Thread::start(prefetch_thread, dbb, THREAD_high);
+			}
+			catch (const Exception&)
+			{
+				--bcb->bcb_thd_starting;
+				ERR_bugcheck_msg("cannot start prefetch thread");
+			}
+
+			bcb->bcb_reader_init.enter();
+		}
+	}
 }
 
 
@@ -1996,6 +2027,17 @@ void CCH_shutdown(thread_db* tdbb)
 	}
 #endif
 
+	while (bcb->bcb_thd_starting.value())
+		Thread::yield();
+
+	const bool readers = (bcb->bcb_reader_cnt.value() > 0);
+	while (bcb->bcb_reader_cnt.value())
+	{
+		bcb->bcb_reader_sem.release();
+		dbb->dbb_page_manager.pioPort.postEvent(PIO_EVENT_WAKEUP);
+		bcb->bcb_reader_fini.tryEnter(10);
+	}
+
 	// Wait for cache writer startup to complete
 
 	while (bcb->bcb_flags & BCB_writer_start)
@@ -2041,6 +2083,43 @@ void CCH_shutdown(thread_db* tdbb)
 				PAGE_LOCK_RELEASE(tdbb, bcb, bdb->bdb_lock);
 			}
 		}
+	}
+
+	if (bcb->bcb_flags & BCB_exclusive && readers)
+	{
+		const SINT64 waits_prf_cnt		 = dbb->dbb_stats.getValue(RuntimeStatistics::PAGE_READS_WAIT_ASYNC_CNT);
+		const SINT64 waits_prf_time		 = dbb->dbb_stats.getValue(RuntimeStatistics::PAGE_READS_WAIT_ASYNC_TIME);
+		const SINT64 waits_read_cnt		 = dbb->dbb_stats.getValue(RuntimeStatistics::PAGE_READS_WAIT_CNT);
+		const SINT64 waits_read_time	 = dbb->dbb_stats.getValue(RuntimeStatistics::PAGE_READS_WAIT_TIME);
+		const SINT64 read_multy_cnt		 = dbb->dbb_stats.getValue(RuntimeStatistics::PAGE_READS_MULTY_CNT);
+		const SINT64 read_multy_page_cnt = dbb->dbb_stats.getValue(RuntimeStatistics::PAGE_READS_MULTY_PAGES);
+		const SINT64 read_multy_io_cnt	 = dbb->dbb_stats.getValue(RuntimeStatistics::PAGE_READS_MULTY_IOSIZE);
+
+		string s;
+		s.printf(
+			"CCH_fini\n"
+			"\tprefetch  : count %9"QUADFORMAT"d, time %9"QUADFORMAT"d, avg %2.2f\n"
+			"\tsync reads: count %9"QUADFORMAT"d, time %9"QUADFORMAT"d, avg %2.2f\n"
+			"\tmultyreads: count %9"QUADFORMAT"d, pags %9"QUADFORMAT"d, avg %2.2f\n"
+			"\t\t\t\t\t\t\t\t io   %9"QUADFORMAT"d, avg %2.2f\n", 
+
+			waits_prf_cnt, 
+			waits_prf_time, 
+			waits_prf_cnt ? waits_prf_time / (double) waits_prf_cnt : .0,
+
+			waits_read_cnt, 
+			waits_read_time, 
+			waits_read_cnt ? waits_read_time / (double) waits_read_cnt : .0,
+
+			read_multy_cnt, 
+			read_multy_page_cnt, 
+			read_multy_cnt ? read_multy_page_cnt / (double) read_multy_cnt : .0,
+
+			read_multy_io_cnt, 
+			read_multy_cnt ? read_multy_io_cnt / (double) read_multy_cnt : .0
+		);
+
+		gds__trace_raw(s.c_str(), s.length());
 	}
 
 	// close the database file and all associated shadow files
@@ -3555,7 +3634,27 @@ static LatchState latch_buffer(thread_db* tdbb, Sync &bcbSync, BufferDesc *bdb,
 	}
 	else
 	{
-		const bool latchOk = bdb->addRef(tdbb, syncType, wait);
+		bool latchOk = true;
+		if (wait == 0)
+			latchOk = bdb->addRefConditional(tdbb, syncType);
+		else
+		{
+			if (bdb->bdb_flags & BDB_read_pending)
+			{
+				SINT64 timeWait = fb_utils::query_performance_counter();
+				latchOk = bdb->addRef(tdbb, syncType, wait);
+				timeWait = (fb_utils::query_performance_counter() - timeWait) * 1000;
+
+				if (timeWait > fb_utils::query_performance_frequency())
+				{
+					tdbb->bumpStats(RuntimeStatistics::PAGE_READS_WAIT_ASYNC_CNT);
+					tdbb->bumpStats(RuntimeStatistics::PAGE_READS_WAIT_ASYNC_TIME, 
+						timeWait / fb_utils::query_performance_frequency());
+				}
+			}
+			else
+				latchOk = bdb->addRef(tdbb, syncType, wait);
+		}
 
 		//--bdb->bdb_use_count;
 
@@ -5196,4 +5295,249 @@ void BufferDesc::unLockIO(thread_db* tdbb)
 		bdb_io = NULL;
 
 	bdb_syncIO.unlock(NULL, SYNC_EXCLUSIVE);
+}
+
+
+void BufferDesc::readComplete(thread_db* tdbb, bool error, const void* data)
+{
+	if (!error)
+	{
+		if (data) {
+			memcpy(bdb_buffer, data, bdb_bcb->bcb_page_size);
+		}
+		bdb_flags &= ~BDB_read_pending;
+	}
+	tdbb->registerBdb(this);
+	release(tdbb, false);
+}
+
+
+bool CCH_page_cached(thread_db* tdbb, const PageNumber& pageno)
+{
+	BufferControl* bcb = tdbb->getDatabase()->dbb_bcb;
+
+	SyncLockGuard bcbSync(&bcb->bcb_syncObject, SYNC_SHARED, "CCH_page_cached");
+	const BufferDesc* bdb = find_buffer(bcb, pageno, true);
+	return (bdb && !(bdb->bdb_flags & BDB_read_pending)/* && 
+		((bdb->bdb_page == pageno) && !(bdb->bdb_flags & BDB_free_pending) || 
+		 (bdb->bdb_pending_page == pageno) && (bdb->bdb_flags & BDB_free_pending)) */);
+}
+
+
+static void remove_existing_buffers(BufferControl* bcb, PrefetchReq* prf)
+{
+	SyncLockGuard bcbSync(&bcb->bcb_syncObject, SYNC_SHARED, "remove_existing_buffers");
+
+	const USHORT pageSpaceID = prf->getPageSpace()->pageSpaceID;
+	ULONG *pageno = prf->begin();
+	while (pageno < prf->end())
+	{
+		if (find_buffer(bcb, PageNumber(pageSpaceID, *pageno), true))
+			prf->remove(pageno);
+		else
+			pageno++;
+	}
+}
+
+
+static PIORequest* prf_to_pio(thread_db* tdbb, PrefetchReq* prf)
+{
+	Database* dbb = tdbb->getDatabase();
+	BufferControl* bcb = dbb->dbb_bcb;
+
+	remove_existing_buffers(bcb, prf);
+	if (prf->getCount() < 1)
+		return NULL;
+
+	PageSpace* pageSpace = prf->getPageSpace();
+	PIORequest* pio = pageSpace->newPIORequest();
+	if (!pio)
+		return NULL;
+
+	const USHORT pageSpaceID = pageSpace->pageSpaceID;
+	prf->sort();
+
+	ULONG *pageno = prf->begin();
+	while (pageno < prf->end())
+	{
+		const int pageFit = pio->fitPageNumber(*pageno, dbb->dbb_page_size);
+
+		if (pageFit == 0)
+		{
+			BufferDesc* bdb = get_buffer(tdbb, PageNumber(pageSpaceID, *pageno), SYNC_SHARED, 0);
+			pageno = prf->remove(pageno);
+
+			if (bdb && (bdb->bdb_flags & BDB_read_pending))
+			{
+				tdbb->clearBdb(bdb);		// bdb could be released by different thread
+				pio->addPage(bdb);
+				if (pio->isFull())
+					break;
+			}
+			else if (bdb) {
+				bdb->release(tdbb, false);
+			}
+		}
+		else if (pageFit > 0)
+			break;
+		else
+			pageno++;
+	}
+
+	if (pio->isEmpty())
+	{
+		pageSpace->freePIORequest(pio);
+		return NULL;
+	}
+	return pio;
+}
+
+
+PIORequest* CCH_make_PIO(thread_db* tdbb, PrefetchReq* prf)
+{
+	PageSpace* pageSpace = prf->getPageSpace();
+
+	PIORequest* pio = prf_to_pio(tdbb, prf);
+	
+	if (!pio)
+		return NULL;
+
+	if (!pio->isFull())
+	{
+		// todo: inspect per pageSpace prefetch bitmap
+	}
+
+	return pio;
+}
+
+
+static THREAD_ENTRY_DECLARE prefetch_thread(THREAD_ENTRY_PARAM arg)
+{
+	FbLocalStatus status_vector;
+	Database* const dbb = (Database*)arg;
+	BufferControl* const bcb = dbb->dbb_bcb;
+
+	try
+	{
+		UserId user;
+		user.usr_user_name = "Cache Prefetcher";
+
+		Jrd::Attachment* const attachment = Jrd::Attachment::create(dbb);
+		RefPtr<SysStableAttachment> sAtt(FB_NEW SysStableAttachment(attachment));
+		attachment->setStable(sAtt);
+		attachment->att_filename = dbb->dbb_filename;
+		attachment->att_user = &user;
+
+		BackgroundContextHolder tdbb(dbb, attachment, &status_vector, FB_FUNCTION);
+
+		try
+		{
+			LCK_init(tdbb, LCK_OWNER_attachment);
+			PAG_header(tdbb, true);
+			PAG_attachment_id(tdbb);
+			TRA_init(attachment);
+
+			sAtt->initDone();
+
+			--bcb->bcb_thd_starting;
+			++bcb->bcb_reader_cnt;
+			bcb->bcb_flags |= BCB_prefetch;
+			bcb->bcb_reader_init.release();
+
+			PageManager& pageMgr = dbb->dbb_page_manager;
+
+			while (!bcb->bcb_reader_sem.tryEnter())
+			{
+				PIORequest* pio = NULL;
+				const PIO_EVENT_T evnt = pageMgr.pioPort.getCompletedRequest(tdbb, &pio, MAX_SLONG);
+
+				if (evnt == PIO_EVENT_WAKEUP)
+				{
+					fb_assert(pio == NULL);
+
+					HalfStaticArray<PIORequest*, 8> pioReqs(*dbb->dbb_permanent);
+					PrefetchReq* prf = pageMgr.getPrefetchReq();
+					while (prf)
+					{
+						PageSpace* pageSpace = prf->getPageSpace();
+						pio = CCH_make_PIO(tdbb, prf);
+						if (pio)
+						{
+							pioReqs.push(pio);
+							if (!prf->isEmpty())
+								continue;
+						}
+
+						pageSpace->freePrefetchReq(prf);
+						if (pioReqs.getCount() >= 8)
+							break;
+
+						if (pioReqs.isEmpty())
+							prf = pageMgr.getPrefetchReq();
+						else 
+						{
+							if (!pio)
+								break;
+
+							prf = pageMgr.nextPrefetchReq(pageSpace);
+						}
+					}
+
+					while (!pioReqs.isEmpty()) 
+					{
+						PIO_read_multy(dbb, pioReqs.begin(), pioReqs.getCount());
+
+						PIORequest** pPio = pioReqs.begin();
+						while (pPio < pioReqs.end())
+						{
+							pio = *pPio;
+							if (!pio || pio->readComplete(tdbb))
+								pioReqs.remove(pPio);
+							else
+								pPio++;
+						}
+					}
+				}
+				else if (evnt == PIO_EVENT_IO)
+				{
+					while (!pio->readComplete(tdbb))
+					{
+						PIORequest** pPio = &pio;
+						PIO_read_multy(dbb, pPio, 1);
+						if (!*pPio)
+							break;
+					}
+				}
+				else if (evnt == PIO_EVENT_TIMEOUT)
+					continue;
+				else
+				{
+					fb_assert(false);
+					gds__log("Unknown event %d in pioPort.getCompletedRequest", evnt);
+				}
+			}
+		}
+		catch (const Firebird::Exception& ex)
+		{
+			ex.stuffException(&status_vector);
+			iscDbLogStatus(dbb->dbb_filename.c_str(), &status_vector);
+			// continue execution to clean up
+		}
+
+		Monitoring::cleanupAttachment(tdbb);
+		attachment->releaseLocks(tdbb);
+		LCK_fini(tdbb, LCK_OWNER_attachment);
+
+		attachment->releaseRelations(tdbb);
+	}	// try
+	catch (const Firebird::Exception& ex)
+	{
+		ex.stuffException(&status_vector);
+		iscDbLogStatus(dbb->dbb_filename.c_str(), &status_vector);
+	}
+
+	--bcb->bcb_reader_cnt;
+	bcb->bcb_reader_fini.release();
+
+	return 0;
 }

@@ -317,6 +317,283 @@ void IndexErrorContext::raise(thread_db* tdbb, idx_e result, Record* record)
 }
 
 
+namespace Jrd {
+
+struct BtrPrefetchCtrl
+{
+	BtrPrefetchCtrl()
+	{
+		memset(this, 0, sizeof(BtrPrefetchCtrl));
+		m_lastRecno = NO_VALUE;
+		m_enabled = true;
+	}
+
+	void initPrefetch(thread_db* tdbb, const IndexRetrieval* retrieval, WIN* window, 
+					  temporary_key* lower, RecordNumber recno, temporary_key* upper);
+	void nextLeafPage(thread_db* tdbb, const IndexRetrieval* retrieval, btree_page* leaf, 
+					  temporary_key* upper);
+
+	void disable()
+	{
+		m_enabled = false;
+	}
+
+private:
+	void makePrefetch(thread_db* tdbb, const IndexRetrieval* retrieval, WIN* window, 
+					  UCHAR* pointer, temporary_key* upper);
+
+	bool			m_enabled;
+	temporary_key	m_lastKey;		// key and recno up to which we made prefetch requests
+	RecordNumber	m_lastRecno;
+
+	ULONG			m_pageNo;			// page number, incarnation and offset of the 1st level 
+	ULONG			m_pageIncarnation;	// btr page where we processed last time
+	ULONG			m_pageOffset;
+};
+
+
+void BtrPrefetchCtrl::initPrefetch(thread_db* tdbb, const IndexRetrieval* retrieval, WIN* window, 
+					  temporary_key* lower, RecordNumber recno, temporary_key* upper)
+{
+	if (!m_enabled)
+		return;
+
+	// We have in hand window with 1st level btr page where given lower key should be
+	// present. Find lower key and given recno at this page or at it sibling chain.
+
+	btree_page* bucket = (btree_page*) window->win_buffer;
+	const bool descending = retrieval->irb_desc.idx_flags & idx_descending;
+	UCHAR* pointer = NULL;
+
+	IndexNode node;
+	if (lower)
+	{
+		fb_assert(lower != &m_lastKey);
+		copy_key(lower, &m_lastKey);
+
+		while (true)
+		{
+			pointer = find_node_start_point(bucket, lower, m_lastKey.key_data, NULL, 
+					descending, true, true, recno);
+			
+			if (pointer)
+			{
+				node.readNode(pointer, false);
+				m_lastKey.key_length = node.length + node.prefix;
+				break;
+			}
+
+			if (!bucket->btr_sibling)
+			{
+				fb_assert(false);
+				return;
+			}
+
+			CCH_HANDOFF(tdbb, window, bucket->btr_sibling, LCK_read, pag_index);
+		}
+	}
+	else
+	{
+		pointer = bucket->btr_nodes + bucket->btr_jump_size;
+
+		UCHAR* next = node.readNode(pointer, false);
+		if (descending && node.length == 0)  // ???
+		{
+			pointer = next;
+			node.readNode(pointer, false);
+		}
+
+		m_lastKey.key_length = node.length;
+		memcpy(m_lastKey.key_data, node.data, node.length);
+	}
+
+	m_lastRecno = node.recordNumber;
+
+	makePrefetch(tdbb, retrieval, window, pointer, upper);
+}
+
+
+void BtrPrefetchCtrl::nextLeafPage(thread_db* tdbb, const IndexRetrieval* retrieval, btree_page* leaf, 
+	temporary_key* upper)
+{
+	if (!m_enabled)
+		return;
+
+	UCHAR* pointer = leaf->btr_nodes + leaf->btr_jump_size;
+	
+	IndexNode node;
+	pointer = node.readNode(pointer, true);
+	if (node.isEndBucket || node.isEndLevel)
+		return;
+
+	temporary_key leafKey;
+	leafKey.key_length = node.length;
+	memcpy(leafKey.key_data, node.data, node.length);
+
+	node.readNode(pointer, true);
+	if (node.isEndLevel)
+		return;
+
+	memcpy(leafKey.key_data + node.prefix, node.data, node.length);
+	leafKey.key_length = node.prefix + node.length;
+
+	const int cmp = memcmp(leafKey.key_data, m_lastKey.key_data, MIN(leafKey.key_length, m_lastKey.key_length));
+
+	if (cmp < 0)
+		return;
+
+	if (!(retrieval->irb_desc.idx_flags & idx_descending))
+	{
+		if (cmp == 0 && leafKey.key_length <= m_lastKey.key_length && node.recordNumber < m_lastRecno)
+			return;
+	}
+	else
+	{
+		if (cmp == 0 && leafKey.key_length >= m_lastKey.key_length && node.recordNumber < m_lastRecno)
+			return;
+	}
+
+	RelationPages* relPages = retrieval->irb_relation->getPages(tdbb);
+	win window(relPages->rel_pg_space_id, m_pageNo);
+	btree_page* bucket = NULL;
+
+	if (m_pageNo && m_pageIncarnation)
+	{
+		bucket = (btree_page*) CCH_FETCH_TIMEOUT(tdbb, &window, LCK_read, pag_undefined, 0);
+
+		if (!bucket)
+			return;
+	}
+
+	bool sameBucket = bucket && !(bucket->btr_header.pag_flags & btr_released) &&
+		bucket->btr_header.pag_type == pag_index && 
+		bucket->btr_id == retrieval->irb_index &&
+		bucket->btr_relation == retrieval->irb_relation->rel_id && 
+		bucket->btr_level == 1 &&
+		window.win_bdb->bdb_incarnation == m_pageIncarnation;
+
+	if (!sameBucket)
+	{
+		if (bucket)
+			CCH_RELEASE(tdbb, &window);
+
+		RelationPages* relPages = retrieval->irb_relation->getPages(tdbb);
+
+		window.win_page = relPages->rel_index_root;
+		index_root_page* rpage = (index_root_page*) CCH_FETCH(tdbb, &window, LCK_read, pag_root);
+		
+		const index_desc &idx = retrieval->irb_desc;
+		const ULONG idx_root = rpage->irt_rpt[retrieval->irb_index].getRoot();
+		bucket = (btree_page*) CCH_HANDOFF(tdbb, &window, idx_root, LCK_read, pag_index);
+		
+		if (bucket->btr_level > 1)
+		{
+			while (bucket->btr_level > 1)
+			{
+				while (true)
+				{
+					const ULONG number = find_page(bucket, &leafKey, &idx,
+						node.recordNumber, (retrieval->irb_generic & (irb_starting | irb_partial)));
+					if (number != END_BUCKET)
+					{
+						bucket = (btree_page*) CCH_HANDOFF(tdbb, &window, number, LCK_read, pag_index);
+						break;
+					}
+
+					bucket = (btree_page*) CCH_HANDOFF(tdbb, &window, bucket->btr_sibling, LCK_read, pag_index);
+				}
+			}
+
+			m_pageNo = 0;
+			initPrefetch(tdbb, retrieval, &window, &leafKey, node.recordNumber, upper);
+		}
+	}
+	else
+	{
+		pointer = bucket->btr_nodes + m_pageOffset;
+		makePrefetch(tdbb, retrieval, &window, pointer, upper);
+	}
+	CCH_RELEASE(tdbb, &window);
+}
+
+	
+void BtrPrefetchCtrl::makePrefetch(thread_db* tdbb, const IndexRetrieval* retrieval, WIN* window, 
+	UCHAR* pointer, temporary_key* upper)
+{
+	if (!m_enabled)
+		return;
+
+	Database* dbb = tdbb->getDatabase();
+	RelationPages* relPages = retrieval->irb_relation->getPages(tdbb);
+	PageSpace* pageSpace = dbb->dbb_page_manager.findPageSpace(relPages->rel_pg_space_id);
+	PrefetchReq* prf = pageSpace->newPrefetchReq();
+
+	if (!prf)
+		return;
+
+	btree_page* bucket = (btree_page*) window->win_buffer;
+
+	IndexNode node;
+	for (int i = 0; i < 8; i++)
+	{
+		UCHAR* p = pointer;
+		pointer = node.readNode(pointer, false);
+
+		if (node.isEndLevel)
+			break;
+
+		memcpy(&m_lastKey.key_data[node.prefix], node.data, node.length);
+		m_lastKey.key_length = node.length + node.prefix;
+
+		if (upper)
+		{
+			// stop if our lastKey is greater than upper key
+
+			const int cmp = memcmp(m_lastKey.key_data, upper->key_data, 
+				MIN(upper->key_length, m_lastKey.key_length));
+
+			if (cmp > 0)
+				break;
+
+			const bool descending = retrieval->irb_desc.idx_flags & idx_descending;
+
+			if (cmp == 0 && 
+				(!descending && m_lastKey.key_length > upper->key_length) ||
+				(descending && m_lastKey.key_length < upper->key_length) )
+				break;
+		}
+
+		prf->push(node.pageNumber);
+
+		if (node.isEndBucket)
+		{
+			prf->push(bucket->btr_sibling);
+			break;
+		}
+	}
+
+	//if (prf->getCount() > 1)
+		dbb->dbb_page_manager.addPrefetchReq(prf);
+	//else
+	//	pageSpace->freePrefetchReq(prf);
+
+	m_lastRecno = node.recordNumber;
+	if (node.isEndBucket || node.isEndLevel)
+	{
+		m_pageNo = bucket->btr_sibling;
+		m_pageIncarnation = 0;
+		m_pageOffset = 0;
+	}
+	else
+	{
+		m_pageNo = bucket->btr_header.pag_pageno;
+		m_pageIncarnation = window->win_bdb->bdb_incarnation;
+		m_pageOffset = (pointer - bucket->btr_nodes);
+	}
+}
+
+} // namespace Jrd
+
 USHORT BTR_all(thread_db* tdbb, jrd_rel* relation, IndexDescAlloc** csb_idx, RelationPages* relPages)
 {
 /**************************************
@@ -670,6 +947,10 @@ void BTR_evaluate(thread_db* tdbb, const IndexRetrieval* retrieval, RecordBitmap
 	// Remove ignore_nulls flag for older ODS
 	//const Database* dbb = tdbb->getDatabase();
 
+	IndexRetrieval* _retrieval = const_cast<IndexRetrieval*> (retrieval);
+	BtrPrefetchCtrl prefetch;
+	_retrieval->irb_prefetch = &prefetch;
+
 	index_desc idx;
 	RelationPages* relPages = retrieval->irb_relation->getPages(tdbb);
 	WIN window(relPages->rel_pg_space_id, -1);
@@ -748,6 +1029,10 @@ void BTR_evaluate(thread_db* tdbb, const IndexRetrieval* retrieval, RecordBitmap
 		skipLowerKey = false;
 	}
 
+	if (retrieval->irb_prefetch)
+		retrieval->irb_prefetch->nextLeafPage(tdbb, retrieval, page, 
+			retrieval->irb_upper_count ? &upper : NULL);
+
 	// if there is an upper bound, scan the index pages looking for it
 	if (retrieval->irb_upper_count)
 	{
@@ -757,6 +1042,9 @@ void BTR_evaluate(thread_db* tdbb, const IndexRetrieval* retrieval, RecordBitmap
 			page = (btree_page*) CCH_HANDOFF(tdbb, &window, page->btr_sibling, LCK_read, pag_index);
 			pointer = page->btr_nodes + page->btr_jump_size;
 			prefix = 0;
+
+			if (retrieval->irb_prefetch)
+				retrieval->irb_prefetch->nextLeafPage(tdbb, retrieval, page, &upper);
 		}
 	}
 	else
@@ -815,10 +1103,14 @@ void BTR_evaluate(thread_db* tdbb, const IndexRetrieval* retrieval, RecordBitmap
 			if (pointer > endPointer) {
 				BUGCHECK(204);	// msg 204 index inconsistent
 			}
+
+			if (retrieval->irb_prefetch)
+				retrieval->irb_prefetch->nextLeafPage(tdbb, retrieval, page, NULL);
 		}
 	}
 
 	CCH_RELEASE(tdbb, &window);
+	_retrieval->irb_prefetch = NULL;
 }
 
 
@@ -899,6 +1191,26 @@ btree_page* BTR_find_page(thread_db* tdbb,
 		}
 	}
 
+	// disable prefetch of leaf level pages if we searching for not-null key at unique index
+
+	BtrPrefetchCtrl* prefetch = retrieval->irb_prefetch;
+	const bool lower_all_nulls = (lower->key_nulls == (1 << idx->idx_count) - 1);
+	if (prefetch && (idx->idx_flags & (idx_primary | idx_unique)) && !lower_all_nulls)
+	{
+		if (retrieval->irb_key) 
+		{
+			prefetch->disable();
+		}
+		else if (retrieval->irb_lower_count == retrieval->irb_upper_count &&
+				 retrieval->irb_lower_count == retrieval->irb_desc.idx_count &&
+				 lower->key_length == upper->key_length &&
+				 memcmp(lower->key_data, upper->key_data, lower->key_length) == 0)
+		{
+			prefetch->disable();
+		}
+	}
+
+
 	RelationPages* relPages = retrieval->irb_relation->getPages(tdbb);
 	fb_assert(window->win_page.getPageSpaceID() == relPages->rel_pg_space_id);
 
@@ -937,11 +1249,16 @@ btree_page* BTR_find_page(thread_db* tdbb,
 		{
 			while (true)
 			{
-				const temporary_key* tkey = ignoreNulls ? &firstNotNullKey : lower;
+				/*const*/ temporary_key* tkey = ignoreNulls ? &firstNotNullKey : lower;
 				const ULONG number = find_page(page, tkey, idx,
 					NO_VALUE, (retrieval->irb_generic & (irb_starting | irb_partial)));
 				if (number != END_BUCKET)
 				{
+					if (page->btr_level == 1 && prefetch) 
+					{
+						prefetch->initPrefetch(tdbb, retrieval, window, tkey, NO_VALUE, 
+							retrieval->irb_upper_count ? upper : NULL);
+					}
 					page = (btree_page*) CCH_HANDOFF(tdbb, window, number, LCK_read, pag_index);
 					break;
 				}
@@ -962,6 +1279,11 @@ btree_page* BTR_find_page(thread_db* tdbb,
 			// Check if pointer is still valid
 			if (pointer > endPointer) {
 				BUGCHECK(204);	// msg 204 index inconsistent
+			}
+
+			if (page->btr_level == 1 && prefetch) {
+				prefetch->initPrefetch(tdbb, retrieval, window, NULL, NO_VALUE, 
+					retrieval->irb_upper_count ? upper : NULL);
 			}
 			page = (btree_page*) CCH_HANDOFF(tdbb, window, node.pageNumber, LCK_read, pag_index);
 		}
@@ -2003,7 +2325,12 @@ void BTR_selectivity(thread_db* tdbb, jrd_rel* relation, USHORT id, SelectivityL
 		return;
 	}
 
-	SLONG page;
+	// prepare for prefetch
+	BtrPrefetchCtrl prefetch;
+	IndexRetrieval retrieval(relation, id, &prefetch);
+	BTR_description(tdbb, relation, root, &retrieval.irb_desc, id);
+
+	ULONG page;
 	if (id >= root->irt_count || !(page = root->irt_rpt[id].getRoot()))
 	{
 		CCH_RELEASE(tdbb, &window);
@@ -2039,13 +2366,16 @@ void BTR_selectivity(thread_db* tdbb, jrd_rel* relation, USHORT id, SelectivityL
 	duplicatesList.grow(segments);
 	memset(duplicatesList.begin(), 0, segments * sizeof(FB_UINT64));
 
-	//const Database* dbb = tdbb->getDatabase();
+	Database* dbb = tdbb->getDatabase();
+	PageSpace* pageSpace = dbb->dbb_page_manager.findPageSpace(relPages->rel_pg_space_id);
 
 	// go through all the leaf nodes and count them;
 	// also count how many of them are duplicates
 	IndexNode node;
 	while (page)
 	{
+		prefetch.nextLeafPage(tdbb, &retrieval, bucket, NULL);
+
 		pointer = node.readNode(pointer, true);
 		while (true)
 		{

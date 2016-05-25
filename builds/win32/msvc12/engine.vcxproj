@@ -68,6 +68,7 @@
     <ClCompile Include="..\..\..\src\jrd\DataTypeUtil.cpp" />
     <ClCompile Include="..\..\..\src\jrd\DbCreators.cpp" />
     <ClCompile Include="..\..\..\src\jrd\DebugInterface.cpp" />
+    <ClCompile Include="..\..\..\src\jrd\DpmPrefetch.cpp" />
     <ClCompile Include="..\..\..\src\jrd\err.cpp" />
     <ClCompile Include="..\..\..\src\jrd\event.cpp" />
     <ClCompile Include="..\..\..\src\jrd\evl.cpp" />
@@ -98,6 +99,7 @@
     <ClCompile Include="..\..\..\src\jrd\ods.cpp" />
     <ClCompile Include="..\..\..\src\jrd\opt.cpp" />
     <ClCompile Include="..\..\..\src\jrd\Optimizer.cpp" />
+    <ClCompile Include="..\..\..\src\jrd\os\pio.cpp" />
     <ClCompile Include="..\..\..\src\jrd\os\win32\winnt.cpp" />
     <ClCompile Include="..\..\..\src\jrd\pag.cpp" />
     <ClCompile Include="..\..\..\src\jrd\par.cpp" />
@@ -217,6 +219,7 @@
     <ClInclude Include="..\..\..\src\jrd\DebugInterface.h" />
     <ClInclude Include="..\..\..\src\jrd\dflt.h" />
     <ClInclude Include="..\..\..\src\jrd\dfw_proto.h" />
+    <ClInclude Include="..\..\..\src\jrd\DpmPrefetch.h" />
     <ClInclude Include="..\..\..\src\jrd\dpm_proto.h" />
     <ClInclude Include="..\..\..\src\jrd\drq.h" />
     <ClInclude Include="..\..\..\src\jrd\dyn.h" />
@@ -282,6 +285,7 @@
     <ClInclude Include="..\..\..\src\jrd\ods_proto.h" />
     <ClInclude Include="..\..\..\src\jrd\Optimizer.h" />
     <ClInclude Include="..\..\..\src\jrd\opt_proto.h" />
+    <ClInclude Include="..\..\..\src\jrd\os\pio.h" />
     <ClInclude Include="..\..\..\src\jrd\pag.h" />
     <ClInclude Include="..\..\..\src\jrd\pag_proto.h" />
     <ClInclude Include="..\..\..\src\jrd\par_proto.h" />

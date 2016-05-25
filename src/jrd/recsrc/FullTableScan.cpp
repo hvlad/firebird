@@ -50,9 +50,12 @@ void FullTableScan::open(thread_db* tdbb) const
 	Impure* const impure = request->getImpure<Impure>(m_impure);
 
 	impure->irsb_flags = irsb_open;
+	impure->irsb_prfInfo.reset(false);
 
 	record_param* const rpb = &request->req_rpb[m_stream];
 	rpb->getWindow(tdbb).win_flags = 0;
+	rpb->rpb_prf_info = &impure->irsb_prfInfo;
+	//rpb->rpb_prf_info = NULL;
 
 	// Unless this is the only attachment, limit the cache flushing
 	// effect of large sequential scans on the page working sets of

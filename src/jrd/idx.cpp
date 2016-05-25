@@ -265,10 +265,14 @@ void IDX_create_index(thread_db* tdbb,
 
 	fb_assert(transaction);
 
+	DPMPrefetchInfo prefetch;
+	prefetch.reset(false);
+
 	record_param primary, secondary;
 	secondary.rpb_relation = relation;
 	primary.rpb_relation = relation;
 	primary.rpb_number.setValue(BOF_NUMBER);
+	primary.rpb_prf_info = &prefetch;
 	//primary.getWindow(tdbb).win_flags = secondary.getWindow(tdbb).win_flags = 0; redundant
 
 	const bool isDescending = (idx->idx_flags & idx_descending);

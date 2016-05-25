@@ -52,13 +52,31 @@ public:
 	bool sleep(int milliseconds);
 	void sleep();
 
+#ifdef _WIN32
+	HANDLE getIOEvent()
+	{
+		// we need manual reset event for overlapped IO, see descroption of 
+		// OVERLAPPED structure at http://msdn.microsoft.com/en-us/library/windows/desktop/ms684342.aspx : 
+		// Functions such as GetOverlappedResult and the synchronization wait functions reset auto-reset 
+		// events to the nonsignaled state. Therefore, you should use a manual reset event; if you use 
+		// an auto-reset event, your application can stop responding if you wait for the operation to 
+		// complete and then call GetOverlappedResult with the bWait parameter set to TRUE.
+
+		if (ioEvent == INVALID_HANDLE_VALUE) {
+			ioEvent = CreateEvent(NULL, true, false, NULL);
+		}
+		return ioEvent;
+	}
+#endif
+
 protected:
 	bool shutdownInProgress;
 	bool sleeping;
 	volatile bool wakeup;
 
 #ifdef WIN_NT
-	void* evnt;
+	HANDLE evnt;
+	HANDLE ioEvent;
 #else
 	pthread_cond_t condition;
 	pthread_mutex_t mutex;
@@ -94,7 +112,7 @@ private:
 	SyncType lockType;			// requested lock type (see SyncObject)
 	volatile bool lockGranted;
 	Sync* lockPending;
-	Sync* locks;
+//	Sync* locks;
 	const char* description;
 };
 
