@@ -28,6 +28,7 @@
 #ifndef CLASSES_OBJECTS_ARRAY_H
 #define CLASSES_OBJECTS_ARRAY_H
 
+#include <initializer_list>
 #include "../common/classes/alloc.h"
 #include "../common/classes/array.h"
 
@@ -332,6 +333,19 @@ namespace Firebird
 		{
 		}
 
+		ObjectsArray(const ObjectsArray<T, A>& o)
+			: A()
+		{
+			add(o);
+		}
+
+		ObjectsArray(MemoryPool& p, std::initializer_list<T> items)
+			: A(p)
+		{
+			for (auto& item : items)
+				add(item);
+		}
+
 		ObjectsArray() :
 			A()
 		{
@@ -379,6 +393,19 @@ namespace Firebird
 			add(o);
 
 			return *this;
+		}
+
+		bool find(const T& item, FB_SIZE_T& pos) const
+		{
+			for (size_type i = 0; i < this->count; i++)
+			{
+				if (*getPointer(i) == item)
+				{
+					pos = i;
+					return true;
+				}
+			}
+			return false;
 		}
 
 	private:
@@ -434,6 +461,12 @@ namespace Firebird
 			ObjectsArray <ObjectValue, SortedArray<ObjectValue*,
 				ObjectStorage, const ObjectKey*, ObjectKeyOfValue,
 				ObjectCmp> >(p)
+		{ }
+
+		explicit SortedObjectsArray() :
+			ObjectsArray <ObjectValue, SortedArray<ObjectValue*,
+				ObjectStorage, const ObjectKey*, ObjectKeyOfValue,
+				ObjectCmp> >()
 		{ }
 
 		bool find(const ObjectKey& item, size_type& pos) const

@@ -55,6 +55,7 @@ using namespace Firebird;
 
 
 static void internal_error(ISC_STATUS status, int number, const TEXT* file = NULL, int line = 0);
+static void post_nothrow(const unsigned lenToAdd, const ISC_STATUS* toAdd, FbStatusVector* statusVector);
 
 
 void ERR_bugcheck(int number, const TEXT* file, int line)
@@ -95,10 +96,29 @@ void ERR_bugcheck_msg(const TEXT* msg)
 	Database* const dbb = tdbb->getDatabase();
 
 	dbb->dbb_flags |= DBB_bugcheck;
-	DEBUG;
 	CCH_shutdown(tdbb);
 
 	ERR_post(Arg::Gds(isc_bug_check) << Arg::Str(msg));
+}
+
+
+void ERR_soft_bugcheck(int number, const TEXT* file, int line)
+{
+/**************************************
+ *
+ *	E R R _ s o f t _ b u g c h e c k
+ *
+ **************************************
+ *
+ * Functional description
+ *	Things seem to be going poorly today.
+ *  Use this function instead of ERR_bugcheck in bugcheck conditions that do not affect
+ *  whole server/database/attachment state.
+ *
+ **************************************/
+
+	fb_assert(false);
+	internal_error(isc_bug_check, number, file, line);
 }
 
 
@@ -134,7 +154,6 @@ void ERR_error(int number)
  **************************************/
 	TEXT errmsg[MAX_ERRMSG_LEN + 1];
 
-	DEBUG;
 	if (gds__msg_lookup(0, JRD_BUGCHK, number, sizeof(errmsg), errmsg, NULL) < 1)
 		sprintf(errmsg, "error code %d", number);
 
@@ -157,7 +176,6 @@ void ERR_log(int facility, int number, const TEXT* message)
 	TEXT errmsg[MAX_ERRMSG_LEN + 1];
 	thread_db* tdbb = JRD_get_thread_data();
 
-	DEBUG;
 	if (message)
 		fb_utils::copy_terminate(errmsg, message, sizeof(errmsg));
 	else if (gds__msg_lookup(0, facility, number, sizeof(errmsg), errmsg, NULL) < 1)
@@ -185,10 +203,28 @@ void ERR_post_warning(const Arg::StatusVector& v)
  **************************************/
 	fb_assert(v.value()[0] == isc_arg_warning);
 
-	FbStatusVector* const status_vector = JRD_get_thread_data()->tdbb_status_vector;
-	Arg::StatusVector warnings(status_vector->getWarnings());
-	warnings << v;
-	status_vector->setWarnings(warnings.value());
+	FbStatusVector* const statusVector = JRD_get_thread_data()->tdbb_status_vector;
+	const ISC_STATUS* toAdd = v.value();
+	const unsigned lenToAdd = v.length();
+
+	if (!(statusVector->getState() & IStatus::STATE_WARNINGS))
+	{
+		// this is a blank status vector just stuff the status
+		statusVector->setWarnings2(lenToAdd, toAdd);
+		return;
+	}
+
+	const ISC_STATUS* oldVector = statusVector->getErrors();
+	unsigned lenOld = fb_utils::statusLength(oldVector);
+
+	// check for duplicated error code
+	if (fb_utils::subStatus(oldVector, lenOld, toAdd, lenToAdd) != ~0u)
+		return;
+
+	StaticStatusVector tmpWarn;
+	tmpWarn.assign(oldVector, lenOld);
+	tmpWarn.append(toAdd, lenToAdd);
+	statusVector->setWarnings2(tmpWarn.getCount(), tmpWarn.begin());
 }
 
 
@@ -204,14 +240,45 @@ void ERR_post_nothrow(const Arg::StatusVector& v, FbStatusVector* statusVector)
  *
  **************************************/
 {
-	// calculate length of the status
-	unsigned lenToAdd = v.length();
+	post_nothrow(v.length(), v.value(), statusVector);
+}
+
+
+void ERR_post_nothrow(const IStatus* v, FbStatusVector* statusVector)
+/**************************************
+ *
+ *	E R R _ p o s t _ n o t h r o w
+ *
+ **************************************
+ *
+ * Functional description
+ *	Populate a status vector.
+ *
+ **************************************/
+{
+	const ISC_STATUS* toAdd = v->getErrors();
+	post_nothrow(fb_utils::statusLength(toAdd), toAdd, statusVector);
+}
+
+
+static void post_nothrow(const unsigned lenToAdd, const ISC_STATUS* toAdd, FbStatusVector* statusVector)
+/**************************************
+ *
+ *	E R R _ p o s t _ n o t h r o w
+ *
+ **************************************
+ *
+ * Functional description
+ *	Populate a status vector.
+ *
+ **************************************/
+{
+	// check status to add
 	if (lenToAdd == 0)	// nothing to do
 		return;
-	const ISC_STATUS* toAdd = v.value();
     fb_assert(toAdd[0] == isc_arg_gds);
 
-	// Use default from tdbb when no vector specified
+	// use default from tdbb when no vector specified
 	if (!statusVector)
 		statusVector = JRD_get_thread_data()->tdbb_status_vector;
 
@@ -251,7 +318,6 @@ void ERR_post(const Arg::StatusVector& v)
 {
 	ERR_post_nothrow(v);
 
-	DEBUG;
 	ERR_punt();
 }
 
@@ -305,7 +371,6 @@ void ERR_warning(const Arg::StatusVector& v)
 	FbStatusVector* s = tdbb->tdbb_status_vector;
 
 	v.copyTo(s);
-	DEBUG;
 	tdbb->getRequest()->req_flags |= req_warning;
 }
 
@@ -363,7 +428,6 @@ static void internal_error(ISC_STATUS status, int number, const TEXT* file, int 
  **************************************/
 	TEXT errmsg[MAX_ERRMSG_LEN + 1];
 
-	DEBUG;
 	if (gds__msg_lookup(0, JRD_BUGCHK, number, sizeof(errmsg), errmsg, NULL) < 1)
 		strcpy(errmsg, "Internal error code");
 

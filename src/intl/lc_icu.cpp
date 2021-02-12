@@ -57,8 +57,7 @@ static bool texttype_default_init(texttype* tt,
 	// test if that ICU charset exist
 	if (CSICU_charset_init(&cs, charSetName))
 	{
-		if (cs.charset_fn_destroy)
-			cs.charset_fn_destroy(&cs);
+		IntlUtil::finiCharset(&cs);
 	}
 	else
 		return false;
@@ -100,7 +99,7 @@ static bool texttype_unicode_init(texttype* tt,
 	// test if that charset exist
 	if (!LD_lookup_charset(cs, charSetName, configInfo))
 	{
-		Jrd::CharSet::Delete::clear(cs);
+		Firebird::SimpleDelete<charset>::clear(cs);
 		return false;
 	}
 
@@ -121,7 +120,7 @@ bool LCICU_setup_attributes(const ASCII* name, const ASCII* charSetName, const A
 
 	if (len > 8 && strcmp(name + len - 8, "_UNICODE") == 0)
 	{
-		AutoPtr<charset, Jrd::CharSet::Delete> cs(FB_NEW_POOL(*getDefaultMemoryPool()) charset);
+		AutoPtr<charset> cs(FB_NEW_POOL(*getDefaultMemoryPool()) charset);
 		memset(cs, 0, sizeof(*cs));
 
 		// test if that charset exist

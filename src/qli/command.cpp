@@ -25,12 +25,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "../jrd/ibase.h"
+#include "ibase.h"
 #include "../qli/dtr.h"
 #include "../qli/parse.h"
 #include "../qli/compile.h"
 #include "../qli/exe.h"
-//#include "../jrd/license.h"
 #include "../qli/all_proto.h"
 #include "../qli/err_proto.h"
 #include "../qli/exe_proto.h"

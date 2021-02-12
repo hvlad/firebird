@@ -34,14 +34,14 @@ public:
 	explicit InternalProvider(const char* prvName) :
 		Provider(prvName)
 	{
-		m_flags = (prvMultyStmts | prvMultyTrans);
 	}
 
 	~InternalProvider()
 	{}
 
+	virtual void jrdAttachmentEnd(Jrd::thread_db* tdbb, Jrd::Attachment* att, bool forced);
+
 	virtual void initialize() {}
-	virtual void jrdAttachmentEnd(Jrd::thread_db* tdbb, Jrd::Attachment* att);
 	virtual void getRemoteError(const Jrd::FbStatusVector* status, Firebird::string& err) const;
 
 protected:
@@ -63,21 +63,20 @@ protected:
 	virtual ~InternalConnection();
 
 public:
-	virtual void attach(Jrd::thread_db* tdbb, const Firebird::PathName& dbName,
-		const Firebird::string& user, const Firebird::string& pwd,
-		const Firebird::string& role);
+	virtual void attach(Jrd::thread_db* tdbb);
 
-	virtual bool cancelExecution();
+	virtual bool cancelExecution(bool forced);
+	virtual bool resetSession(Jrd::thread_db* tdbb);
 
 	virtual bool isAvailable(Jrd::thread_db* tdbb, TraScope traScope) const;
 
 	virtual bool isConnected() const { return (m_attachment != 0); }
+	virtual bool validate(Jrd::thread_db* tdbb);
 
-	virtual bool isSameDatabase(Jrd::thread_db* tdbb, const Firebird::PathName& dbName,
-		const Firebird::string& user, const Firebird::string& pwd,
-		const Firebird::string& role) const;
+	virtual bool isSameDatabase(const Firebird::PathName& dbName,
+		Firebird::ClumpletReader& dpb) const;
 
-	bool isCurrent() const { return m_isCurrent; }
+	virtual bool isCurrent() const { return m_isCurrent; }
 
 	Jrd::JAttachment* getJrdAtt() { return m_attachment; }
 
@@ -88,6 +87,7 @@ protected:
 	virtual Statement* doCreateStatement();
 	virtual void doDetach(Jrd::thread_db* tdbb);
 
+	Firebird::AutoPlugin<Jrd::JProvider> m_provider;
 	Firebird::RefPtr<Jrd::JAttachment> m_attachment;
 	bool m_isCurrent;
 };
@@ -130,6 +130,7 @@ protected:
 
 protected:
 	virtual void doPrepare(Jrd::thread_db* tdbb, const Firebird::string& sql);
+	virtual void doSetTimeout(Jrd::thread_db* tdbb, unsigned int timeout);
 	virtual void doExecute(Jrd::thread_db* tdbb);
 	virtual void doOpen(Jrd::thread_db* tdbb);
 	virtual bool doFetch(Jrd::thread_db* tdbb);

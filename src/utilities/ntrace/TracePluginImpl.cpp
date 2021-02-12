@@ -32,19 +32,20 @@
 #include "TracePluginImpl.h"
 #include "PluginLogWriter.h"
 #include "os/platform.h"
-#include "consts_pub.h"
+#include "firebird/impl/consts_pub.h"
+#include "codetext.h"
 #include "../../common/isc_f_proto.h"
-#include "../../jrd/RuntimeStatistics.h"
 #include "../../common/dsc.h"
 #include "../../common/utils_proto.h"
 #include "../../common/UtilSvc.h"
 #include "../../jrd/svc_undoc.h"
 #include "../../jrd/constants.h"
 #include "../../common/os/path_utils.h"
-#include "../../jrd/inf_pub.h"
-#include "../../dsql/sqlda_pub.h"
+#include "firebird/impl/inf_pub.h"
+#include "firebird/impl/sqlda_pub.h"
 #include "../../common/classes/ImplementHelper.h"
 #include "../../common/SimpleStatusVector.h"
+#include "../../jrd/status.h"
 
 using namespace Firebird;
 using namespace Jrd;
@@ -97,7 +98,8 @@ TracePluginImpl::TracePluginImpl(IPluginBase* plugin,
 	transactions(getDefaultMemoryPool()),
 	statements(getDefaultMemoryPool()),
 	services(getDefaultMemoryPool()),
-	unicodeCollation(*getDefaultMemoryPool())
+	include_codes(*getDefaultMemoryPool()),
+	exclude_codes(*getDefaultMemoryPool())
 {
 	const char* ses_name = initInfo->getTraceSessionName();
 	session_name = ses_name && *ses_name ? ses_name : " ";
@@ -120,8 +122,6 @@ TracePluginImpl::TracePluginImpl(IPluginBase* plugin,
 		logWriter->addRef();
 	}
 
-	Jrd::TextType* textType = unicodeCollation.getTextType();
-
 	// Compile filtering regular expressions
 	const char* str = NULL;
 	try
@@ -132,9 +132,10 @@ TracePluginImpl::TracePluginImpl(IPluginBase* plugin,
 			string filter(config.include_filter);
 			ISC_systemToUtf8(filter);
 
-			include_matcher = FB_NEW SimilarToMatcher<UCHAR, UpcaseConverter<> >(
-				*getDefaultMemoryPool(), textType, (const UCHAR*) filter.c_str(),
-				filter.length(), '\\', true);
+			include_matcher = FB_NEW SimilarToRegex(
+				*getDefaultMemoryPool(), SimilarToFlag::CASE_INSENSITIVE,
+				filter.c_str(), filter.length(),
+				"\\", 1);
 		}
 
 		if (config.exclude_filter.hasData())
@@ -143,9 +144,10 @@ TracePluginImpl::TracePluginImpl(IPluginBase* plugin,
 			string filter(config.exclude_filter);
 			ISC_systemToUtf8(filter);
 
-			exclude_matcher = FB_NEW SimilarToMatcher<UCHAR, UpcaseConverter<> >(
-				*getDefaultMemoryPool(), textType, (const UCHAR*) filter.c_str(),
-				filter.length(), '\\', true);
+			exclude_matcher = FB_NEW SimilarToRegex(
+				*getDefaultMemoryPool(), SimilarToFlag::CASE_INSENSITIVE,
+				filter.c_str(), filter.length(),
+				"\\", 1);
 		}
 	}
 	catch (const Exception&)
@@ -162,6 +164,13 @@ TracePluginImpl::TracePluginImpl(IPluginBase* plugin,
 				str, config.db_filename.c_str());
 		}
 	}
+
+	// parse filters for gds error codes
+	if (!config.include_gds_codes.isEmpty())
+		str2Array(config.include_gds_codes, include_codes);
+
+	if (!config.exclude_gds_codes.isEmpty())
+		str2Array(config.exclude_gds_codes, exclude_codes);
 
 	operational = true;
 	log_init();
@@ -225,7 +234,15 @@ void TracePluginImpl::logRecord(const char* action)
 	// TODO: implement adjusting of line breaks
 	// line.adjustLineBreaks();
 
-	logWriter->write(record.c_str(), record.length());
+	LocalStatus ls;
+	CheckStatusWrapper status(&ls);
+
+	logWriter->write_s(&status, record.c_str(), record.length());
+
+	if (ls.getState() & IStatus::STATE_ERRORS && ls.getErrors()[1] == isc_interface_version_too_old)
+		logWriter->write(record.c_str(), record.length());
+	else
+		check(&status);
 
 	record = "";
 }
@@ -279,7 +296,10 @@ void TracePluginImpl::logRecordConn(const char* action, ITraceDatabaseConnection
 void TracePluginImpl::logRecordTrans(const char* action, ITraceDatabaseConnection* connection,
 	ITraceTransaction* transaction)
 {
-	const TraNumber tra_id = transaction->getTransactionID();
+	TraNumber tra_id = transaction->getPreviousID();
+	if (!tra_id)
+		tra_id = transaction->getTransactionID();
+
 	bool reg = false;
 	while (true)
 	{
@@ -297,7 +317,7 @@ void TracePluginImpl::logRecordTrans(const char* action, ITraceDatabaseConnectio
 		if (reg)
 		{
 			string temp;
-			temp.printf("\t\t(TRA_%" SQUADFORMAT", <unknown, bug?>)" NEWLINE, transaction->getTransactionID());
+			temp.printf("\t\t(TRA_%" SQUADFORMAT", <unknown, bug?>)" NEWLINE, tra_id);
 			record.insert(0, temp);
 			break;
 		}
@@ -464,25 +484,25 @@ void TracePluginImpl::appendGlobalCounts(const PerformanceInfo* info)
 
 	ntrace_counter_t cnt;
 
-	if ((cnt = info->pin_counters[RuntimeStatistics::PAGE_READS]) != 0)
+	if ((cnt = info->pin_counters[PerformanceInfo::READS]) != 0)
 	{
 		temp.printf(", %" QUADFORMAT"d read(s)", cnt);
 		record.append(temp);
 	}
 
-	if ((cnt = info->pin_counters[RuntimeStatistics::PAGE_WRITES]) != 0)
+	if ((cnt = info->pin_counters[PerformanceInfo::WRITES]) != 0)
 	{
 		temp.printf(", %" QUADFORMAT"d write(s)", cnt);
 		record.append(temp);
 	}
 
-	if ((cnt = info->pin_counters[RuntimeStatistics::PAGE_FETCHES]) != 0)
+	if ((cnt = info->pin_counters[PerformanceInfo::FETCHES]) != 0)
 	{
 		temp.printf(", %" QUADFORMAT"d fetch(es)", cnt);
 		record.append(temp);
 	}
 
-	if ((cnt = info->pin_counters[RuntimeStatistics::PAGE_MARKS]) != 0)
+	if ((cnt = info->pin_counters[PerformanceInfo::MARKS]) != 0)
 	{
 		temp.printf(", %" QUADFORMAT"d mark(s)", cnt);
 		record.append(temp);
@@ -496,19 +516,32 @@ void TracePluginImpl::appendTableCounts(const PerformanceInfo *info)
 	if (!config.print_perf || info->pin_count == 0)
 		return;
 
-	record.append(NEWLINE
-		"Table                             Natural     Index    Update    Insert    Delete   Backout     Purge   Expunge" NEWLINE
-		"***************************************************************************************************************" NEWLINE );
+	const TraceCounts* trc = info->pin_tables;
+	const TraceCounts* trc_end = trc + info->pin_count;
 
-	const TraceCounts* trc;
-	const TraceCounts* trc_end;
+	FB_SIZE_T max_len = 0;
+	for (; trc < trc_end; trc++)
+	{
+		FB_SIZE_T len = fb_strlen(trc->trc_relation_name);
+		if (max_len < len)
+			max_len = len;
+	}
+
+	if (max_len < 32)
+		max_len = 32;
+
+	record.append(NEWLINE"Table");
+	record.append(max_len - 5, ' ');
+	record.append("   Natural     Index    Update    Insert    Delete   Backout     Purge   Expunge" NEWLINE);
+	record.append(max_len + 80, '*');
+	record.append(NEWLINE);
 
 	string temp;
-	for (trc = info->pin_tables, trc_end = trc + info->pin_count; trc < trc_end; trc++)
+	for (trc = info->pin_tables; trc < trc_end; trc++)
 	{
 		record.append(trc->trc_relation_name);
-		record.append(MAX_SQL_IDENTIFIER_LEN - fb_strlen(trc->trc_relation_name), ' ');
-		for (int j = 0; j < DBB_max_rel_count; j++)
+		record.append(max_len - fb_strlen(trc->trc_relation_name), ' ');
+		for (int j = 0; j <= TraceCounts::EXPUNGES; j++)
 		{
 			if (trc->trc_counters[j] == 0)
 			{
@@ -545,6 +578,109 @@ void TracePluginImpl::formatStringArgument(string& result, const UCHAR* str, siz
 		return;
 	}
 	result.printf("%.*s", len, str);
+}
+
+
+bool TracePluginImpl::filterStatus(const ISC_STATUS* status, GdsCodesArray& arr)
+{
+	FB_SIZE_T pos;
+
+	while (*status != isc_arg_end)
+	{
+		const ISC_STATUS s = *status;
+
+		switch (s)
+		{
+		case isc_arg_gds:
+		case isc_arg_warning:
+			if (arr.find(status[1], pos))
+				return true;
+			status += 2;
+			break;
+
+		case isc_arg_cstring:
+			status += 3;
+			break;
+
+		default:
+			status += 2;
+			break;
+		}
+	}
+
+	return false;
+}
+
+
+namespace {
+
+class GdsName2CodeMap
+{
+public:
+	GdsName2CodeMap(MemoryPool& pool) :
+	  m_map(pool)
+	{
+		for (int i = 0; codes[i].code_string; i++)
+			m_map.put(codes[i].code_string, codes[i].code_number);
+	}
+
+	bool find(const char* name, ISC_STATUS& code) const
+	{
+		return m_map.get(name, code);
+	}
+
+private:
+	class NocaseCmp
+	{
+	public:
+		static bool greaterThan(const char* i1, const char* i2)
+		{
+			return fb_utils::stricmp(i1, i2) > 0;
+		}
+	};
+
+	GenericMap<Pair<NonPooled<const char*, ISC_STATUS> >, NocaseCmp > m_map;
+};
+
+}	// namespace
+
+static InitInstance<GdsName2CodeMap> gdsNamesMap;
+
+void TracePluginImpl::str2Array(const Firebird::string& str, GdsCodesArray& arr)
+{
+	// input: string with comma-delimited list of gds codes values and\or gds codes names
+	// output: sorted array of gds codes values
+
+	const char *sep = " ,";
+
+	FB_SIZE_T p1 = 0, p2 = 0;
+	while (p2 < str.length())
+	{
+		p2 = str.find_first_of(sep, p1);
+		if (p2 == string::npos)
+			p2 = str.length();
+
+		string s = str.substr(p1, p2 - p1);
+
+		ISC_STATUS code = atol(s.c_str());
+
+		if (!code && !gdsNamesMap().find(s.c_str(), code))
+		{
+			fatal_exception::raiseFmt(
+				"Error parsing error codes filter: \n"
+				"\t%s\n"
+				"\tbad item is: %s, at position: %d",
+				str.c_str(), s.c_str(), p1 + 1);
+		}
+
+		// avoid duplicates
+
+		FB_SIZE_T ins_pos;
+		if (!arr.find(code, ins_pos))
+			arr.insert(ins_pos, code);
+
+		p1 = str.find_first_not_of(sep, p2);
+	}
 }
 
 
@@ -599,14 +735,28 @@ void TracePluginImpl::appendParams(ITraceParams* params)
 				else
 					paramtype = "smallint";
 				break;
-
 			case dtype_long:
 				if (parameters->dsc_scale)
 					paramtype.printf("integer(*, %d)", parameters->dsc_scale);
 				else
 					paramtype = "integer";
 				break;
+			case dtype_int64:
+				if (parameters->dsc_scale)
+					paramtype.printf("bigint(*, %d)", parameters->dsc_scale);
+				else
+					paramtype = "bigint";
+				break;
+			case dtype_int128:
+				if (parameters->dsc_scale)
+					paramtype.printf("int128(*, %d)", parameters->dsc_scale);
+				else
+					paramtype = "int128";
+				break;
 
+			case dtype_real:
+				paramtype = "float";
+				break;
 			case dtype_double:
 				if (parameters->dsc_scale)
 					paramtype.printf("double precision(*, %d)", parameters->dsc_scale);
@@ -614,16 +764,13 @@ void TracePluginImpl::appendParams(ITraceParams* params)
 					paramtype = "double precision";
 				break;
 
-			case dtype_int64:
-				if (parameters->dsc_scale)
-					paramtype.printf("bigint(*, %d)", parameters->dsc_scale);
-				else
-					paramtype = "bigint";
+			case dtype_dec64:
+				paramtype = "decfloat(16)";
+				break;
+			case dtype_dec128:
+				paramtype = "decfloat(34)";
 				break;
 
-			case dtype_real:
-				paramtype = "float";
-				break;
 			case dtype_sql_date:
 				paramtype = "date";
 				break;
@@ -633,9 +780,11 @@ void TracePluginImpl::appendParams(ITraceParams* params)
 			case dtype_timestamp:
 				paramtype = "timestamp";
 				break;
+
 			case dtype_dbkey:
 				paramtype = "db_key";
 				break;
+
 			case dtype_boolean:
 				paramtype = "boolean";
 				break;
@@ -656,19 +805,41 @@ void TracePluginImpl::appendParams(ITraceParams* params)
 			{
 				// Handle potentially long string values
 				case dtype_text:
-					formatStringArgument(paramvalue,
-						parameters->dsc_address, parameters->dsc_length);
+				{
+					FbLocalStatus status;
+					const char* text = params->getTextUTF8(&status, i);
+
+					if (status->getState() & IStatus::STATE_ERRORS)
+					{
+						formatStringArgument(paramvalue,
+							parameters->dsc_address, parameters->dsc_length);
+					}
+					else
+						formatStringArgument(paramvalue, (UCHAR*) text, strlen(text));
+
 					break;
+				}
 				case dtype_cstring:
 					formatStringArgument(paramvalue,
 						parameters->dsc_address,
 						strlen(reinterpret_cast<const char*>(parameters->dsc_address)));
 					break;
 				case dtype_varying:
-					formatStringArgument(paramvalue,
-						parameters->dsc_address + 2,
-						*(USHORT*)parameters->dsc_address);
+				{
+					FbLocalStatus status;
+					const char* text = params->getTextUTF8(&status, i);
+
+					if (status->getState() & IStatus::STATE_ERRORS)
+					{
+						formatStringArgument(paramvalue,
+							parameters->dsc_address + 2,
+							*(USHORT*)parameters->dsc_address);
+					}
+					else
+						formatStringArgument(paramvalue, (UCHAR*) text, strlen(text));
+
 					break;
+				}
 
 				// Handle quad
 				case dtype_quad:
@@ -710,6 +881,27 @@ void TracePluginImpl::appendParams(ITraceParams* params)
 					else {
 						paramvalue.printf("%.15g",
 							*(double*) parameters->dsc_address * pow(10.0, -parameters->dsc_scale));
+					}
+					break;
+
+				case dtype_dec64:
+					((Decimal64*) parameters->dsc_address)->toString(paramvalue);
+					break;
+
+				case dtype_dec128:
+					((Decimal128*) parameters->dsc_address)->toString(paramvalue);
+					break;
+
+				case dtype_int128:
+					try
+					{
+						((Int128*) parameters->dsc_address)->toString(parameters->dsc_scale, paramvalue);
+					}
+					catch (const Exception& ex)
+					{
+						StaticStatusVector status;
+						ex.stuffException(status);
+						paramvalue.printf("Conversion error %d\n", status[1]);
 					}
 					break;
 
@@ -845,7 +1037,7 @@ void TracePluginImpl::appendServiceQueryParams(size_t send_item_length,
 				break;
 
 			case isc_info_svc_get_env_lock:
-				recv_query.printf(NEWLINE "\t\t retrieve the setting of $FIREBIRD_LCK");
+				recv_query.printf(NEWLINE "\t\t retrieve the setting of $FIREBIRD_LOCK");
 				break;
 
 			case isc_info_svc_get_env_msg:
@@ -931,14 +1123,22 @@ void TracePluginImpl::appendServiceQueryParams(size_t send_item_length,
 
 void TracePluginImpl::log_init()
 {
-	record.printf("\tSESSION_%d %s" NEWLINE "\t%s" NEWLINE, session_id, session_name.c_str(), config.db_filename.c_str());
-	logRecord("TRACE_INIT");
+	if (config.log_initfini)
+	{
+		record.printf("\tSESSION_%d %s" NEWLINE "\t%s" NEWLINE,
+			session_id, session_name.c_str(), config.db_filename.c_str());
+		logRecord("TRACE_INIT");
+	}
 }
 
 void TracePluginImpl::log_finalize()
 {
-	record.printf("\tSESSION_%d %s" NEWLINE "\t%s" NEWLINE, session_id, session_name.c_str(), config.db_filename.c_str());
-	logRecord("TRACE_FINI");
+	if (config.log_initfini)
+	{
+		record.printf("\tSESSION_%d %s" NEWLINE "\t%s" NEWLINE,
+			session_id, session_name.c_str(), config.db_filename.c_str());
+		logRecord("TRACE_FINI");
+	}
 
 	logWriter->release();
 	logWriter = NULL;
@@ -1049,9 +1249,19 @@ void TracePluginImpl::log_event_detach(ITraceDatabaseConnection* connection, FB_
 void TracePluginImpl::register_transaction(ITraceTransaction* transaction)
 {
 	TransactionData trans_data;
-	trans_data.id = transaction->getTransactionID();
+	trans_data.id = transaction->getPreviousID();
+	if (!trans_data.id)
+		trans_data.id = transaction->getTransactionID();
+
 	trans_data.description = FB_NEW_POOL(*getDefaultMemoryPool()) string(*getDefaultMemoryPool());
 	trans_data.description->printf("\t\t(TRA_%" SQUADFORMAT", ", trans_data.id);
+
+	if (transaction->getInitialID() != transaction->getTransactionID())
+	{
+		string tmp;
+		tmp.printf("INIT_%" SQUADFORMAT", ", transaction->getInitialID());
+		trans_data.description->append(tmp);
+	}
 
 	switch (transaction->getIsolation())
 	{
@@ -1069,6 +1279,10 @@ void TracePluginImpl::register_transaction(ITraceTransaction* transaction)
 
 	case ITraceTransaction::ISOLATION_READ_COMMITTED_NORECVER:
 		trans_data.description->append("READ_COMMITTED | NO_REC_VERSION");
+		break;
+
+	case ITraceTransaction::ISOLATION_READ_COMMITTED_READ_CONSISTENCY:
+		trans_data.description->append("READ_COMMITTED | READ_CONSISTENCY");
 		break;
 
 	default:
@@ -1138,6 +1352,22 @@ void TracePluginImpl::log_event_transaction_end(ITraceDatabaseConnection* connec
 {
 	if (config.log_transactions)
 	{
+		if (retain_context || transaction->getInitialID() != transaction->getTransactionID())
+		{
+			string temp;
+			//temp.printf("\tInitial number %" SQUADFORMAT NEWLINE, transaction->getInitialID());
+			//record.append(temp);
+
+			if (retain_context)
+			{
+				//temp.printf("\tOld number %" SQUADFORMAT NEWLINE, transaction->getPreviousID());
+				//record.append(temp);
+
+				temp.printf("\tNew number %" SQUADFORMAT NEWLINE, transaction->getTransactionID());
+				record.append(temp);
+			}
+		}
+
 		PerformanceInfo* info = transaction->getPerf();
 		if (info)
 		{
@@ -1170,11 +1400,12 @@ void TracePluginImpl::log_event_transaction_end(ITraceDatabaseConnection* connec
 		logRecordTrans(event_type, connection, transaction);
 	}
 
-	if (!retain_context)
+	const ISC_INT64 delId = retain_context ? transaction->getPreviousID() : transaction->getTransactionID();
+	if (!retain_context || transaction->getPreviousID() != transaction->getTransactionID())
 	{
 		// Forget about the transaction
 		WriteLockGuard lock(transactionsLock, FB_FUNCTION);
-		if (transactions.locate(transaction->getTransactionID()))
+		if (transactions.locate(delId))
 		{
 			transactions.current().deallocate_references();
 			transactions.fastRemove();
@@ -1344,25 +1575,11 @@ void TracePluginImpl::register_sql_statement(ITraceSQLStatement* statement)
 	if (!sql_length)
 		return;
 
-	if (config.include_filter.hasData() || config.exclude_filter.hasData())
-	{
-		const char* sqlUtf8 = statement->getTextUTF8();
-		FB_SIZE_T utf8_length = fb_strlen(sqlUtf8);
+	if (config.include_filter.hasData())
+		need_statement = include_matcher->matches(sql, sql_length);
 
-		if (config.include_filter.hasData())
-		{
-			include_matcher->reset();
-			include_matcher->process((const UCHAR*) sqlUtf8, utf8_length);
-			need_statement = include_matcher->result();
-		}
-
-		if (need_statement && config.exclude_filter.hasData())
-		{
-			exclude_matcher->reset();
-			exclude_matcher->process((const UCHAR*) sqlUtf8, utf8_length);
-			need_statement = !exclude_matcher->result();
-		}
-	}
+	if (need_statement && config.exclude_filter.hasData())
+		need_statement = !exclude_matcher->matches(sql, sql_length);
 
 	if (need_statement)
 	{
@@ -1713,8 +1930,20 @@ void TracePluginImpl::register_service(ITraceServiceConnection* service)
 			remote_address = "internal";
 	}
 
-	if (username.isEmpty())
-		username = "<user is unknown>";
+
+	if (!username.isEmpty())
+	{
+		const char* role = service->getRoleName();
+		if (role && *role) 
+		{
+			username.append(":");
+			username.append(role);
+		}
+	}
+	else
+	{
+		username = "<unknown_user>";
+	}
 
 	tmp = service->getRemoteProcessName();
 	if (tmp && *tmp) {
@@ -1754,18 +1983,10 @@ bool TracePluginImpl::checkServiceFilter(ITraceServiceConnection* service, bool 
 	bool enabled = true;
 
 	if (config.include_filter.hasData())
-	{
-		include_matcher->reset();
-		include_matcher->process((const UCHAR*) svcName, svcNameLen);
-		enabled = include_matcher->result();
-	}
+		enabled = include_matcher->matches(svcName, svcNameLen);
 
 	if (enabled && config.exclude_filter.hasData())
-	{
-		exclude_matcher->reset();
-		exclude_matcher->process((const UCHAR*) svcName, svcNameLen);
-		enabled = !exclude_matcher->result();
-	}
+		enabled = !exclude_matcher->matches(svcName, svcNameLen);
 
 	if (data) {
 		data->enabled = enabled;
@@ -2037,14 +2258,31 @@ void TracePluginImpl::log_event_trigger_execute(ITraceDatabaseConnection* connec
 void TracePluginImpl::log_event_error(ITraceConnection* connection, ITraceStatusVector* status,
 	const char* function)
 {
-	if (!config.log_errors)
-		return;
-
 	string event_type;
-	if (status->hasError())
+	if (config.log_errors && status->hasError())
+	{
+		const ISC_STATUS* errs = status->getStatus()->getErrors();
+
+		if (!include_codes.isEmpty() && !filterStatus(errs, include_codes))
+			return;
+
+		if (!exclude_codes.isEmpty() && filterStatus(errs, exclude_codes))
+			return;
+
 		event_type.printf("ERROR AT %s", function);
-	else if (status->hasWarning())
+	}
+	else if (config.log_warnings && status->hasWarning())
+	{
+		const ISC_STATUS* warns = status->getStatus()->getWarnings();
+
+		if (!include_codes.isEmpty() && !filterStatus(warns, include_codes))
+			return;
+
+		if (!exclude_codes.isEmpty() && filterStatus(warns, exclude_codes))
+			return;
+
 		event_type.printf("WARNING AT %s", function);
+	}
 	else
 		return;
 
@@ -2108,16 +2346,6 @@ void TracePluginImpl::log_event_sweep(ITraceDatabaseConnection* connection, ITra
 }
 
 //***************************** PLUGIN INTERFACE ********************************
-
-int TracePluginImpl::release()
-{
-	if (--refCounter == 0)
-	{
-		delete this;
-		return 0;
-	}
-	return 1;
-}
 
 const char* TracePluginImpl::trace_get_error()
 {

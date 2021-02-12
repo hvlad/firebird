@@ -24,7 +24,7 @@
 #include "firebird.h"
 #include <string.h>
 #include <stdlib.h>
-#include "../jrd/ibase.h"
+#include "ibase.h"
 #include "../remote/remote.h"
 #include "../common/file_params.h"
 #include "../common/gdsassert.h"
@@ -38,6 +38,7 @@
 #include "firebird/Interface.h"
 #include "../common/os/mod_loader.h"
 #include "../jrd/license.h"
+#include "../common/classes/ImplementHelper.h"
 
 #ifdef DEV_BUILD
 Firebird::AtomicCounter rem_port::portCounter;
@@ -603,9 +604,14 @@ void rem_port::linkParent(rem_port* const parent)
 	parent->port_clients = parent->port_next = this;
 }
 
-const Firebird::RefPtr<Config>& rem_port::getPortConfig() const
+const Firebird::RefPtr<const Firebird::Config>& rem_port::getPortConfig() const
 {
-	return port_config.hasData() ? port_config : Config::getDefaultConfig();
+	return port_config.hasData() ? port_config : Firebird::Config::getDefaultConfig();
+}
+
+Firebird::RefPtr<const Firebird::Config> rem_port::getPortConfig()
+{
+	return port_config.hasData() ? port_config : Firebird::Config::getDefaultConfig();
 }
 
 void rem_port::unlinkParent()
@@ -705,7 +711,7 @@ void rem_port::auxAcceptError(PACKET* packet)
 	}
 }
 
-bool_t REMOTE_getbytes (XDR* xdrs, SCHAR* buff, u_int count)
+bool_t REMOTE_getbytes (XDR* xdrs, SCHAR* buff, unsigned bytecount)
 {
 /**************************************
  *
@@ -717,9 +723,6 @@ bool_t REMOTE_getbytes (XDR* xdrs, SCHAR* buff, u_int count)
  *	Get a bunch of bytes from a port buffer
  *
  **************************************/
-	SLONG bytecount = count;
-
-	// Use memcpy to optimize bulk transfers.
 
 	while (bytecount > 0)
 	{
@@ -739,6 +742,7 @@ bool_t REMOTE_getbytes (XDR* xdrs, SCHAR* buff, u_int count)
 			bytecount -= xdrs->x_handy;
 			xdrs->x_handy = 0;
 		}
+
 		rem_port* port = (rem_port*) xdrs->x_public;
 		Firebird::RefMutexGuard queGuard(*port->port_que_sync, FB_FUNCTION);
 		if (port->port_qoffset >= port->port_queue.getCount())
@@ -747,7 +751,7 @@ bool_t REMOTE_getbytes (XDR* xdrs, SCHAR* buff, u_int count)
 			return FALSE;
 		}
 
-		xdrs->x_handy = (int) port->port_queue[port->port_qoffset].getCount();
+		xdrs->x_handy = port->port_queue[port->port_qoffset].getCount();
 		fb_assert(xdrs->x_handy <= port->port_buff_size);
 		memcpy(xdrs->x_base, port->port_queue[port->port_qoffset].begin(), xdrs->x_handy);
 		++port->port_qoffset;
@@ -938,13 +942,13 @@ void ClntAuthBlock::extractDataFromPluginTo(Firebird::ClumpletWriter& user_id)
 	if (pluginName.hasData())
 	{
 		HANDSHAKE_DEBUG(fprintf(stderr, "Cli: extractDataFromPluginTo: pluginName=%s\n", pluginName.c_str()));
-		user_id.insertPath(CNCT_plugin_name, pluginName);
+		user_id.insertString(CNCT_plugin_name, pluginName);
 	}
 
 	// Add plugin list
 	if (pluginList.hasData())
 	{
-		user_id.insertPath(CNCT_plugin_list, pluginList);
+		user_id.insertString(CNCT_plugin_list, pluginList);
 	}
 
 	// This is specially tricky field - user_id is limited to 255 bytes per entry,
@@ -954,10 +958,10 @@ void ClntAuthBlock::extractDataFromPluginTo(Firebird::ClumpletWriter& user_id)
 	addMultiPartConnectParameter(dataFromPlugin, user_id, CNCT_specific_data);
 
 	// Client's wirecrypt requested level
-	user_id.insertInt(CNCT_client_crypt, clntConfig->getWireCrypt(WC_CLIENT));
+	user_id.insertInt(CNCT_client_crypt, clntConfig->getWireCrypt(Firebird::WC_CLIENT));
 }
 
-void ClntAuthBlock::resetClnt(const Firebird::PathName* fileName, const CSTRING* listStr)
+void ClntAuthBlock::resetClnt(const CSTRING* listStr)
 {
 	if (listStr)
 	{
@@ -980,13 +984,13 @@ void ClntAuthBlock::resetClnt(const Firebird::PathName* fileName, const CSTRING*
 	dataFromPlugin.clear();
 	firstTime = true;
 
-	clntConfig = REMOTE_get_config(fileName, &dpbConfig);
-	pluginList = clntConfig->getPlugins(Firebird::IPluginManager::TYPE_AUTH_CLIENT);
+	pluginList = dpbPlugins.hasData() ? dpbPlugins :
+		clntConfig->getPlugins(Firebird::IPluginManager::TYPE_AUTH_CLIENT);
 
 	Firebird::PathName final;
 	if (serverPluginList.hasData())
 	{
-		Auth::mergeLists(final, serverPluginList, pluginList);
+		Firebird::ParsedList::mergeLists(final, serverPluginList, pluginList);
 		if (final.length() == 0)
 		{
 			HANDSHAKE_DEBUG(fprintf(stderr, "Cli: No matching plugins on client\n"));
@@ -1005,7 +1009,7 @@ void ClntAuthBlock::resetClnt(const Firebird::PathName* fileName, const CSTRING*
 	plugins.set(final.c_str());
 }
 
-Firebird::RefPtr<Config>* ClntAuthBlock::getConfig()
+Firebird::RefPtr<const Firebird::Config>* ClntAuthBlock::getConfig()
 {
 	return clntConfig.hasData() ? &clntConfig : NULL;
 }
@@ -1016,10 +1020,10 @@ void ClntAuthBlock::storeDataForPlugin(unsigned int length, const unsigned char*
 	HANDSHAKE_DEBUG(fprintf(stderr, "Cli: accepted data for plugin length=%d\n", length));
 }
 
-Firebird::RefPtr<Config> REMOTE_get_config(const Firebird::PathName* dbName,
+Firebird::RefPtr<const Firebird::Config> REMOTE_get_config(const Firebird::PathName* dbName,
 	const Firebird::string* dpb_config)
 {
-	Firebird::RefPtr<Config> config;
+	Firebird::RefPtr<const Firebird::Config> config;
 
 	if (dbName && dbName->hasData())
 	{
@@ -1027,9 +1031,9 @@ Firebird::RefPtr<Config> REMOTE_get_config(const Firebird::PathName* dbName,
 		expandDatabaseName(*dbName, dummy, &config);
 	}
 	else
-		config = Config::getDefaultConfig();
+		config = Firebird::Config::getDefaultConfig();
 
-	Config::merge(config, dpb_config);
+	Firebird::Config::merge(config, dpb_config);
 
 	return config;
 }
@@ -1141,27 +1145,36 @@ void rem_port::addServerKeys(CSTRING* passedStr)
 	Firebird::ClumpletReader newKeys(Firebird::ClumpletReader::UnTagged,
 									 passedStr->cstr_address, passedStr->cstr_length);
 
+	Firebird::PathName type, plugins, plugin;
+	unsigned len;
+	KnownServerKey* currentKey = nullptr;
 	for (newKeys.rewind(); !newKeys.isEof(); newKeys.moveNext())
 	{
-		if (newKeys.getClumpTag() == TAG_KNOWN_PLUGINS)
+		switch(newKeys.getClumpTag())
 		{
-			continue;
-		}
-
-		KnownServerKey key;
-		fb_assert(newKeys.getClumpTag() == TAG_KEY_TYPE);
-		newKeys.getPath(key.type);
-		newKeys.moveNext();
-		if (newKeys.isEof())
-		{
+		case TAG_KEY_TYPE:
+			newKeys.getPath(type);
+			break;
+		case TAG_KEY_PLUGINS:
+			newKeys.getPath(plugins);
+			plugins += ' ';
+			plugins.insert(0, " ");
+			currentKey = &port_known_server_keys.add();
+			currentKey->type = type;
+			currentKey->plugins = plugins;
+			break;
+		case TAG_PLUGIN_SPECIFIC:
+			plugin.assign(newKeys.getBytes(), newKeys.getClumpLength());
+			len = strlen(plugin.c_str()) + 1;
+			if (len < plugin.length())
+			{
+				const char* data = &plugin[len];
+				len = plugin.length() - len;
+				plugin.recalculate_length();
+				currentKey->addSpecificData(plugin, len, data);
+			}
 			break;
 		}
-		fb_assert(newKeys.getClumpTag() == TAG_KEY_PLUGINS);
-		newKeys.getPath(key.plugins);
-		key.plugins += ' ';
-		key.plugins.insert(0, " ");
-
-		port_known_server_keys.add(key);
 	}
 }
 
@@ -1186,12 +1199,12 @@ bool rem_port::tryKeyType(const KnownServerKey& srvKey, InternalCryptKey* cryptK
 		return true;
 	}
 
-	if (srvKey.type != cryptKey->t)
+	if (srvKey.type != cryptKey->keyName)
 	{
 		return false;
 	}
 
-	if (getPortConfig()->getWireCrypt(WC_CLIENT) == WIRE_CRYPT_DISABLED)
+	if (getPortConfig()->getWireCrypt(Firebird::WC_CLIENT) == Firebird::WIRE_CRYPT_DISABLED)
 	{
 		port_crypt_complete = true;
 		return true;
@@ -1199,8 +1212,7 @@ bool rem_port::tryKeyType(const KnownServerKey& srvKey, InternalCryptKey* cryptK
 
 	// we got correct key's type pair
 	// check what about crypt plugin for it
-	Remote::ParsedList clientPlugins;
-	REMOTE_parseList(clientPlugins, getPortConfig()->getPlugins(Firebird::IPluginManager::TYPE_WIRE_CRYPT));
+	Firebird::ParsedList clientPlugins(getPortConfig()->getPlugins(Firebird::IPluginManager::TYPE_WIRE_CRYPT));
 	for (unsigned n = 0; n < clientPlugins.getCount(); ++n)
 	{
 		Firebird::PathName p(clientPlugins[n]);
@@ -1213,23 +1225,33 @@ bool rem_port::tryKeyType(const KnownServerKey& srvKey, InternalCryptKey* cryptK
 				Firebird::LocalStatus st;
 				Firebird::CheckStatusWrapper statusWrapper(&st);
 
-				// Looks like we've found correct crypt plugin and key for it
-				port_crypt_plugin = cp.plugin();
-				port_crypt_plugin->addRef();
+				// Pass IV to plugin
+				//const Firebird::UCharBuffer* specificData = srvKey.findSpecificData(p);
+				auto* specificData = srvKey.findSpecificData(p);
+				if (specificData)
+				{
+					cp.plugin()->setSpecificData(&statusWrapper, srvKey.type.c_str(),
+						specificData->getCount(), specificData->begin());
+					check(&st, isc_wish_list);
+				}
 
 				// Pass key to plugin
-				port_crypt_plugin->setKey(&statusWrapper, cryptKey);
+				cp.plugin()->setKey(&statusWrapper, cryptKey);
 				if (st.getState() & Firebird::IStatus::STATE_ERRORS)
 				{
 					Firebird::status_exception::raise(&st);
 				}
+
+				// Looks like we've found correct crypt plugin and key for it
+				port_crypt_plugin = cp.plugin();
+				port_crypt_plugin->addRef();
 
 				// Now it's time to notify server about choice done
 				// Notice - port_crypt_complete flag is not set still,
 				// therefore sent packet will be not encrypted
 				PACKET crypt;
 				crypt.p_operation = op_crypt;
-				setCStr(crypt.p_crypt.p_key, cryptKey->t.c_str());
+				setCStr(crypt.p_crypt.p_key, cryptKey->keyName.c_str());
 				setCStr(crypt.p_crypt.p_plugin, p.c_str());
 				send(&crypt);
 
@@ -1286,7 +1308,8 @@ Firebird::ICryptKey* SrvAuthBlock::newKey(Firebird::CheckStatusWrapper* status)
 	{
 		InternalCryptKey* k = FB_NEW InternalCryptKey;
 
-		k->t = pluginName.c_str();
+		k->keyName = pluginName.c_str();
+		WIRECRYPT_DEBUG(fprintf(stderr, "Srv: newkey %s\n", k->keyName.c_str());)
 		port->port_crypt_keys.push(k);
 		newKeys.push(k);
 
@@ -1317,69 +1340,11 @@ void rem_port::versionInfo(Firebird::string& version) const
 
 
 #ifdef WIRE_COMPRESS_SUPPORT
-namespace {
-	class ZLib
-	{
-	public:
-		explicit ZLib(Firebird::MemoryPool&)
-		{
-#ifdef WIN_NT
-			const char* name = "zlib1.dll";
-#else
-			const char* name = "libz." SHRLIB_EXT ".1";
-#endif
-			z.reset(ModuleLoader::fixAndLoadModule(name));
-			if (z)
-				symbols();
-		}
-
-		int ZEXPORT (*deflateInit_)(z_stream* strm, int level, const char *version, int stream_size);
-		int ZEXPORT (*inflateInit_)(z_stream* strm, const char *version, int stream_size);
-		int ZEXPORT (*deflate)(z_stream* strm, int flush);
-		int ZEXPORT (*inflate)(z_stream* strm, int flush);
-		void ZEXPORT (*deflateEnd)(z_stream* strm);
-		void ZEXPORT (*inflateEnd)(z_stream* strm);
-
-		operator bool() { return z.hasData(); }
-		bool operator!() { return !z.hasData(); }
-
-	private:
-		Firebird::AutoPtr<ModuleLoader::Module> z;
-
-		void symbols()
-		{
-#define FB_ZSYMB(A) z->findSymbol(STRINGIZE(A), A); if (!A) { z.reset(NULL); return; }
-			FB_ZSYMB(deflateInit_)
-			FB_ZSYMB(inflateInit_)
-			FB_ZSYMB(deflate)
-			FB_ZSYMB(inflate)
-			FB_ZSYMB(deflateEnd)
-			FB_ZSYMB(inflateEnd)
-#undef FB_ZSYMB
-		}
-	};
-
-	Firebird::InitInstance<ZLib> zlib;
-
-	void* allocFunc(void*, uInt items, uInt size)
-	{
-		return MemoryPool::globalAlloc(items * size ALLOC_ARGS);
-	}
-
-	void freeFunc(void*, void* address)
-	{
-		MemoryPool::globalFree(address);
-	}
-}
+static Firebird::InitInstance<Firebird::ZLib> zlib;
 #endif // WIRE_COMPRESS_SUPPORT
 
 rem_port::~rem_port()
 {
-	if (port_events_shutdown)
-	{
-		port_events_shutdown(this);
-	}
-
 	delete port_srv_auth;
 	delete port_srv_auth_block;
 	delete port_version;
@@ -1485,17 +1450,21 @@ bool REMOTE_inflate(rem_port* port, PacketReceive* packet_receive, UCHAR* buffer
 	else
 		port->port_flags &= ~PORT_z_data;
 
+#ifdef COMPRESS_DEBUG
+	fprintf(stderr, "Z-buffer %s\n", port->port_flags & PORT_z_data ? "has data" : "is empty");
+#endif
+
 	return true;
 #else
 	return packet_receive(port, buffer, buffer_length, length);
 #endif
 }
 
-bool REMOTE_deflate(XDR* xdrs, ProtoWrite* proto_write, PacketSend* packet_send, bool flash)
+bool REMOTE_deflate(XDR* xdrs, ProtoWrite* proto_write, PacketSend* packet_send, bool flush)
 {
 #ifdef WIRE_COMPRESS_SUPPORT
 	rem_port* port = (rem_port*) xdrs->x_public;
-	if (!port->port_compressed)
+	if (!(port->port_compressed && (port->port_flags & PORT_compressed)))
 		return proto_write(xdrs);
 
 	z_stream& strm = port->port_send_stream;
@@ -1508,7 +1477,7 @@ bool REMOTE_deflate(XDR* xdrs, ProtoWrite* proto_write, PacketSend* packet_send,
 		strm.next_out = (Bytef*) &port->port_compressed[REM_SEND_OFFSET(port->port_buff_size)];
 	}
 
-	bool expectMoreOut = flash;
+	bool expectMoreOut = flush;
 
 	while (strm.avail_in || expectMoreOut)
 	{
@@ -1519,7 +1488,7 @@ bool REMOTE_deflate(XDR* xdrs, ProtoWrite* proto_write, PacketSend* packet_send,
 		fprintf(stderr, "\n");
 #endif
 #endif
-		int ret = zlib().deflate(&strm, flash ? Z_SYNC_FLUSH : Z_NO_FLUSH);
+		int ret = zlib().deflate(&strm, flush ? Z_SYNC_FLUSH : Z_NO_FLUSH);
 		if (ret == Z_BUF_ERROR)
 			ret = 0;
 		if (ret != 0)
@@ -1540,8 +1509,11 @@ bool REMOTE_deflate(XDR* xdrs, ProtoWrite* proto_write, PacketSend* packet_send,
 #endif
 
 		expectMoreOut = !strm.avail_out;
-		if ((port->port_buff_size != strm.avail_out) && (flash || !strm.avail_out))
+		if ((port->port_buff_size != strm.avail_out) && (flush || !strm.avail_out))
 		{
+#if COMPRESS_DEBUG > 1
+			fprintf(stderr, "Send packet %d bytes size\n", port->port_buff_size - strm.avail_out);
+#endif
 			if (!packet_send(port, (SCHAR*) &port->port_compressed[REM_SEND_OFFSET(port->port_buff_size)],
 				(SSHORT) (port->port_buff_size - strm.avail_out)))
 			{
@@ -1576,16 +1548,16 @@ void rem_port::initCompression()
 #ifdef WIRE_COMPRESS_SUPPORT
 	if (port_protocol >= PROTOCOL_VERSION13 && !port_compressed && zlib())
 	{
-		port_send_stream.zalloc = allocFunc;
-		port_send_stream.zfree = freeFunc;
+		port_send_stream.zalloc = Firebird::ZLib::allocFunc;
+		port_send_stream.zfree = Firebird::ZLib::freeFunc;
 		port_send_stream.opaque = Z_NULL;
 		int ret = zlib().deflateInit(&port_send_stream, Z_DEFAULT_COMPRESSION);
 		if (ret != Z_OK)
-			(Firebird::Arg::Gds(isc_random) << "compression stream init error").raise();		// add error code
+			(Firebird::Arg::Gds(isc_deflate_init) << Firebird::Arg::Num(ret)).raise();
 		port_send_stream.next_out = NULL;
 
-		port_recv_stream.zalloc = allocFunc;
-		port_recv_stream.zfree = freeFunc;
+		port_recv_stream.zalloc = Firebird::ZLib::allocFunc;
+		port_recv_stream.zfree = Firebird::ZLib::freeFunc;
 		port_recv_stream.opaque = Z_NULL;
 		port_recv_stream.avail_in = 0;
 		port_recv_stream.next_in = Z_NULL;
@@ -1593,7 +1565,7 @@ void rem_port::initCompression()
 		if (ret != Z_OK)
 		{
 			zlib().deflateEnd(&port_send_stream);
-			(Firebird::Arg::Gds(isc_random) << "decompression stream init error").raise();		// add error code
+			(Firebird::Arg::Gds(isc_inflate_init) << Firebird::Arg::Num(ret)).raise();
 		}
 
 		try
@@ -1624,7 +1596,7 @@ void InternalCryptKey::setSymmetric(Firebird::CheckStatusWrapper* status, const 
 	try
 	{
 		if (type)
-			t = type;
+			keyName = type;
 		encrypt.set(keyLength, key);
 		decrypt.clear();
 	}
@@ -1641,7 +1613,7 @@ void InternalCryptKey::setAsymmetric(Firebird::CheckStatusWrapper* status, const
 	try
 	{
 		if (type)
-			t = type;
+			keyName = type;
 		encrypt.set(encryptKeyLength, encryptKey);
 		decrypt.set(decryptKeyLength, decryptKey);
 	}

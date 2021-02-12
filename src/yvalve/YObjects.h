@@ -30,6 +30,7 @@
 #include "firebird/Interface.h"
 #include "gen/iberror.h"
 #include "../common/StatusHolder.h"
+#include "../common/classes/fb_atomic.h"
 #include "../common/classes/alloc.h"
 #include "../common/classes/array.h"
 #include "../common/MsgMetadata.h"
@@ -49,6 +50,7 @@ class YRequest;
 class YResultSet;
 class YService;
 class YStatement;
+class IscStatement;
 class YTransaction;
 
 class YObject
@@ -98,10 +100,13 @@ public:
 	void destroy(unsigned dstrFlags)
 	{
 		Firebird::MutexLockGuard guard(mtx, FB_FUNCTION);
-		FB_SIZE_T i;
 
-		while ((i = array.getCount()) > 0)
-			array[i - 1]->destroy(dstrFlags);
+		// Call destroy() only once even if handle is not removed from array
+		// by this call for any reason
+		for (int i = array.getCount() - 1; i >= 0; i--)
+			array[i]->destroy(dstrFlags);
+
+		clear();
 	}
 
 	void assign(HandleArray& from)
@@ -121,7 +126,7 @@ private:
 };
 
 template <typename Impl, typename Intf>
-class YHelper : public Firebird::StdPlugin<Intf>, public YObject
+class YHelper : public Firebird::RefCntIface<Intf>, public YObject
 {
 public:
 	typedef typename Intf::Declaration NextInterface;
@@ -129,42 +134,71 @@ public:
 
 	static const unsigned DF_RELEASE =		0x1;
 
-	explicit YHelper(NextInterface* aNext);
+	explicit YHelper(NextInterface* aNext, const char* m = NULL)
+		:
+#ifdef DEV_BUILD
+		  Firebird::RefCntIface<Intf>(m),
+#endif
+		  next(Firebird::REF_NO_INCR, aNext)
+	{ }
 
-	int release()
+	int release() override
 	{
-		int rc = --(this->refCounter);
+		int rc = --this->refCounter;
+		this->refCntDPrt('-');
 		if (rc == 0)
 		{
-			Impl* impl = static_cast<Impl*>(this);
-
 			if (next)
-			{
-				impl->destroy(0);
-			}
-
-			delete impl; 	// call correct destructor
-			return 0;
+				destroy(0);
+			delete this;
 		}
 
-		fb_assert(rc > 0);
-		return 1;
+		return rc;
 	}
+
+	virtual void destroy(unsigned dstrFlags) = 0;
 
 	void destroy2(unsigned dstrFlags)
 	{
-		RefDeb(Firebird::DEB_RLS_JATT, "YValve/destroy2");
 		next = NULL;
 
 		if (dstrFlags & DF_RELEASE)
 		{
-			RefDeb(Firebird::DEB_RLS_YATT, "destroy2");
-			release();
+			this->release();
 		}
 	}
 
 	Firebird::RefPtr<NextInterface> next;
 };
+
+template <class YT>
+class AtomicYPtr
+{
+public:
+	AtomicYPtr(YT* v)
+	{
+		atmPtr.store(v, std::memory_order_relaxed);
+	}
+
+	YT* get()
+	{
+		return atmPtr.load(std::memory_order_relaxed);
+	}
+
+	YT* release()
+	{
+		YT* v = atmPtr;
+		if (v && atmPtr.compare_exchange_strong(v, nullptr))
+			return v;
+		return nullptr;
+	}
+
+private:
+	std::atomic<YT*> atmPtr;
+};
+
+typedef AtomicYPtr<YAttachment> AtomicAttPtr;
+typedef AtomicYPtr<YTransaction> AtomicTraPtr;
 
 class YEvents FB_FINAL :
 	public YHelper<YEvents, Firebird::IEventsImpl<YEvents, Firebird::CheckStatusWrapper> >
@@ -181,7 +215,7 @@ public:
 	void cancel(Firebird::CheckStatusWrapper* status);
 
 public:
-	YAttachment* attachment;
+	AtomicAttPtr attachment;
 	Firebird::RefPtr<Firebird::IEventCallback> callback;
 
 private:
@@ -197,24 +231,24 @@ public:
 	YRequest(YAttachment* aAttachment, Firebird::IRequest* aNext);
 
 	void destroy(unsigned dstrFlags);
-	FB_API_HANDLE& getHandle();
+	isc_req_handle& getHandle();
 
 	// IRequest implementation
 	void receive(Firebird::CheckStatusWrapper* status, int level, unsigned int msgType,
-		unsigned int length, unsigned char* message);
+		unsigned int length, void* message);
 	void send(Firebird::CheckStatusWrapper* status, int level, unsigned int msgType,
-		unsigned int length, const unsigned char* message);
+		unsigned int length, const void* message);
 	void getInfo(Firebird::CheckStatusWrapper* status, int level, unsigned int itemsLength,
 		const unsigned char* items, unsigned int bufferLength, unsigned char* buffer);
 	void start(Firebird::CheckStatusWrapper* status, Firebird::ITransaction* transaction, int level);
 	void startAndSend(Firebird::CheckStatusWrapper* status, Firebird::ITransaction* transaction, int level,
-		unsigned int msgType, unsigned int length, const unsigned char* message);
+		unsigned int msgType, unsigned int length, const void* message);
 	void unwind(Firebird::CheckStatusWrapper* status, int level);
 	void free(Firebird::CheckStatusWrapper* status);
 
 public:
-	YAttachment* attachment;
-	FB_API_HANDLE* userHandle;
+	AtomicAttPtr attachment;
+	isc_req_handle* userHandle;
 };
 
 class YTransaction FB_FINAL :
@@ -226,7 +260,7 @@ public:
 	YTransaction(YAttachment* aAttachment, Firebird::ITransaction* aNext);
 
 	void destroy(unsigned dstrFlags);
-	FB_API_HANDLE& getHandle();
+	isc_tr_handle& getHandle();
 
 	// ITransaction implementation
 	void getInfo(Firebird::CheckStatusWrapper* status, unsigned int itemsLength,
@@ -246,7 +280,7 @@ public:
 	void selfCheck();
 
 public:
-	YAttachment* attachment;
+	AtomicAttPtr attachment;
 	HandleArray<YBlob> childBlobs;
 	HandleArray<YResultSet> childCursors;
 	Firebird::Array<CleanupCallback*> cleanupHandlers;
@@ -254,7 +288,7 @@ public:
 private:
 	YTransaction(YTransaction* from)
 		: YHelper(from->next),
-		  attachment(from->attachment),
+		  attachment(from->attachment.get()),
 		  childBlobs(getPool()),
 		  childCursors(getPool()),
 		  cleanupHandlers(getPool())
@@ -270,7 +304,8 @@ private:
 
 typedef Firebird::RefPtr<Firebird::ITransaction> NextTransaction;
 
-class YBlob FB_FINAL : public YHelper<YBlob, Firebird::IBlobImpl<YBlob, Firebird::CheckStatusWrapper> >
+class YBlob FB_FINAL :
+	public YHelper<YBlob, Firebird::IBlobImpl<YBlob, Firebird::CheckStatusWrapper> >
 {
 public:
 	static const ISC_STATUS ERROR_CODE = isc_bad_segstr_handle;
@@ -278,7 +313,7 @@ public:
 	YBlob(YAttachment* aAttachment, YTransaction* aTransaction, Firebird::IBlob* aNext);
 
 	void destroy(unsigned dstrFlags);
-	FB_API_HANDLE& getHandle();
+	isc_blob_handle& getHandle();
 
 	// IBlob implementation
 	void getInfo(Firebird::CheckStatusWrapper* status, unsigned int itemsLength,
@@ -291,8 +326,8 @@ public:
 	int seek(Firebird::CheckStatusWrapper* status, int mode, int offset);
 
 public:
-	YAttachment* attachment;
-	YTransaction* transaction;
+	AtomicAttPtr attachment;
+	AtomicTraPtr transaction;
 };
 
 class YResultSet FB_FINAL :
@@ -321,10 +356,57 @@ public:
 	void setDelayedOutputFormat(Firebird::CheckStatusWrapper* status, Firebird::IMessageMetadata* format);
 
 public:
-	YAttachment* attachment;
-	YTransaction* transaction;
+	AtomicAttPtr attachment;
+	AtomicTraPtr transaction;
 	YStatement* statement;
 };
+
+class YBatch FB_FINAL :
+	public YHelper<YBatch, Firebird::IBatchImpl<YBatch, Firebird::CheckStatusWrapper> >
+{
+public:
+	static const ISC_STATUS ERROR_CODE = isc_bad_result_set;	// isc_bad_batch
+
+	YBatch(YAttachment* anAttachment, Firebird::IBatch* aNext);
+
+	void destroy(unsigned dstrFlags);
+
+	// IBatch implementation
+	void add(Firebird::CheckStatusWrapper* status, unsigned count, const void* inBuffer);
+	void addBlob(Firebird::CheckStatusWrapper* status, unsigned length, const void* inBuffer, ISC_QUAD* blobId,
+		unsigned parLength, const unsigned char* par);
+	void appendBlobData(Firebird::CheckStatusWrapper* status, unsigned length, const void* inBuffer);
+	void addBlobStream(Firebird::CheckStatusWrapper* status, unsigned length, const void* inBuffer);
+	unsigned getBlobAlignment(Firebird::CheckStatusWrapper* status);
+	Firebird::IMessageMetadata* getMetadata(Firebird::CheckStatusWrapper* status);
+	void registerBlob(Firebird::CheckStatusWrapper* status, const ISC_QUAD* existingBlob, ISC_QUAD* blobId);
+	Firebird::IBatchCompletionState* execute(Firebird::CheckStatusWrapper* status, Firebird::ITransaction* transaction);
+	void cancel(Firebird::CheckStatusWrapper* status);
+	void setDefaultBpb(Firebird::CheckStatusWrapper* status, unsigned parLength, const unsigned char* par);
+
+public:
+	AtomicAttPtr attachment;
+};
+
+
+class YReplicator FB_FINAL :
+	public YHelper<YReplicator, Firebird::IReplicatorImpl<YReplicator, Firebird::CheckStatusWrapper> >
+{
+public:
+	static const ISC_STATUS ERROR_CODE = isc_bad_repl_handle;
+
+	YReplicator(YAttachment* anAttachment, Firebird::IReplicator* aNext);
+
+	void destroy(unsigned dstrFlags);
+
+	// IReplicator implementation
+	void process(Firebird::CheckStatusWrapper* status, unsigned length, const unsigned char* data);
+	void close(Firebird::CheckStatusWrapper* status);
+
+public:
+	AtomicAttPtr attachment;
+};
+
 
 class YMetadata
 {
@@ -370,9 +452,14 @@ public:
 	void free(Firebird::CheckStatusWrapper* status);
 	unsigned getFlags(Firebird::CheckStatusWrapper* status);
 
+	unsigned int getTimeout(Firebird::CheckStatusWrapper* status);
+	void setTimeout(Firebird::CheckStatusWrapper* status, unsigned int timeOut);
+	YBatch* createBatch(Firebird::CheckStatusWrapper* status, Firebird::IMessageMetadata* inMetadata,
+		unsigned parLength, const unsigned char* par);
+
 public:
+	AtomicAttPtr attachment;
 	Firebird::Mutex statementMutex;
-	YAttachment* attachment;
 	YResultSet* cursor;
 
 	Firebird::IMessageMetadata* getMetadata(bool in, Firebird::IStatement* next);
@@ -410,7 +497,7 @@ public:
 
 	void destroy(unsigned dstrFlags);
 	void shutdown();
-	FB_API_HANDLE& getHandle();
+	isc_db_handle& getHandle();
 
 	// IAttachment implementation
 	void getInfo(Firebird::CheckStatusWrapper* status, unsigned int itemsLength,
@@ -454,12 +541,21 @@ public:
 	void dropDatabase(Firebird::CheckStatusWrapper* status);
 
 	void addCleanupHandler(Firebird::CheckStatusWrapper* status, CleanupCallback* callback);
-	YTransaction* getTransaction(Firebird::CheckStatusWrapper* status, Firebird::ITransaction* tra);
+	YTransaction* getTransaction(Firebird::ITransaction* tra);
 	void getNextTransaction(Firebird::CheckStatusWrapper* status, Firebird::ITransaction* tra, NextTransaction& next);
-	void execute(Firebird::CheckStatusWrapper* status, FB_API_HANDLE* traHandle,
+	void execute(Firebird::CheckStatusWrapper* status, isc_tr_handle* traHandle,
 		unsigned int stmtLength, const char* sqlStmt, unsigned int dialect,
 		Firebird::IMessageMetadata* inMetadata, void* inBuffer,
 		Firebird::IMessageMetadata* outMetadata, void* outBuffer);
+
+	unsigned int getIdleTimeout(Firebird::CheckStatusWrapper* status);
+	void setIdleTimeout(Firebird::CheckStatusWrapper* status, unsigned int timeOut);
+	unsigned int getStatementTimeout(Firebird::CheckStatusWrapper* status);
+	void setStatementTimeout(Firebird::CheckStatusWrapper* status, unsigned int timeOut);
+	YBatch* createBatch(Firebird::CheckStatusWrapper* status, Firebird::ITransaction* transaction,
+		unsigned stmtLength, const char* sqlStmt, unsigned dialect,
+		Firebird::IMessageMetadata* inMetadata, unsigned parLength, const unsigned char* par);
+	YReplicator* createReplicator(Firebird::CheckStatusWrapper* status);
 
 public:
 	Firebird::IProvider* provider;
@@ -468,6 +564,7 @@ public:
 	HandleArray<YEvents> childEvents;
 	HandleArray<YRequest> childRequests;
 	HandleArray<YStatement> childStatements;
+	HandleArray<IscStatement> childIscStatements;
 	HandleArray<YTransaction> childTransactions;
 	Firebird::Array<CleanupCallback*> cleanupHandlers;
 	Firebird::StatusHolder savedStatus;	// Do not use raise() method of this class in yValve.
@@ -485,7 +582,7 @@ public:
 
 	void shutdown();
 	void destroy(unsigned dstrFlags);
-	FB_API_HANDLE& getHandle();
+	isc_svc_handle& getHandle();
 
 	// IService implementation
 	void detach(Firebird::CheckStatusWrapper* status);
@@ -524,16 +621,8 @@ public:
 	void setDbCryptCallback(Firebird::CheckStatusWrapper* status,
 		Firebird::ICryptKeyCallback* cryptCallback);
 
-	int release()
-	{
-		if (--refCounter == 0)
-		{
-			delete this;
-			return 0;
-		}
-
-		return 1;
-	}
+	void destroy(unsigned)
+	{ }
 
 private:
 	YAttachment* attachOrCreateDatabase(Firebird::CheckStatusWrapper* status, bool createFlag,
@@ -569,7 +658,26 @@ public:
 		unsigned kind, const unsigned char* buf, unsigned len);
 	unsigned setOffsets(Firebird::CheckStatusWrapper* status, Firebird::IMessageMetadata* metadata,
 		Firebird::IOffsetsCallback* callback);
-	Firebird::IEventBlock* createEventBlock(Firebird::CheckStatusWrapper* status, const char** events);
+	Firebird::IDecFloat16* getDecFloat16(Firebird::CheckStatusWrapper* status);
+	Firebird::IDecFloat34* getDecFloat34(Firebird::CheckStatusWrapper* status);
+	void decodeTimeTz(Firebird::CheckStatusWrapper* status, const ISC_TIME_TZ* timeTz,
+		unsigned* hours, unsigned* minutes, unsigned* seconds, unsigned* fractions,
+		unsigned timeZoneBufferLength, char* timeZoneBuffer);
+	void decodeTimeStampTz(Firebird::CheckStatusWrapper* status, const ISC_TIMESTAMP_TZ* timeStampTz,
+		unsigned* year, unsigned* month, unsigned* day, unsigned* hours, unsigned* minutes, unsigned* seconds,
+		unsigned* fractions, unsigned timeZoneBufferLength, char* timeZoneBuffer);
+	void encodeTimeTz(Firebird::CheckStatusWrapper* status, ISC_TIME_TZ* timeTz,
+		unsigned hours, unsigned minutes, unsigned seconds, unsigned fractions, const char* timeZone);
+	void encodeTimeStampTz(Firebird::CheckStatusWrapper* status, ISC_TIMESTAMP_TZ* timeStampTz,
+		unsigned year, unsigned month, unsigned day,
+		unsigned hours, unsigned minutes, unsigned seconds, unsigned fractions, const char* timeZone);
+	Firebird::IInt128* getInt128(Firebird::CheckStatusWrapper* status);
+	void decodeTimeTzEx(Firebird::CheckStatusWrapper* status, const ISC_TIME_TZ_EX* timeEx,
+		unsigned* hours, unsigned* minutes, unsigned* seconds, unsigned* fractions,
+		unsigned timeZoneBufferLength, char* timeZoneBuffer);
+	void decodeTimeStampTzEx(Firebird::CheckStatusWrapper* status, const ISC_TIMESTAMP_TZ_EX* timeStampEx,
+		unsigned* year, unsigned* month, unsigned* day, unsigned* hours, unsigned* minutes, unsigned* seconds,
+		unsigned* fractions, unsigned timeZoneBufferLength, char* timeZoneBuffer);
 };
 
 }	// namespace Why

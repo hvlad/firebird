@@ -31,28 +31,22 @@
 #include "../common/ThreadData.h"
 #include "../jrd/event.h"
 #include "../common/isc_s_proto.h"
+#include "../common/config/config.h"
 
-class Config;
 
 namespace Jrd {
 
 class Attachment;
 
-class EventManager : private Firebird::RefCounted, public Firebird::GlobalStorage, public Firebird::IpcObject
+class EventManager final : public Firebird::GlobalStorage, public Firebird::IpcObject
 {
-	typedef Firebird::GenericMap<Firebird::Pair<Firebird::Left<Firebird::string, EventManager*> > > DbEventMgrMap;
-
-	static Firebird::GlobalPtr<DbEventMgrMap> g_emMap;
-	static Firebird::GlobalPtr<Firebird::Mutex> g_mapMutex;
-
 	const int PID;
 
 public:
-	static void init(Attachment*);
-	static void destroy(EventManager*);
-
-	EventManager(const Firebird::string& id, Firebird::RefPtr<Config> conf);
+	EventManager(const Firebird::string& id, const Firebird::Config* conf);
 	~EventManager();
+
+	static void init(Attachment*);
 
 	void deleteSession(SLONG);
 
@@ -63,6 +57,7 @@ public:
 
 	bool initialize(Firebird::SharedMemoryBase*, bool);
 	void mutexBug(int osErrorCode, const char* text);
+	void exceptionHandler(const Firebird::Exception& ex, ThreadFinishSync<EventManager*>::ThreadRoutine* routine);
 
 private:
 	void acquire_shmem();
@@ -87,15 +82,11 @@ private:
 	void remove_que(srq*);
 	bool request_completed(evt_req*);
 	void watcher_thread();
-	void attach_shared_file();
-	void detach_shared_file();
-	void get_shared_file_name(Firebird::PathName&) const;
+	void init_shared_file();
 
-	static THREAD_ENTRY_DECLARE watcher_thread(THREAD_ENTRY_PARAM arg)
+	static void watcher_thread(EventManager* eventMgr)
 	{
-		EventManager* const eventMgr = static_cast<EventManager*>(arg);
 		eventMgr->watcher_thread();
-		return 0;
 	}
 
 	static void mutex_bugcheck(const TEXT*, int);
@@ -104,12 +95,12 @@ private:
 	prb* m_process;
 	SLONG m_processOffset;
 
-	Firebird::string m_dbId;
-	Firebird::RefPtr<Config> m_config;
+	const Firebird::string& m_dbId;
+	const Firebird::Config* const m_config;
 	Firebird::AutoPtr<Firebird::SharedMemory<evh> > m_sharedMemory;
 
 	Firebird::Semaphore m_startupSemaphore;
-	Firebird::Semaphore m_cleanupSemaphore;
+	ThreadFinishSync<EventManager*> m_cleanupSync;
 
 	bool m_sharedFileCreated;
 	bool m_exiting;

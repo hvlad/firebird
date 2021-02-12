@@ -100,8 +100,11 @@ const int idx_sql_time		= 6;
 const int idx_timestamp		= 7;
 const int idx_numeric2		= 8;	// Introduced for 64-bit Integer support
 const int idx_boolean		= 9;
+const int idx_decimal		= 10;
+const int idx_sql_time_tz	= 11;
+const int idx_timestamp_tz	= 12;
 
-				   // idx_itype space for future expansion
+// idx_itype space for future expansion
 const int idx_first_intl_string	= 64;	// .. MAX (short) Range of computed key strings
 
 const int idx_offset_intl_range	= (0x7FFF + idx_first_intl_string);
@@ -198,10 +201,10 @@ public:
 	}
 
 	IndexRetrieval(MemoryPool& pool, jrd_rel* relation, const index_desc* idx,
-				   const Firebird::MetaName& name)
+				   const MetaName& name)
 		: irb_relation(relation), irb_index(idx->idx_id),
 		  irb_generic(0), irb_lower_count(0), irb_upper_count(0), irb_key(NULL),
-		  irb_name(FB_NEW_POOL(pool) Firebird::MetaName(name)),
+		  irb_name(FB_NEW_POOL(pool) MetaName(name)),
 		  irb_value(FB_NEW_POOL(pool) ValueExprNode*[idx->idx_count * 2])
 	{
 		memcpy(&irb_desc, idx, sizeof(irb_desc));
@@ -220,7 +223,7 @@ public:
 	USHORT irb_lower_count;			// Number of segments for retrieval
 	USHORT irb_upper_count;			// Number of segments for retrieval
 	temporary_key* irb_key;			// Key for equality retrieval
-	Firebird::MetaName* irb_name;	// Index name
+	MetaName* irb_name;	// Index name
 	BtrPrefetchCtrl* irb_prefetch;
 	ValueExprNode** irb_value;
 };
@@ -239,19 +242,8 @@ typedef Firebird::HalfStaticArray<float, 4> SelectivityList;
 
 class BtrPageGCLock : public Lock
 {
-	// We want to put 8 bytes (PageNumber) in lock key. One long is already
-	// reserved by Lock::lck_long, this is the second long. It is really unused
-	// as second long needed for 8-byte key already "allocated" by compiler
-	// because of alignment rules. Anyway, to be formally correct, let introduce
-	// 4-byte field for guarantee we have space for lock key.
-#ifdef __clang__
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wunused-private-field"
-#endif
-	ULONG unused;
-#ifdef __clang__
-#pragma clang diagnostic pop
-#endif
+	// This class assumes that the static part of the lock key (Lock::lck_key)
+	// is at least 64 bits in size
 
 public:
 	explicit BtrPageGCLock(thread_db* tdbb);
@@ -261,6 +253,29 @@ public:
 	void enablePageGC(thread_db* tdbb);
 
 	static bool isPageGCAllowed(thread_db* tdbb, const PageNumber& page);
+
+#ifdef DEBUG_LCK_LIST
+	BtrPageGCLock(thread_db* tdbb, Firebird::MemoryPool* pool)
+		: Lock(tdbb, PageNumber::getLockLen(), LCK_btr_dont_gc), m_pool(pool)
+	{
+	}
+
+	static bool checkPool(const Lock* lock, Firebird::MemoryPool* pool) 
+	{
+		if (!pool || !lock)
+			return false;
+
+		const Firebird::MemoryPool* pool2 = NULL;
+
+		if (lock && (lock->lck_type == LCK_btr_dont_gc))
+			pool2 = reinterpret_cast<const BtrPageGCLock*>(lock)->m_pool;
+
+		return (pool == pool2);
+	}
+
+private:
+	const Firebird::MemoryPool* m_pool;
+#endif
 };
 
 // Struct used for index creation
@@ -272,6 +287,8 @@ struct IndexCreation
 	jrd_tra* transaction;
 	USHORT key_length;
 	Firebird::AutoPtr<Sort> sort;
+	SINT64 dup_recno;
+	SLONG duplicates;
 };
 
 // Class used to report any index related errors

@@ -49,6 +49,7 @@
 #include "../jrd/que.h"
 
 typedef FB_UINT64 LOCK_OWNER_T; // Data type for the Owner ID
+typedef SINT64 LOCK_DATA_T;
 
 // Maximum lock series for gathering statistics and querying data
 
@@ -168,7 +169,7 @@ struct lbl
 	srq lbl_requests;				// Requests granted
 	srq lbl_lhb_hash;				// Collision que for hash table
 	srq lbl_lhb_data;				// Lock data que by series
-	SINT64 lbl_data;				// User data
+	LOCK_DATA_T lbl_data;			// User data
 	UCHAR lbl_series;				// Lock series
 	UCHAR lbl_flags;				// Unused. Misc flags
 	USHORT lbl_pending_lrq_count;	// count of lbl_requests with LRQ_pending
@@ -186,7 +187,7 @@ struct lrq
 	USHORT lrq_flags;				// Misc crud
 	SRQ_PTR lrq_owner;				// Owner making request
 	SRQ_PTR lrq_lock;				// Lock requested
-	SINT64 lrq_data;				// Lock data requested
+	LOCK_DATA_T lrq_data;			// Lock data requested
 	srq lrq_own_requests;			// Locks granted for owner
 	srq lrq_lbl_requests;			// Que of requests (active, pending)
 	srq lrq_own_blocks;				// Owner block que
@@ -284,17 +285,14 @@ namespace Firebird {
 	class AtomicCounter;
 	class Mutex;
 	class RWLock;
+	class Config;
 }
-
-class Config;
 
 namespace Jrd {
 
 class thread_db;
 
-class LockManager : private Firebird::RefCounted,
-					public Firebird::GlobalStorage,
-					public Firebird::IpcObject
+class LockManager final : public Firebird::GlobalStorage, public Firebird::IpcObject
 {
 	class LockTableGuard
 	{
@@ -390,22 +388,17 @@ class LockManager : private Firebird::RefCounted,
 	};
 #undef FB_LOCKED_FROM
 
-	typedef Firebird::GenericMap<Firebird::Pair<Firebird::Left<Firebird::string, LockManager*> > > DbLockMgrMap;
-
-	static Firebird::GlobalPtr<DbLockMgrMap> g_lmMap;
-	static Firebird::GlobalPtr<Firebird::Mutex> g_mapMutex;
-
 	const int PID;
 
 public:
-	static LockManager* create(const Firebird::string&, Firebird::RefPtr<Config>);
-	static void destroy(LockManager*);
+	explicit LockManager(const Firebird::string&, const Firebird::Config* conf);
+	~LockManager();
 
 	bool initializeOwner(Firebird::CheckStatusWrapper*, LOCK_OWNER_T, UCHAR, SRQ_PTR*);
 	void shutdownOwner(thread_db*, SRQ_PTR*);
 
 	SRQ_PTR enqueue(thread_db*, Firebird::CheckStatusWrapper*, SRQ_PTR, const USHORT,
-		const UCHAR*, const USHORT, UCHAR, lock_ast_t, void*, SINT64, SSHORT, SRQ_PTR);
+		const UCHAR*, const USHORT, UCHAR, lock_ast_t, void*, LOCK_DATA_T, SSHORT, SRQ_PTR);
 	bool convert(thread_db*, Firebird::CheckStatusWrapper*, SRQ_PTR, UCHAR, SSHORT, lock_ast_t, void*);
 	UCHAR downgrade(thread_db*, Firebird::CheckStatusWrapper*, const SRQ_PTR);
 	bool dequeue(const SRQ_PTR);
@@ -413,15 +406,14 @@ public:
 	void repost(thread_db*, lock_ast_t, void*, SRQ_PTR);
 	bool cancelWait(SRQ_PTR);
 
-	SINT64 queryData(const USHORT, const USHORT);
-	SINT64 readData(SRQ_PTR);
-	SINT64 readData2(USHORT, const UCHAR*, USHORT, SRQ_PTR);
-	SINT64 writeData(SRQ_PTR, SINT64);
+	LOCK_DATA_T queryData(const USHORT, const USHORT);
+	LOCK_DATA_T readData(SRQ_PTR);
+	LOCK_DATA_T readData2(USHORT, const UCHAR*, USHORT, SRQ_PTR);
+	LOCK_DATA_T writeData(SRQ_PTR, LOCK_DATA_T);
+
+	void exceptionHandler(const Firebird::Exception& ex, ThreadFinishSync<LockManager*>::ThreadRoutine* routine);
 
 private:
-	explicit LockManager(const Firebird::string&, Firebird::RefPtr<Config>);
-	~LockManager();
-
 	void acquire_shmem(SRQ_PTR);
 	UCHAR* alloc(USHORT, Firebird::CheckStatusWrapper*);
 	lbl* alloc_lock(USHORT, Firebird::CheckStatusWrapper*);
@@ -467,22 +459,18 @@ private:
 	void validate_shb(const SRQ_PTR);
 
 	void wait_for_request(thread_db*, lrq*, SSHORT);
-	bool attach_shared_file(Firebird::CheckStatusWrapper*);
-	void detach_shared_file(Firebird::CheckStatusWrapper*);
+	bool init_shared_file(Firebird::CheckStatusWrapper*);
 	void get_shared_file_name(Firebird::PathName&, ULONG extend = 0) const;
 
-	static THREAD_ENTRY_DECLARE blocking_action_thread(THREAD_ENTRY_PARAM arg)
+	static void blocking_action_thread(LockManager* lockMgr)
 	{
-		LockManager* const lockMgr = static_cast<LockManager*>(arg);
 		lockMgr->blocking_action_thread();
-		return 0;
 	}
 
 	bool initialize(Firebird::SharedMemoryBase* sm, bool init);
 	void mutexBug(int osErrorCode, const char* text);
 
 	bool m_bugcheck;
-	bool m_sharedFileCreated;
 	prc* m_process;
 	SRQ_PTR m_processOffset;
 
@@ -490,7 +478,7 @@ private:
 	Firebird::RWLock m_remapSync;
 	Firebird::AtomicCounter m_waitingOwners;
 
-	Firebird::Semaphore m_cleanupSemaphore;
+	ThreadFinishSync<LockManager*> m_cleanupSync;
 	Firebird::Semaphore m_startupSemaphore;
 
 public:
@@ -499,8 +487,8 @@ public:
 private:
 	bool m_blockage;
 
-	Firebird::string m_dbId;
-	Firebird::RefPtr<Config> m_config;
+	const Firebird::string& m_dbId;
+	const Firebird::Config* const m_config;
 
 	// configurations parameters - cached values
 	const ULONG m_acquireSpins;

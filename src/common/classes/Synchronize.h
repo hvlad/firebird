@@ -33,10 +33,7 @@
 #define CLASSES_SYNCHRONIZE_H
 
 #include "../common/classes/SyncObject.h"
-
-#ifndef WIN_NT
-#include "fb_pthread.h"
-#endif
+#include "../common/ThreadStart.h"
 
 
 namespace Firebird {
@@ -52,19 +49,10 @@ public:
 	bool sleep(int milliseconds);
 	void sleep();
 
-#ifdef _WIN32
-	HANDLE getIOEvent()
-	{
-		// we need manual reset event for overlapped IO, see descroption of 
-		// OVERLAPPED structure at http://msdn.microsoft.com/en-us/library/windows/desktop/ms684342.aspx : 
-		// Functions such as GetOverlappedResult and the synchronization wait functions reset auto-reset 
-		// events to the nonsignaled state. Therefore, you should use a manual reset event; if you use 
-		// an auto-reset event, your application can stop responding if you wait for the operation to 
-		// complete and then call GetOverlappedResult with the bWait parameter set to TRUE.
 
-		if (ioEvent == INVALID_HANDLE_VALUE) {
-			ioEvent = CreateEvent(NULL, true, false, NULL);
-		}
+#ifdef WIN_NT
+	HANDLE getIOEvent() const
+	{
 		return ioEvent;
 	}
 #endif
@@ -76,7 +64,7 @@ protected:
 
 #ifdef WIN_NT
 	HANDLE evnt;
-	HANDLE ioEvent;
+	HANDLE ioEvent;		// used for overlapped IO
 #else
 	pthread_cond_t condition;
 	pthread_mutex_t mutex;

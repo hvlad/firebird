@@ -34,7 +34,7 @@
 #include "../../common/classes/array.h"
 #include "../../common/classes/fb_string.h"
 #include "../../common/classes/init.h"
-#include "../../common/classes/locks.h"
+#include "../../common/classes/rwlock.h"
 #include "../../common/classes/ImplementHelper.h"
 #include "../../jrd/trace/TraceConfigStorage.h"
 #include "../../jrd/trace/TraceSession.h"
@@ -121,9 +121,25 @@ public:
 
 	inline bool needs(unsigned e)
 	{
+		if (!active || !init_factories)
+			return false;
+
 		if (changeNumber != getStorage()->getChangeNumber())
 			update_sessions();
+
 		return trace_needs & (FB_CONST64(1) << e);
+	}
+
+	// should be called after attachment user is authenticated
+	void activate()
+	{
+		active = true;
+	}
+
+	// helps avoid early use
+	bool isActive()
+	{
+		return active;
 	}
 
 	/* DSQL-friendly routines to call Trace API hooks.
@@ -178,7 +194,7 @@ private:
 	};
 
 	static Factories* factories;
-	static Firebird::GlobalPtr<Firebird::Mutex> init_factories_mtx;
+	static Firebird::GlobalPtr<Firebird::RWLock> init_factories_lock;
 	static volatile bool init_factories;
 
 	struct SessionInfo
@@ -229,6 +245,7 @@ private:
 	static Firebird::GlobalPtr<StorageInstance, Firebird::InstanceControl::PRIORITY_DELETE_FIRST> storageInstance;
 
 	ULONG changeNumber;
+	bool active;
 };
 
 }

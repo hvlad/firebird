@@ -28,6 +28,7 @@
 #define CLASSES_ARRAY_H
 
 #include "../common/gdsassert.h"
+#include <initializer_list>
 #include <string.h>
 #include "../common/classes/vector.h"
 #include "../common/classes/alloc.h"
@@ -35,7 +36,7 @@
 namespace Firebird {
 
 // Static part of the array
-template <typename T, FB_SIZE_T Capacity>
+template <typename T, FB_SIZE_T Capacity, typename AlignT = T>
 class InlineStorage : public AutoStorage
 {
 public:
@@ -51,7 +52,7 @@ protected:
 		return Capacity;
 	}
 private:
-	T buffer[Capacity];
+	alignas(alignof(AlignT)) T buffer[Capacity];
 };
 
 // Used when array doesn't have static part
@@ -113,6 +114,13 @@ public:
 		: Storage(), count(0), capacity(this->getStorageSize()), data(this->getStorage())
 	{
 		copyFrom(source);
+	}
+
+	Array(MemoryPool& p, std::initializer_list<T> items)
+		: Storage(p), count(0), capacity(this->getStorageSize()), data(this->getStorage())
+	{
+		for (auto& item : items)
+			add(item);
 	}
 
 	~Array()
@@ -236,6 +244,12 @@ public:
 		ensureCapacity(count + 1);
 		data[count] = item;
   		return count++;
+	}
+
+	T& add()
+	{
+		ensureCapacity(count + 1);
+		return *new(&data[count++]) T();	// initialize new empty data member
 	}
 
 	void add(const T* items, const size_type itemsCount)
@@ -413,6 +427,18 @@ public:
 		return false;
 	}
 
+	bool findAndRemove(const T& item)
+	{
+		size_type pos;
+		if (find(item, pos))
+		{
+			remove(pos);
+			return true;
+		}
+
+		return false;
+	}
+
 	bool exist(const T& item) const
 	{
 		size_type pos;	// ignored
@@ -555,6 +581,18 @@ public:
 		if (sorted)
 			return;
 
+		auto compare = [] (const void* a, const void* b) {
+			const Key& first(KeyOfValue::generate(*static_cast<const Value*>(a)));
+			const Key& second(KeyOfValue::generate(*static_cast<const Value*>(b)));
+
+			if (Cmp::greaterThan(first, second))
+				return 1;
+			if (Cmp::greaterThan(second, first))
+				return -1;
+
+			return 0;
+		};
+
 		qsort(this->begin(), this->getCount(), sizeof(Value), compare);
 		sorted = true;
 	}
@@ -562,41 +600,11 @@ public:
 private:
 	int sortMode;
 	bool sorted;
-
-	static int compare(const void* a, const void* b)
-	{
-		const Key& first(KeyOfValue::generate(*static_cast<const Value*>(a)));
-		const Key& second(KeyOfValue::generate(*static_cast<const Value*>(b)));
-
-		if (Cmp::greaterThan(first, second))
-			return 1;
-		if (Cmp::greaterThan(second, first))
-			return -1;
-
-		return 0;
-	}
 };
 
 // Nice shorthand for arrays with static part
-template <typename T, FB_SIZE_T InlineCapacity>
-class HalfStaticArray : public Array<T, InlineStorage<T, InlineCapacity> >
-{
-public:
-	typedef typename Array<T, InlineStorage<T, InlineCapacity> >::size_type size_type;
-
-	explicit HalfStaticArray(MemoryPool& p) : Array<T, InlineStorage<T, InlineCapacity> >(p) {}
-
-	HalfStaticArray(MemoryPool& p, size_type InitialCapacity) :
-		Array<T, InlineStorage<T, InlineCapacity> >(p, InitialCapacity) {}
-
-	HalfStaticArray() : Array<T, InlineStorage<T, InlineCapacity> > () {}
-
-	explicit HalfStaticArray(size_type InitialCapacity) :
-		Array<T, InlineStorage<T, InlineCapacity> >(InitialCapacity) {}
-
-	HalfStaticArray(MemoryPool& p, const HalfStaticArray& src) :
-		Array<T, InlineStorage<T, InlineCapacity> >(p, src) {}
-};
+template <typename T, FB_SIZE_T InlineCapacity, typename AlignT = T>
+using HalfStaticArray = Array<T, InlineStorage<T, InlineCapacity, AlignT> >;
 
 typedef HalfStaticArray<UCHAR, BUFFER_TINY> UCharBuffer;
 

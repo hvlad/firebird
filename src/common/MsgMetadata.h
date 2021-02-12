@@ -35,6 +35,7 @@
 namespace Firebird {
 
 class MetadataBuilder;
+class MetaString;
 class StatementMetadata;
 class MetadataFromBlr;
 
@@ -99,20 +100,26 @@ public:
 public:
 	explicit MsgMetadata(MsgMetadata* from)
 		: items(getPool(), from->items),
-		  length(from->length)
+		  length(from->length),
+		  alignment(from->alignment),
+		  alignedLength(from->alignedLength)
 	{
 	}
 
 	explicit MsgMetadata(IMessageMetadata* from)
 		: items(getPool()),
-		  length(0)
+		  length(0),
+		  alignment(0),
+		  alignedLength(0)
 	{
 		assign(from);
 	}
 
 	MsgMetadata()
 		: items(getPool()),
-		  length(0)
+		  length(0),
+		  alignment(0),
+		  alignedLength(0)
 	{
 	}
 
@@ -144,8 +151,6 @@ public:
 	}
 
 	// IMessageMetadata implementation
-	int release();
-
 	unsigned getCount(CheckStatusWrapper* /*status*/)
 	{
 		return (unsigned) items.getCount();
@@ -266,8 +271,18 @@ public:
 		return length;
 	}
 
+	unsigned getAlignment(CheckStatusWrapper* /*status*/)
+	{
+		return alignment;
+	}
+
+	unsigned getAlignedLength(CheckStatusWrapper* /*status*/)
+	{
+		return alignedLength;
+	}
+
 public:
-	void addItem(const MetaName& name, bool nullable, const dsc& desc);
+	void addItem(const MetaString& name, bool nullable, const dsc& desc);
 	unsigned makeOffsets();
 
 private:
@@ -281,7 +296,7 @@ private:
 
 private:
 	ObjectsArray<Item> items;
-	unsigned length;
+	unsigned length, alignment, alignedLength;
 };
 
 //class AttMetadata : public IMessageMetadataBaseImpl<AttMetadata, CheckStatusWrapper, MsgMetadata>
@@ -291,9 +306,6 @@ public:
 	explicit AttMetadata(RefCounted* att)
 		: attachment(att)
 	{ }
-
-	// re-implement here release() present in MsgMetadata to call correct dtor
-	//virtual int release();
 
 	RefPtr<RefCounted> attachment;
 };
@@ -305,19 +317,21 @@ public:
 	explicit MetadataBuilder(const MsgMetadata* from);
 	MetadataBuilder(unsigned fieldCount);
 
-	int release();
-
 	// IMetadataBuilder implementation
 	void setType(CheckStatusWrapper* status, unsigned index, unsigned type);
 	void setSubType(CheckStatusWrapper* status, unsigned index, int subType);
 	void setLength(CheckStatusWrapper* status, unsigned index, unsigned length);
 	void setCharSet(CheckStatusWrapper* status, unsigned index, unsigned charSet);
-	void setScale(CheckStatusWrapper* status, unsigned index, unsigned scale);
+	void setScale(CheckStatusWrapper* status, unsigned index, int scale);
 	void truncate(CheckStatusWrapper* status, unsigned count);
 	void remove(CheckStatusWrapper* status, unsigned index);
 	void moveNameToIndex(CheckStatusWrapper* status, const char* name, unsigned index);
 	unsigned addField(CheckStatusWrapper* status);
 	IMessageMetadata* getMetadata(CheckStatusWrapper* status);
+	void setField(CheckStatusWrapper* status, unsigned index, const char* field);
+	void setRelation(CheckStatusWrapper* status, unsigned index, const char* relation);
+	void setOwner(CheckStatusWrapper* status, unsigned index, const char* owner);
+	void setAlias(CheckStatusWrapper* status, unsigned index, const char* alias);
 
 private:
 	RefPtr<MsgMetadata> msgMetadata;

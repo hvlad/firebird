@@ -27,7 +27,7 @@
 #include <stdio.h>
 
 #include "fb_blk.h"
-#include "consts_pub.h"
+#include "firebird/impl/consts_pub.h"
 
 #include "../jrd/svc_undoc.h"
 #include "../common/ThreadStart.h"
@@ -43,12 +43,6 @@
 #include "../burp/split/spit.h"
 #include "../jrd/status.h"
 
-// forward decl.
-
-namespace Jrd {
-	struct serv_entry;
-}
-
 namespace Firebird {
 	namespace Arg {
 		class StatusVector;
@@ -56,6 +50,15 @@ namespace Firebird {
 }
 
 namespace Jrd {
+
+typedef int ServiceEntry(Firebird::UtilSvc*);
+
+struct serv_entry
+{
+	USHORT				serv_action;		// isc_action_svc_....
+	const TEXT*			serv_name;			// service name
+	ServiceEntry*		serv_thd;			// thread to execute
+};
 
 const ULONG SERVICE_VERSION			= 2;
 
@@ -141,6 +144,8 @@ public:		// utilities interface with service
 	virtual void fillDpb(Firebird::ClumpletWriter& dpb);
 	// encoding for string parameters passed to utility
 	virtual bool utf8FileNames();
+	// get database encryption key transfer callback routine
+	virtual Firebird::ICryptKeyCallback* getCryptCallback();
 
 	virtual TraceManager* getTraceManager()
 	{
@@ -191,12 +196,20 @@ public:		// external interface with service
 		return svc_username;
 	}
 
+	const Firebird::string&	getRoleName() const
+	{
+		return svc_sql_role;
+	}
+
+	// return true if user have admin privileges in security database used
+	// for service user authentication
+	bool getUserAdminFlag() const;
+
 	const Firebird::string&	getNetworkProtocol() const	{ return svc_network_protocol; }
 	const Firebird::string&	getRemoteAddress() const	{ return svc_remote_address; }
 	const Firebird::string&	getRemoteProcess() const	{ return svc_remote_process; }
 	int	getRemotePID() const { return svc_remote_pid; }
 	const Firebird::PathName& getExpectedDb() const		{ return svc_expected_db; }
-	Firebird::ICryptKeyCallback* getCryptCallback()		{ return svc_crypt_callback; }
 
 private:
 	// Service must have private destructor, called from finish
@@ -238,11 +251,17 @@ private:
 	static ULONG		add_one(ULONG i);
 	static ULONG		add_val(ULONG i, ULONG val);
 	// Convert spb flags to utility switches
-	static void			conv_switches(Firebird::ClumpletReader& spb, Firebird::string& switches);
+#ifndef DEV_BUILD
+	static
+#endif
+	void				conv_switches(Firebird::ClumpletReader& spb, Firebird::string& switches);
 	// Find spb switch in switch table
-	static const TEXT*	find_switch(int in_spb_sw, const Switches::in_sw_tab_t* table);
+	static const TEXT*	find_switch(int in_spb_sw, const Switches::in_sw_tab_t* table, bool bitmask);
 	// Loop through the appropriate switch table looking for the text for the given command switch
-	static bool			process_switches(Firebird::ClumpletReader& spb, Firebird::string& switches);
+#ifndef DEV_BUILD
+	static
+#endif
+	bool				process_switches(Firebird::ClumpletReader& spb, Firebird::string& switches);
 	// Get bitmask from within spb buffer, find corresponding switches within specified table,
 	// add them to the command line
 	static bool get_action_svc_bitmask(const Firebird::ClumpletReader& spb,
@@ -271,13 +290,12 @@ private:
 	static THREAD_ENTRY_DECLARE run(THREAD_ENTRY_PARAM arg);
 
 private:
-	FbLocalStatus svc_status;						// status vector for running service
+	Firebird::FbLocalStatus svc_status;				// status vector for running service
 	Firebird::string svc_parsed_sw;					// Here point elements of argv
 	ULONG	svc_stdout_head;
 	ULONG	svc_stdout_tail;
 	UCHAR	svc_stdout[SVC_STDOUT_BUFFER_SIZE];		// output from service
 	Firebird::Semaphore	svcStart;
-	const serv_entry*	svc_service;				// attached service's entry
 	const serv_entry*	svc_service_run;			// running service's entry
 	Firebird::Array<UCHAR> svc_resp_alloc;
 	UCHAR*	svc_resp_buf;
@@ -301,7 +319,7 @@ private:
 	bool				svc_utf8;
 	Firebird::string	svc_switches;	// Full set of switches
 	Firebird::string	svc_perm_sw;	// Switches, taken from services table and/or passed using spb_command_line
-	Firebird::string	svc_address_path;
+	Firebird::UCharBuffer	svc_address_path;
 	Firebird::string	svc_command_line;
 
 	Firebird::string	svc_network_protocol;
@@ -385,6 +403,12 @@ private:
 	// Size of data, placed into svc_stdin_buffer (set in put)
 	ULONG svc_stdin_user_size;
 	static const ULONG PRELOAD_BUFFER_SIZE = SVC_IO_BUFFER_SIZE;
+	// Handle of a thread to wait for when closing
+	Thread::Handle svc_thread;
+
+#ifdef DEV_BUILD
+	bool svc_debug;
+#endif
 };
 
 } //namespace Jrd

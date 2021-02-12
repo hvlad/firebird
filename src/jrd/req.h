@@ -35,6 +35,7 @@
 #include "../jrd/Record.h"
 #include "../jrd/RecordNumber.h"
 #include "../common/classes/timestamp.h"
+#include "../common/TimeZoneUtil.h"
 
 namespace EDS {
 class Statement;
@@ -127,12 +128,16 @@ const USHORT rpb_long_tranum	= 1024;		// transaction number is 64-bit
 const USHORT RPB_s_update	= 0x01;	// input stream fetched for update
 const USHORT RPB_s_no_data	= 0x02;	// nobody is going to access the data
 const USHORT RPB_s_sweeper	= 0x04;	// garbage collector - skip swept pages
+const USHORT RPB_s_unstable = 0x08;	// don't use undo log, used with unstable explicit cursors
 
 // Runtime flags
 
-const USHORT RPB_refetch	= 0x01;	// re-fetch is required
-const USHORT RPB_undo_data	= 0x02;	// data got from undo log
-const USHORT RPB_undo_read	= 0x04;	// read was performed using the undo log
+const USHORT RPB_refetch		= 0x01;	// re-fetch is required
+const USHORT RPB_undo_data		= 0x02;	// data got from undo log
+const USHORT RPB_undo_read		= 0x04;	// read was performed using the undo log
+const USHORT RPB_undo_deleted	= 0x08;	// read was performed using the undo log, primary version is deleted
+
+const USHORT RPB_UNDO_FLAGS		= (RPB_undo_data | RPB_undo_read | RPB_undo_deleted);
 
 const unsigned int MAX_DIFFERENCES	= 1024;	// Max length of generated Differences string
 											// between two records
@@ -176,11 +181,12 @@ public:
 		  req_ext_stmt(NULL),
 		  req_cursors(*req_pool),
 		  req_ext_resultset(NULL),
+		  req_timeout(0),
 		  req_domain_validation(NULL),
-		  req_auto_trans(*req_pool),
 		  req_sorts(*req_pool),
 		  req_rpb(*req_pool),
-		  impureArea(*req_pool)
+		  impureArea(*req_pool),
+		  req_auto_trans(*req_pool)
 	{
 		fb_assert(statement);
 		setAttachment(attachment);
@@ -215,13 +221,25 @@ public:
 			CS_METADATA : req_attachment->att_charset;
 	}
 
+	StmtNumber getRequestId() const
+	{
+		if (!req_id)
+			req_id = JRD_get_thread_data()->getDatabase()->generateStatementId();
+		return req_id;
+	}
+
+	void setRequestId(StmtNumber id)
+	{
+		req_id = id;
+	}
+
 private:
 	JrdStatement* const statement;
+	mutable StmtNumber	req_id;			// request identifier
 
 public:
 	MemoryPool* req_pool;
 	Attachment*	req_attachment;			// database attachment
-	StmtNumber	req_id;					// request identifier
 	USHORT		req_incarnation;		// incarnation number
 	Firebird::MemoryStats req_memory_stats;
 
@@ -244,36 +262,72 @@ public:
 	RuntimeStatistics	req_base_stats;
 	AffectedRows req_records_affected;	// records affected by the last statement
 
-	USHORT req_view_flags;				// special flags for virtual ops on views
-	jrd_rel* 	req_top_view_store;		// the top view in store(), if any
-	jrd_rel*	req_top_view_modify;	// the top view in modify(), if any
-	jrd_rel*	req_top_view_erase;		// the top view in erase(), if any
-
 	const StmtNode*	req_next;			// next node for execution
 	EDS::Statement*	req_ext_stmt;		// head of list of active dynamic statements
 	Firebird::Array<const Cursor*>	req_cursors;	// named cursors
 	ExtEngineManager::ResultSet*	req_ext_resultset;	// external result set
 	USHORT		req_label;				// label for leave
 	ULONG		req_flags;				// misc request flags
+	Savepoint*	req_savepoints;			// Looper savepoint list
 	Savepoint*	req_proc_sav_point;		// procedure savepoint list
-	Firebird::TimeStamp	req_timestamp;	// Start time of request
+	Firebird::TimeStamp	req_gmt_timestamp;	// Start time of request in GMT time zone
+	unsigned int req_timeout;					// query timeout in milliseconds, set by the dsql_req::setupTimer
+	Firebird::RefPtr<TimeoutTimer> req_timer;	// timeout timer, shared with dsql_req
 
 	Firebird::AutoPtr<Jrd::RuntimeStatistics> req_fetch_baseline; // State of request performance counters when we reported it last time
 	SINT64 req_fetch_elapsed;	// Number of clock ticks spent while fetching rows for this request since we reported it last time
 	SINT64 req_fetch_rowcount;	// Total number of rows returned by this request
 	jrd_req* req_proc_caller;	// Procedure's caller request
 	const ValueListNode* req_proc_inputs;	// and its node with input parameters
+	TraNumber req_conflict_txn;	// Transaction number for update conflict in read consistency mode
 
 	ULONG req_src_line;
 	ULONG req_src_column;
 
 	dsc*			req_domain_validation;	// Current VALUE for constraint validation
-	Firebird::Stack<jrd_tra*> req_auto_trans;	// Autonomous transactions
 	SortOwner req_sorts;
 	Firebird::Array<record_param> req_rpb;	// record parameter blocks
 	Firebird::Array<UCHAR> impureArea;		// impure area
 	USHORT charSetId;						// "client" character set of the request
 	TriggerAction req_trigger_action;		// action that caused trigger to fire
+
+	// Fields to support read consistency in READ COMMITTED transactions
+	struct snapshot_data
+	{
+		jrd_req*		m_owner;
+		SnapshotHandle	m_handle;
+		CommitNumber	m_number;
+
+		void init()
+		{
+			m_owner = nullptr;
+			m_handle = 0;
+			m_number = 0;
+		}
+	};
+
+	snapshot_data req_snapshot;
+
+	// Context data saved\restored with every new autonomous transaction
+	struct auto_tran_ctx
+	{
+		auto_tran_ctx() :
+			m_transaction(nullptr)
+		{
+			m_snapshot.init();
+		};
+
+		auto_tran_ctx(jrd_tra* const tran, const snapshot_data& snap) :
+			m_transaction(tran),
+			m_snapshot(snap)
+		{
+		};
+
+		jrd_tra*		m_transaction;
+		snapshot_data	m_snapshot;
+	};
+
+	Firebird::Stack<auto_tran_ctx> req_auto_trans;	// Autonomous transactions
 
 	enum req_s {
 		req_evaluate,
@@ -286,6 +340,7 @@ public:
 	} req_operation;				// operation for next node
 
 	StatusXcp req_last_xcp;			// last known exception
+	bool req_batch_mode;
 
 	template <typename T> T* getImpure(unsigned offset)
 	{
@@ -298,6 +353,39 @@ public:
 			req_caller->req_stats.adjust(req_base_stats, req_stats);
 		}
 		req_base_stats.assign(req_stats);
+	}
+
+	// Save transaction and snapshot context when switching to the autonomous transaction
+	void pushTransaction(jrd_tra* const transaction)
+	{
+		req_auto_trans.push(auto_tran_ctx(transaction, req_snapshot));
+		req_snapshot.init();
+	}
+
+	// Restore transaction and snapshot context
+	jrd_tra* popTransaction()
+	{
+		const auto_tran_ctx tmp = req_auto_trans.pop();
+		req_snapshot = tmp.m_snapshot;
+
+		return tmp.m_transaction;
+	}
+
+	Firebird::TimeStamp getLocalTimeStamp() const
+	{
+		ISC_TIMESTAMP_TZ timeStampTz;
+		timeStampTz.utc_timestamp = req_gmt_timestamp.value();
+		timeStampTz.time_zone = Firebird::TimeZoneUtil::GMT_ZONE;
+
+		return Firebird::TimeZoneUtil::timeStampTzToTimeStamp(timeStampTz, req_attachment->att_current_timezone);
+	}
+
+	ISC_TIMESTAMP_TZ getTimeStampTz() const
+	{
+		ISC_TIMESTAMP_TZ timeStampTz;
+		timeStampTz.utc_timestamp = req_gmt_timestamp.value();
+		timeStampTz.time_zone = req_attachment->att_current_timezone;
+		return timeStampTz;
 	}
 };
 
@@ -314,13 +402,8 @@ const ULONG req_continue_loop	= 0x100L;		// PSQL continue statement
 const ULONG req_proc_fetch		= 0x200L;		// Fetch from procedure in progress
 const ULONG req_same_tx_upd		= 0x400L;		// record was updated by same transaction
 const ULONG req_reserved		= 0x800L;		// Request reserved for client
-
-// Flags for req_view_flags
-enum {
-	req_first_store_return = 0x1,
-	req_first_modify_return = 0x2,
-	req_first_erase_return = 0x4
-};
+const ULONG req_update_conflict	= 0x1000L;		// We need to restart request due to update conflict
+const ULONG req_restart_ready	= 0x2000L;		// Request is ready to restat in case of update conflict
 
 
 // Index lock block

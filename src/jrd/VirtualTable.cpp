@@ -22,12 +22,11 @@
  */
 
 #include "firebird.h"
-#include "ids.h"
-#include "../jrd/constants.h"
-#include "../common/gdsassert.h"
-#include "../jrd/jrd.h"
 #include "../common/dsc.h"
+#include "../jrd/constants.h"
+#include "../jrd/jrd.h"
 #include "../jrd/exe.h"
+#include "../jrd/ids.h"
 #include "../jrd/ini.h"
 #include "../jrd/req.h"
 #include "../jrd/rse.h"
@@ -70,7 +69,7 @@ void VirtualTable::erase(thread_db* tdbb, record_param* rpb)
 		// Ignore attempt to stop system attachment
 		dsc sysFlag;
 		if (EVL_field(relation, rpb->rpb_record, f_mon_att_sys_flag, &sysFlag) &&
-			MOV_get_long(&sysFlag, 0) != 0)
+			MOV_get_long(tdbb, &sysFlag, 0) != 0)
 		{
 			return;
 		}
@@ -90,11 +89,11 @@ void VirtualTable::erase(thread_db* tdbb, record_param* rpb)
 		return;
 	}
 
-	const SINT64 id = MOV_get_int64(&desc, 0);
+	const SINT64 id = MOV_get_int64(tdbb, &desc, 0);
 
 	// Post a blocking request
 	Lock temp_lock(tdbb, sizeof(SINT64), lock_type);
-	temp_lock.lck_key.lck_long = id;
+	temp_lock.setKey(id);
 
 	ThreadStatusGuard temp_status(tdbb);
 

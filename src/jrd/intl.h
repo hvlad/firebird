@@ -45,20 +45,20 @@
 
 // Character Set used for system metadata information
 
-#define CS_METADATA			CS_UNICODE_FSS	// metadata charset
+#define CS_METADATA			CS_UTF8	// metadata charset
 
 // text type definitions
 
 #define ttype_none				CS_NONE			// 0
 #define ttype_ascii				CS_ASCII		// 2
 #define ttype_binary			CS_BINARY		// 1
-#define ttype_unicode_fss		CS_UNICODE_FSS	// 3
-#define ttype_last_internal		CS_UTF8			// 4 	// not internal yet, but will be in the future
+#define ttype_utf8				CS_UTF8			// 4
+#define ttype_last_internal		CS_UTF8			// 4
 
 #define ttype_dynamic			CS_dynamic	// use att_charset
 
 #define ttype_sort_key			ttype_binary
-#define	ttype_metadata			ttype_unicode_fss
+#define	ttype_metadata			ttype_utf8
 
 // Note:
 // changing the value of ttype_metadata is an ODS System Metadata change

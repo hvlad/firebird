@@ -30,9 +30,8 @@
 
 #include "firebird.h"
 #include <string.h>
-#include "../jrd/ibase.h"
+#include "ibase.h"
 #include "../gpre/gpre.h"
-//#include "../jrd/license.h"
 #include "../jrd/intl.h"
 #include "../gpre/gpre_proto.h"
 #include "../gpre/hsh_proto.h"

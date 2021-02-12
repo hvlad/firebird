@@ -27,6 +27,11 @@ cat <<EOF
 Firebird server may run in 2 different modes - super and classic.
 Super server provides better performance, classic - better availability.
 
+*******************************************************
+* This script is deprecated and will be removed soon: *
+*         edit firebird.conf directly instead.        *
+*******************************************************
+
 EOF
 
 AskQuestion "Which option would you like to choose: (super|classic) [super] " "super"
@@ -51,21 +56,17 @@ esac
 
 echo "Stopping currently running engine..."
 checkIfServerRunning
-removeInetdServiceEntry
-removeServiceAutostart
 
-echo "Starting firebird in $multiAnswer server mode..."
+sc=Starting
+[ ${fb_install_prefix} = ${default_prefix} ] || sc=Configure
+echo "$sc firebird in $multiAnswer server mode..."
 fbconf="@FB_CONFDIR@/firebird.conf"
 if [ $multiAnswer = classic ]; then
 	replaceLineInFile $fbconf "ServerMode = Classic" "^ServerMode"
-
-	updateInetdServiceEntry
-	resetInetdServer
 else
 	replaceLineInFile $fbconf "ServerMode = Super" "^ServerMode"
-
-	installInitdScript
-	startService
 fi
+
+startFirebird
 
 echo "Done."

@@ -9,7 +9,7 @@
 #
 # /usr/sbin/rcfirebird
 #
-# System startup script for the Firebird SuperServer
+# System startup script for the Firebird Server
 #
 ### BEGIN INIT INFO
 # Provides: firebird
@@ -20,6 +20,8 @@
 # Short-Description: Firebird SQL server
 # Description:    Start the Firebird database server.
 ### END INIT INFO
+
+fb_install_prefix=@prefix@
 
 # Source SuSE config
 if [ -r /etc/rc.config ]

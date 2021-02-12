@@ -24,7 +24,7 @@
 #include "../dsql/BoolNodes.h"
 #include "../dsql/ExprNodes.h"
 #include "../dsql/StmtNodes.h"
-#include "../jrd/blr.h"
+#include "firebird/impl/blr.h"
 #include "../jrd/btr.h"
 #include "../jrd/dyn.h"
 #include "../jrd/flags.h"
@@ -48,6 +48,7 @@
 #include "../jrd/exe_proto.h"
 #include "../jrd/intl_proto.h"
 #include "../common/isc_f_proto.h"
+#include "../jrd/lck_proto.h"
 #include "../jrd/met_proto.h"
 #include "../jrd/scl_proto.h"
 #include "../jrd/vio_proto.h"
@@ -61,6 +62,8 @@
 #include "../common/dsc_proto.h"
 #include "../common/StatusArg.h"
 #include "../auth/SecureRemotePassword/Message.h"
+#include "../jrd/Mapping.h"
+#include "../jrd/extds/ExtDS.h"
 
 namespace Jrd {
 
@@ -84,8 +87,10 @@ static bool fieldExists(thread_db* tdbb, jrd_tra* transaction, const MetaName& r
 	const MetaName& fieldName);
 static bool isItSqlRole(thread_db* tdbb, jrd_tra* transaction, const MetaName& inputName,
 	MetaName& outputName);
+static int getGrantorOption(thread_db* tdbb, jrd_tra* transaction, const MetaName& grantor,
+	int grantorType, const MetaName& roleName);
 static MetaName getIndexRelationName(thread_db* tdbb, jrd_tra* transaction,
-	const MetaName& indexName);
+	const MetaName& indexName, bool& systemIndex);
 static const char* getRelationScopeName(const rel_t type);
 static void makeRelationScopeName(string& to, const MetaName& name, const rel_t type);
 static void checkRelationType(const rel_t type, const MetaName& name);
@@ -128,7 +133,7 @@ void ExecInSecurityDb::executeInSecurityDb(jrd_tra* localTransaction)
 		const char* secDb = lAtt->att_database->dbb_config->getSecurityDatabase();
 		ClumpletWriter dpb(ClumpletWriter::WideTagged, MAX_DPB_SIZE, isc_dpb_version2);
 		if (lAtt->att_user)
-			lAtt->att_user->populateDpb(dpb);
+			lAtt->att_user->populateDpb(dpb, true);
 		IAttachment* att = DispatcherPtr()->attachDatabase(&statusWrapper, secDb,
 			dpb.getBufferLength(), dpb.getBuffer());
 		check(&statusWrapper);
@@ -263,6 +268,7 @@ static void checkSpTrigDependency(thread_db* tdbb, jrd_tra* transaction,
 		FIRST 1
 		DEP IN RDB$DEPENDENCIES
 		WITH DEP.RDB$DEPENDED_ON_NAME EQ relationName.c_str() AND
+			 DEP.RDB$DEPENDED_ON_TYPE EQ obj_relation AND
 			 DEP.RDB$FIELD_NAME EQ fieldName.c_str()
 	{
 		MetaName depName(DEP.RDB$DEPENDENT_NAME);
@@ -325,6 +331,7 @@ void defineComputed(DsqlCompilerScratch* dsqlScratch, RelationSourceNode* relati
 	// Save the size of the field if it is specified.
 	dsc saveDesc;
 	saveDesc.dsc_dtype = 0;
+	bool saveCharSetIdSpecified;
 
 	if (field && field->dtype)
 	{
@@ -334,6 +341,7 @@ void defineComputed(DsqlCompilerScratch* dsqlScratch, RelationSourceNode* relati
 		fb_assert(field->scale <= MAX_SCHAR);
 		saveDesc.dsc_scale = (SCHAR) field->scale;
 		saveDesc.dsc_sub_type = field->subType;
+		saveCharSetIdSpecified = field->charSetId.specified;
 
 		field->dtype = 0;
 		field->length = 0;
@@ -348,7 +356,7 @@ void defineComputed(DsqlCompilerScratch* dsqlScratch, RelationSourceNode* relati
 	// Try to calculate size of the computed field. The calculated size
 	// may be ignored, but it will catch self references.
 	dsc desc;
-	MAKE_desc(dsqlScratch, &desc, input);
+	DsqlDescMaker::fromNode(dsqlScratch, &desc, input);
 
 	// Generate the blr expression.
 
@@ -369,6 +377,7 @@ void defineComputed(DsqlCompilerScratch* dsqlScratch, RelationSourceNode* relati
 		if (field->dtype <= dtype_any_text)
 		{
 			field->charSetId = DSC_GET_CHARSET(&saveDesc);
+			field->charSetId.specified = saveCharSetIdSpecified;
 			field->collationId = DSC_GET_COLLATE(&saveDesc);
 		}
 		else
@@ -385,31 +394,17 @@ void defineComputed(DsqlCompilerScratch* dsqlScratch, RelationSourceNode* relati
 		{
 			field->charSetId = DSC_GET_CHARSET(&desc);
 			field->collationId = DSC_GET_COLLATE(&desc);
+
+			const USHORT adjust = field->dtype == dtype_varying ? sizeof(USHORT) : 0;
+			const USHORT bpc = METD_get_charset_bpc(dsqlScratch->getTransaction(), field->charSetId.value);
+			field->charLength = (field->length - adjust) / bpc;
 		}
 		else
 			field->subType = desc.dsc_sub_type;
 	}
 
-	if (field && field->precision == 0 && field->scale != 0)
-	{
-		switch (field->dtype)
-		{
-			case dtype_short:
-				field->precision = 4;
-				break;
-
-			case dtype_long:
-				field->precision = 9;
-				break;
-
-			case dtype_int64:
-				field->precision = 18;
-				break;
-
-			default:
-				fb_assert(!DTYPE_IS_EXACT(field->dtype));
-		}
-	}
+	if (field)
+		field->setExactPrecision();
 
 	dsqlScratch->resetContextStack();
 
@@ -552,14 +547,17 @@ static void makeRelationScopeName(string& to, const MetaName& name, const rel_t 
 
 // Get relation name of an index.
 static MetaName getIndexRelationName(thread_db* tdbb, jrd_tra* transaction,
-	const MetaName& indexName)
+	const MetaName& indexName, bool& systemIndex)
 {
+	systemIndex = false;
+
 	AutoCacheRequest request(tdbb, drq_l_index_relname, DYN_REQUESTS);
 
 	FOR(REQUEST_HANDLE request TRANSACTION_HANDLE transaction)
 		IDX IN RDB$INDICES
 		WITH IDX.RDB$INDEX_NAME EQ indexName.c_str()
 	{
+		systemIndex = IDX.RDB$SYSTEM_FLAG == 1;
 		return IDX.RDB$RELATION_NAME;
 	}
 	END_FOR
@@ -817,7 +815,7 @@ static void updateRdbFields(const TypeClause* type,
 		if (type->subType == isc_blob_text)
 		{
 			characterSetIdNull = FALSE;
-			characterSetId = type->charSetId;
+			characterSetId = type->charSetId.value;
 
 			collationIdNull = FALSE;
 			collationId = type->collationId;
@@ -844,7 +842,7 @@ static void updateRdbFields(const TypeClause* type,
 		}
 
 		characterSetIdNull = FALSE;
-		characterSetId = type->charSetId;
+		characterSetId = type->charSetId.value;
 
 		collationIdNull = FALSE;
 		collationId = type->collationId;
@@ -861,6 +859,12 @@ static void updateRdbFields(const TypeClause* type,
 
 			fieldSubTypeNull = FALSE;
 			fieldSubType = type->subType;
+		}
+
+		if (DTYPE_IS_DECFLOAT(type->dtype))
+		{
+			fieldPrecisionNull = FALSE;
+			fieldPrecision = type->precision;
 		}
 	}
 
@@ -903,7 +907,7 @@ void DdlNode::storePrivileges(thread_db* tdbb, jrd_tra* transaction,
 							  const char* privileges)
 {
 	Attachment* const attachment = transaction->tra_attachment;
-	const string& userName = attachment->att_user->usr_user_name;
+	const MetaString& userName = attachment->att_user->getUserName();
 
 	AutoCacheRequest request(tdbb, drq_s_usr_prvs, DYN_REQUESTS);
 
@@ -918,7 +922,7 @@ void DdlNode::storePrivileges(thread_db* tdbb, jrd_tra* transaction,
 			X.RDB$OBJECT_TYPE = type;
 			X.RDB$PRIVILEGE[0] = *p;
 			X.RDB$PRIVILEGE[1] = 0;
-			X.RDB$GRANT_OPTION = 1;
+			X.RDB$GRANT_OPTION = WITH_GRANT_OPTION;
 		}
 		END_STORE
 	}
@@ -946,7 +950,7 @@ void DdlNode::executeDdlTrigger(thread_db* tdbb, jrd_tra* transaction, DdlTrigge
 		context.newObjectName = when == DTW_BEFORE ? oldNewObjectName : objectName;
 	}
 
-	Stack<DdlTriggerContext>::AutoPushPop autoContext(attachment->ddlTriggersContext, context);
+	Stack<DdlTriggerContext*>::AutoPushPop autoContext(attachment->ddlTriggersContext, &context);
 	AutoSavePoint savePoint(tdbb, transaction);
 
 	EXE_execute_ddl_triggers(tdbb, transaction, when == DTW_BEFORE, action);
@@ -966,7 +970,7 @@ void DdlNode::storeGlobalField(thread_db* tdbb, jrd_tra* transaction, MetaName& 
 	const TypeClause* field, const string& computedSource, const BlrDebugWriter::BlrData& computedValue)
 {
 	Attachment* const attachment = transaction->tra_attachment;
-	const string& userName = attachment->att_user->usr_user_name;
+	const MetaString& userName = attachment->att_user->getUserName();
 
 	const ValueListNode* elements = field->ranges;
 	const USHORT dims = elements ? elements->items.getCount() / 2 : 0;
@@ -1040,9 +1044,9 @@ void DdlNode::storeGlobalField(thread_db* tdbb, jrd_tra* transaction, MetaName& 
 			 ++ptr, ++position)
 		{
 			const ValueExprNode* element = *ptr++;
-			const SLONG lrange = element->as<LiteralNode>()->getSlong();
+			const SLONG lrange = nodeAs<LiteralNode>(element)->getSlong();
 			element = *ptr;
-			const SLONG hrange = element->as<LiteralNode>()->getSlong();
+			const SLONG hrange = nodeAs<LiteralNode>(element)->getSlong();
 
 			if (lrange >= hrange)
 			{
@@ -1105,10 +1109,9 @@ string AlterCharSetNode::internalPrint(NodePrinter& printer) const
 	return "AlterCharSetNode";
 }
 
-bool AlterCharSetNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
+void AlterCharSetNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
 {
 	SCL_check_charset(tdbb, charSet, SCL_alter);
-	return true;
 }
 
 void AlterCharSetNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch,
@@ -1169,6 +1172,94 @@ void AlterCharSetNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch
 //----------------------
 
 
+void AlterEDSPoolSetNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
+{
+	if (!tdbb->getAttachment()->locksmith(tdbb, MODIFY_EXT_CONN_POOL))
+		status_exception::raise(Arg::Gds(isc_miss_prvlg) << "MODIFY_EXT_CONN_POOL");
+}
+
+string AlterEDSPoolSetNode::internalPrint(NodePrinter& printer) const
+{
+	DdlNode::internalPrint(printer);
+
+	NODE_PRINT(printer, m_param);
+	NODE_PRINT(printer, m_value);
+
+	return "AlterEDSPoolSetNode";
+}
+
+void AlterEDSPoolSetNode::execute(thread_db* tdbb, DsqlCompilerScratch* /*dsqlScratch*/, jrd_tra* /*transaction*/)
+{
+	EDS::ConnectionsPool* pool = EDS::Manager::getConnPool(false);
+	switch (m_param)
+	{
+	case POOL_SIZE:
+		pool->setMaxCount(m_value);
+		break;
+
+	case POOL_LIFETIME:
+		pool->setLifeTime(m_value);
+		break;
+
+	default:
+		status_exception::raise(
+			Arg::Gds(isc_random) << Arg::Str("Unknown param for ALTER EXTERNAL CONNECTIONS POOL statement"));
+	}
+}
+
+
+//----------------------
+
+
+void AlterEDSPoolClearNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
+{
+	if (!tdbb->getAttachment()->locksmith(tdbb, MODIFY_EXT_CONN_POOL))
+		status_exception::raise(Arg::Gds(isc_miss_prvlg) << "MODIFY_EXT_CONN_POOL");
+}
+
+string AlterEDSPoolClearNode::internalPrint(NodePrinter& printer) const
+{
+	DdlNode::internalPrint(printer);
+
+	NODE_PRINT(printer, m_param);
+	NODE_PRINT(printer, m_value);
+
+	return "AlterEDSPoolClearNode";
+}
+
+void AlterEDSPoolClearNode::execute(thread_db* tdbb, DsqlCompilerScratch* /*dsqlScratch*/, jrd_tra* /*transaction*/)
+{
+	EDS::ConnectionsPool* pool = EDS::Manager::getConnPool(false);
+	if (!pool)
+		return;
+
+	switch (m_param)
+	{
+	case POOL_ALL:
+	{
+		pool->clearIdle(tdbb, true);
+		break;
+	}
+
+	case POOL_OLDEST:
+	{
+		pool->clearIdle(tdbb, false);
+		break;
+	}
+
+	case POOL_DB:
+		//break;
+
+	default:
+		status_exception::raise(
+			Arg::Gds(isc_random) << Arg::Str("Unknown param for ALTER EXTERNAL CONNECTIONS POOL statement"));
+	}
+}
+
+
+//----------------------
+
+
 string CommentOnNode::internalPrint(NodePrinter& printer) const
 {
 	DdlNode::internalPrint(printer);
@@ -1182,7 +1273,7 @@ string CommentOnNode::internalPrint(NodePrinter& printer) const
 	return "CommentOnNode";
 }
 
-bool CommentOnNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
+void CommentOnNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
 {
 	Attachment* const attachment = transaction->tra_attachment;
 
@@ -1294,9 +1385,10 @@ bool CommentOnNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
 			break;
 
 		case obj_index:
-			relationName = getIndexRelationName(tdbb, transaction, objName.identifier);
+			bool systemIndex;
+			relationName = getIndexRelationName(tdbb, transaction, objName.identifier, systemIndex);
 			dscName.makeText(relationName.length(), CS_METADATA, (UCHAR*) relationName.c_str());
-			SCL_check_relation(tdbb, &dscName, SCL_alter);
+			SCL_check_relation(tdbb, &dscName, SCL_alter, systemIndex);
 			break;
 
 		case obj_sql_role:
@@ -1319,8 +1411,6 @@ bool CommentOnNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
 		default:
 			fb_assert(false);
 	}
-
-	return true;
 }
 
 // select rdb$relation_name from rdb$relation_fields where rdb$field_name = 'RDB$DESCRIPTION';
@@ -1562,7 +1652,7 @@ DdlNode* CreateAlterFunctionNode::dsqlPass(DsqlCompilerScratch* dsqlScratch)
 		const NestConst<StmtNode>* ptr = variables->statements.begin();
 		for (const NestConst<StmtNode>* const end = variables->statements.end(); ptr != end; ++ptr)
 		{
-			const DeclareVariableNode* varNode = (*ptr)->as<DeclareVariableNode>();
+			const DeclareVariableNode* varNode = nodeAs<DeclareVariableNode>(*ptr);
 
 			if (varNode)
 			{
@@ -1609,18 +1699,27 @@ DdlNode* CreateAlterFunctionNode::dsqlPass(DsqlCompilerScratch* dsqlScratch)
 	if (returnType && returnType->type)
 		returnType->type->resolve(dsqlScratch);
 
+	// check SQL SECURITY is not set if function declared in package
+	if (package.hasData() && ssDefiner.specified)
+	{
+		ERRD_post(Arg::Gds(isc_sqlerr) << Arg::Num(-204) <<
+				  Arg::Gds(isc_invalid_clause) << Arg::Str("SQL SECURITY for functions is prohibit in packages"));
+	}
+
 	return DdlNode::dsqlPass(dsqlScratch);
 }
 
-bool CreateAlterFunctionNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
+void CreateAlterFunctionNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
 {
 	dsc dscName;
 	dscName.makeText(name.length(), CS_METADATA, (UCHAR*) name.c_str());
 	if (alter)
-		SCL_check_function(tdbb, &dscName, SCL_alter);
-	else
-		SCL_check_create_access(tdbb, SCL_object_function);
-	return true;
+	{
+		if (SCL_check_function(tdbb, &dscName, SCL_alter) || !create)
+			return;
+	}
+
+	SCL_check_create_access(tdbb, SCL_object_function);
 }
 
 void CreateAlterFunctionNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch,
@@ -1674,7 +1773,7 @@ void CreateAlterFunctionNode::executeCreate(thread_db* tdbb, DsqlCompilerScratch
 	jrd_tra* transaction)
 {
 	Attachment* const attachment = transaction->getAttachment();
-	const string& userName = attachment->att_user->usr_user_name;
+	const MetaString& userName = attachment->att_user->getUserName();
 
 	if (package.isEmpty())
 	{
@@ -1799,6 +1898,18 @@ bool CreateAlterFunctionNode::executeAlter(thread_db* tdbb, DsqlCompilerScratch*
 
 				FUN.RDB$DETERMINISTIC_FLAG.NULL = FALSE;
 				FUN.RDB$DETERMINISTIC_FLAG = deterministic ? TRUE : FALSE;
+				FUN.RDB$RETURN_ARGUMENT = 0;
+
+				if (ssDefiner.specified)
+				{
+					FUN.RDB$SQL_SECURITY.NULL = FALSE;
+					FUN.RDB$SQL_SECURITY = ssDefiner.value ? FB_TRUE : FB_FALSE;
+				}
+				else
+					FUN.RDB$SQL_SECURITY.NULL = TRUE;
+
+				FUN.RDB$LEGACY_FLAG.NULL = FALSE;
+				FUN.RDB$LEGACY_FLAG = isUdf() ? TRUE : FALSE;
 
 				if (isUdf())
 				{
@@ -1993,9 +2104,11 @@ void CreateAlterFunctionNode::storeArgument(thread_db* tdbb, DsqlCompilerScratch
 		ARG.RDB$MECHANISM.NULL = TRUE;
 		ARG.RDB$FIELD_TYPE.NULL = TRUE;
 		ARG.RDB$FIELD_LENGTH.NULL = TRUE;
+		ARG.RDB$FIELD_SUB_TYPE.NULL = TRUE;
 		ARG.RDB$FIELD_PRECISION.NULL = TRUE;
 		ARG.RDB$FIELD_SCALE.NULL = TRUE;
 		ARG.RDB$CHARACTER_SET_ID.NULL = TRUE;
+		ARG.RDB$CHARACTER_LENGTH.NULL = TRUE;
 		ARG.RDB$COLLATION_ID.NULL = TRUE;
 		ARG.RDB$ARGUMENT_MECHANISM.NULL = TRUE;
 
@@ -2262,12 +2375,11 @@ string AlterExternalFunctionNode::internalPrint(NodePrinter& printer) const
 	return "AlterExternalFunctionNode";
 }
 
-bool AlterExternalFunctionNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
+void AlterExternalFunctionNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
 {
 	dsc dscName;
 	dscName.makeText(name.length(), CS_METADATA, (UCHAR*) name.c_str());
 	SCL_check_function(tdbb, &dscName, SCL_alter);
-	return true;
 }
 
 // Allow changing the entry point and/or the module name of a UDF.
@@ -2394,12 +2506,11 @@ DdlNode* DropFunctionNode::dsqlPass(DsqlCompilerScratch* dsqlScratch)
 	return DdlNode::dsqlPass(dsqlScratch);
 }
 
-bool DropFunctionNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
+void DropFunctionNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
 {
 	dsc dscName;
 	dscName.makeText(name.length(), CS_METADATA, (UCHAR*) name.c_str());
 	SCL_check_function(tdbb, &dscName, SCL_drop);
-	return true;
 }
 
 void DropFunctionNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch,
@@ -2551,7 +2662,7 @@ DdlNode* CreateAlterProcedureNode::dsqlPass(DsqlCompilerScratch* dsqlScratch)
 		const NestConst<StmtNode>* ptr = variables->statements.begin();
 		for (const NestConst<StmtNode>* const end = variables->statements.end(); ptr != end; ++ptr)
 		{
-			const DeclareVariableNode* varNode = (*ptr)->as<DeclareVariableNode>();
+			const DeclareVariableNode* varNode = nodeAs<DeclareVariableNode>(*ptr);
 
 			if (varNode)
 			{
@@ -2598,18 +2709,27 @@ DdlNode* CreateAlterProcedureNode::dsqlPass(DsqlCompilerScratch* dsqlScratch)
 	for (unsigned i = 0; i < returns.getCount(); ++i)
 		returns[i]->type->resolve(dsqlScratch);
 
+	// check SQL SECURITY is not set if procedure declared in package
+	if (package.hasData() && ssDefiner.specified)
+	{
+		ERRD_post(Arg::Gds(isc_sqlerr) << Arg::Num(-204) <<
+				  Arg::Gds(isc_invalid_clause) << Arg::Str("SQL SECURITY for procedures is prohibit in packages"));
+	}
+
 	return DdlNode::dsqlPass(dsqlScratch);
 }
 
-bool CreateAlterProcedureNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
+void CreateAlterProcedureNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
 {
 	dsc dscName;
 	dscName.makeText(name.length(), CS_METADATA, (UCHAR*) name.c_str());
 	if (alter)
-		SCL_check_procedure(tdbb, &dscName, SCL_alter);
-	else
-		SCL_check_create_access(tdbb, SCL_object_procedure);
-	return true;
+	{
+		if (SCL_check_procedure(tdbb, &dscName, SCL_alter) || !create)
+			return;
+	}
+
+	SCL_check_create_access(tdbb, SCL_object_procedure);
 }
 
 void CreateAlterProcedureNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch,
@@ -2661,7 +2781,7 @@ void CreateAlterProcedureNode::executeCreate(thread_db* tdbb, DsqlCompilerScratc
 	jrd_tra* transaction)
 {
 	Attachment* const attachment = transaction->getAttachment();
-	const string& userName = attachment->att_user->usr_user_name;
+	const MetaString& userName = attachment->att_user->getUserName();
 
 	if (package.isEmpty())
 	{
@@ -2787,6 +2907,14 @@ bool CreateAlterProcedureNode::executeAlter(thread_db* tdbb, DsqlCompilerScratch
 				}
 				else
 					P.RDB$PRIVATE_FLAG.NULL = TRUE;
+
+				if (ssDefiner.specified)
+				{
+					P.RDB$SQL_SECURITY.NULL = FALSE;
+					P.RDB$SQL_SECURITY = ssDefiner.value ? FB_TRUE : FB_FALSE;
+				}
+				else
+					P.RDB$SQL_SECURITY.NULL = TRUE;
 			}
 
 			if (external)
@@ -3181,12 +3309,11 @@ DdlNode* DropProcedureNode::dsqlPass(DsqlCompilerScratch* dsqlScratch)
 	return DdlNode::dsqlPass(dsqlScratch);
 }
 
-bool DropProcedureNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
+void DropProcedureNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
 {
 	dsc dscName;
 	dscName.makeText(name.length(), CS_METADATA, (UCHAR*) name.c_str());
 	SCL_check_procedure(tdbb, &dscName, SCL_drop);
-	return true;
 }
 
 void DropProcedureNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch,
@@ -3400,6 +3527,17 @@ bool TriggerDefinition::modify(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch
 				attachment->storeMetaDataBlob(tdbb, transaction, &TRG.RDB$TRIGGER_SOURCE, source);
 			}
 
+			if (ssDefiner.specified)
+			{
+				if (ssDefiner.value != SS_DROP)
+				{
+					TRG.RDB$SQL_SECURITY.NULL = FALSE;
+					TRG.RDB$SQL_SECURITY = ssDefiner.value == SS_DEFINER ? FB_TRUE : FB_FALSE;
+				}
+				else
+					TRG.RDB$SQL_SECURITY.NULL = TRUE;
+			}
+
 			modified = true;
 		END_MODIFY
 	}
@@ -3448,35 +3586,14 @@ DdlNode* CreateAlterTriggerNode::dsqlPass(DsqlCompilerScratch* dsqlScratch)
 		}
 	}
 
+	if (create && ssDefiner.specified && ssDefiner.value == TriggerDefinition::SS_DROP)
+		status_exception::raise(Arg::Gds(isc_dsql_command_err) << Arg::Gds(isc_dsql_invalid_drop_ss_clause));
+
 	return DdlNode::dsqlPass(dsqlScratch);
 }
 
-bool CreateAlterTriggerNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
+void CreateAlterTriggerNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
 {
-	if (relationName.hasData())
-	{
-		dsc dscName;
-		dscName.makeText(relationName.length(), CS_METADATA, (UCHAR*) relationName.c_str());
-		SCL_check_relation(tdbb, &dscName, SCL_alter);
-	}
-	else
-		SCL_check_database(tdbb, SCL_alter);
-
-	return true;
-}
-
-void CreateAlterTriggerNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch,
-	jrd_tra* transaction)
-{
-	fb_assert(create || alter);
-
-	Attachment* const attachment = transaction->getAttachment();
-
-	source.ltrim("\n\r\t ");
-
-	// run all statements under savepoint control
-	AutoSavePoint savePoint(tdbb, transaction);
-
 	if (!create)
 	{
 		AutoRequest requestHandle;
@@ -3496,6 +3613,28 @@ void CreateAlterTriggerNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlS
 		if (!type.specified)
 			status_exception::raise(Arg::Gds(isc_dyn_trig_not_found) << Arg::Str(name));
 	}
+
+	if (relationName.hasData())
+	{
+		dsc dscName;
+		dscName.makeText(relationName.length(), CS_METADATA, (UCHAR*) relationName.c_str());
+		SCL_check_relation(tdbb, &dscName, SCL_alter);
+	}
+	else
+		SCL_check_database(tdbb, SCL_alter);
+}
+
+void CreateAlterTriggerNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch,
+	jrd_tra* transaction)
+{
+	fb_assert(create || alter);
+
+	Attachment* const attachment = transaction->getAttachment();
+
+	source.ltrim("\n\r\t ");
+
+	// run all statements under savepoint control
+	AutoSavePoint savePoint(tdbb, transaction);
 
 	compile(tdbb, dsqlScratch);
 
@@ -3555,8 +3694,8 @@ void CreateAlterTriggerNode::compile(thread_db* /*tdbb*/, DsqlCompilerScratch* d
 
 		if (relationName.hasData())
 		{
-			RelationSourceNode* relationNode = FB_NEW_POOL(getPool()) RelationSourceNode(getPool(),
-				relationName);
+			RelationSourceNode* relationNode = FB_NEW_POOL(dsqlScratch->getPool()) RelationSourceNode(
+				dsqlScratch->getPool(), relationName);
 
 			const string temp = relationNode->alias;	// always empty?
 
@@ -3647,7 +3786,7 @@ DdlNode* DropTriggerNode::dsqlPass(DsqlCompilerScratch* dsqlScratch)
 	return DdlNode::dsqlPass(dsqlScratch);
 }
 
-bool DropTriggerNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
+void DropTriggerNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
 {
 	MetaName relationName = getTriggerRelationName(tdbb, transaction, name);
 
@@ -3659,8 +3798,6 @@ bool DropTriggerNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
 		dscName.makeText(relationName.length(), CS_METADATA, (UCHAR*) relationName.c_str());
 		SCL_check_relation(tdbb, &dscName, SCL_alter);
 	}
-
-	return true;
 }
 
 void DropTriggerNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch,
@@ -3791,17 +3928,16 @@ string CreateCollationNode::internalPrint(NodePrinter& printer) const
 	return "CreateCollationNode";
 }
 
-bool CreateCollationNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
+void CreateCollationNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
 {
 	SCL_check_create_access(tdbb, SCL_object_collation);
-	return true;
 }
 
 void CreateCollationNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch,
 	jrd_tra* transaction)
 {
 	Attachment* const attachment = transaction->tra_attachment;
-	const string& userName = attachment->att_user->usr_user_name;
+	const MetaString& userName = attachment->att_user->getUserName();
 
 	// run all statements under savepoint control
 	AutoSavePoint savePoint(tdbb, transaction);
@@ -3831,6 +3967,7 @@ void CreateCollationNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScra
 		{
 			if (MET_get_char_coll_subtype_info(tdbb,
 					INTL_CS_COLL_TO_TTYPE(forCharSetId, fromCollationId), &info) &&
+				forCharSetId != CS_METADATA &&
 				info.specificAttributes.hasData())
 			{
 				UCharBuffer temp;
@@ -4010,10 +4147,9 @@ string DropCollationNode::internalPrint(NodePrinter& printer) const
 	return "DropCollationNode";
 }
 
-bool DropCollationNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
+void DropCollationNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
 {
 	SCL_check_collation(tdbb, name, SCL_drop);
-	return true;
 }
 
 void DropCollationNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch,
@@ -4170,10 +4306,9 @@ string CreateDomainNode::internalPrint(NodePrinter& printer) const
 	return "CreateDomainNode";
 }
 
-bool CreateDomainNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
+void CreateDomainNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
 {
 	SCL_check_create_access(tdbb, SCL_object_domain);
-	return true;
 }
 
 void CreateDomainNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch,
@@ -4331,13 +4466,18 @@ void AlterDomainNode::checkUpdate(const dyn_fld& origFld, const dyn_fld& newFld)
 
 		case blr_sql_date:
 		case blr_sql_time:
+		case blr_sql_time_tz:
 		case blr_timestamp:
+		case blr_timestamp_tz:
 		case blr_int64:
 		case blr_long:
 		case blr_short:
 		case blr_d_float:
 		case blr_double:
 		case blr_float:
+		case blr_dec64:
+		case blr_dec128:
+		case blr_int128:
 			// Cannot convert column %s from character to non-character data.
 			errorCode = isc_dyn_dtype_conv_invalid;
 			break;
@@ -4372,11 +4512,15 @@ void AlterDomainNode::checkUpdate(const dyn_fld& origFld, const dyn_fld& newFld)
 	// DATE types
 	case blr_sql_date:
 	case blr_sql_time:
+	case blr_sql_time_tz:
 	case blr_timestamp:
+	case blr_timestamp_tz:
 		switch (newFld.dyn_dtype)
 		{
 		case blr_sql_date:
-			if (origFld.dyn_dtype == blr_sql_time)
+			if (origFld.dyn_dtype == blr_sql_time ||
+				origFld.dyn_dtype == blr_sql_time_tz ||
+				origFld.dyn_dtype == blr_timestamp_tz)
 			{
 				// Cannot change datatype for column %s.  Conversion from base type %s to base type %s is not supported.
 				errorCode = isc_dyn_invalid_dtype_conversion;
@@ -4384,7 +4528,19 @@ void AlterDomainNode::checkUpdate(const dyn_fld& origFld, const dyn_fld& newFld)
 			break;
 
 		case blr_sql_time:
-			if (origFld.dyn_dtype == blr_sql_date)
+			if (origFld.dyn_dtype == blr_sql_date ||
+				origFld.dyn_dtype == blr_sql_time_tz ||
+				origFld.dyn_dtype == blr_timestamp_tz)
+			{
+				// Cannot change datatype for column %s.  Conversion from base type %s to base type %s is not supported.
+				errorCode = isc_dyn_invalid_dtype_conversion;
+			}
+			break;
+
+		case blr_sql_time_tz:
+			if (origFld.dyn_dtype == blr_sql_date ||
+				origFld.dyn_dtype == blr_sql_time ||
+				origFld.dyn_dtype == blr_timestamp)
 			{
 				// Cannot change datatype for column %s.  Conversion from base type %s to base type %s is not supported.
 				errorCode = isc_dyn_invalid_dtype_conversion;
@@ -4392,14 +4548,27 @@ void AlterDomainNode::checkUpdate(const dyn_fld& origFld, const dyn_fld& newFld)
 			break;
 
 		case blr_timestamp:
-			if (origFld.dyn_dtype == blr_sql_time)
+			if (origFld.dyn_dtype == blr_sql_time ||
+				origFld.dyn_dtype == blr_sql_time_tz ||
+				origFld.dyn_dtype == blr_timestamp_tz)
 			{
 				// Cannot change datatype for column %s.  Conversion from base type %s to base type %s is not supported.
 				errorCode = isc_dyn_invalid_dtype_conversion;
 			}
 			break;
 
-		// If the original field is a date field and the new field is a character field,
+		case blr_timestamp_tz:
+			if (origFld.dyn_dtype == blr_sql_date ||
+				origFld.dyn_dtype == blr_sql_time ||
+				origFld.dyn_dtype == blr_sql_time_tz ||
+				origFld.dyn_dtype == blr_timestamp)
+			{
+				// Cannot change datatype for column %s.  Conversion from base type %s to base type %s is not supported.
+				errorCode = isc_dyn_invalid_dtype_conversion;
+			}
+			break;
+
+		// If the original field is a datetime field and the new field is a character field,
 		// is there enough space in the new field?
 		case blr_text:
 		case blr_text2:
@@ -4428,6 +4597,9 @@ void AlterDomainNode::checkUpdate(const dyn_fld& origFld, const dyn_fld& newFld)
 	case blr_d_float:
 	case blr_double:
 	case blr_float:
+	case blr_dec64:
+	case blr_dec128:
+	case blr_int128:
 		switch (newFld.dyn_dtype)
 		{
 		case blr_blob:
@@ -4439,7 +4611,9 @@ void AlterDomainNode::checkUpdate(const dyn_fld& origFld, const dyn_fld& newFld)
 
 		case blr_sql_date:
 		case blr_sql_time:
+		case blr_sql_time_tz:
 		case blr_timestamp:
+		case blr_timestamp_tz:
 			// Cannot change datatype for column %s.  Conversion from base type %s to base type %s is not supported.
 			errorCode = isc_dyn_invalid_dtype_conversion;
 			break;
@@ -4515,6 +4689,61 @@ void AlterDomainNode::checkUpdate(const dyn_fld& origFld, const dyn_fld& newFld)
 			case blr_float:
 			case blr_short:
 			case blr_long:
+				break;
+
+			default:
+				// Cannot change datatype for column %s.  Conversion from base type %s to base type %s is not supported.
+				errorCode = isc_dyn_invalid_dtype_conversion;
+				break;
+			}
+			break;
+
+		case blr_dec64:
+			switch (origFld.dyn_dtype)
+			{
+			case blr_short:
+			case blr_long:
+			case blr_float:
+			case blr_d_float:
+			case blr_double:
+			case blr_dec64:
+				break;
+
+			default:
+				// Cannot change datatype for column %s.  Conversion from base type %s to base type %s is not supported.
+				errorCode = isc_dyn_invalid_dtype_conversion;
+				break;
+			}
+			break;
+
+		case blr_dec128:
+			switch (origFld.dyn_dtype)
+			{
+			case blr_short:
+			case blr_long:
+			case blr_int64:
+			case blr_float:
+			case blr_d_float:
+			case blr_double:
+			case blr_dec64:
+			case blr_dec128:
+			case blr_int128:
+				break;
+
+			default:
+				// Cannot change datatype for column %s.  Conversion from base type %s to base type %s is not supported.
+				errorCode = isc_dyn_invalid_dtype_conversion;
+				break;
+			}
+			break;
+
+		case blr_int128:
+			switch (origFld.dyn_dtype)
+			{
+			case blr_short:
+			case blr_long:
+			case blr_int64:
+			case blr_int128:
 				break;
 
 			default:
@@ -4730,10 +4959,9 @@ string AlterDomainNode::internalPrint(NodePrinter& printer) const
 	return "AlterDomainNode";
 }
 
-bool AlterDomainNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
+void AlterDomainNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
 {
 	SCL_check_domain(tdbb, name, SCL_alter);
-	return true;
 }
 
 void AlterDomainNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch,
@@ -4783,7 +5011,7 @@ void AlterDomainNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch,
 					status_exception::raise(Arg::PrivateDyn(160));
 				}
 
-				dsql_fld localField(dsqlScratch->getStatement()->getPool());
+				dsql_fld localField(dsqlScratch->getPool());
 
 				// Get the attributes of the domain, and set any occurrences of
 				// keyword VALUE to the correct type, length, scale, etc.
@@ -4922,7 +5150,7 @@ void AlterDomainNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch,
 				}
 
 				DSC_make_descriptor(&newDom.dyn_dsc, blr_dtypes[type->dtype], type->scale,
-					typeLength, type->subType, type->charSetId, type->collationId);
+					typeLength, type->subType, type->charSetId.value, type->collationId);
 
 				newDom.dyn_fld_name = name;
 				newDom.dyn_charbytelen = typeLength;
@@ -5088,10 +5316,9 @@ string DropDomainNode::internalPrint(NodePrinter& printer) const
 	return "DropDomainNode";
 }
 
-bool DropDomainNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
+void DropDomainNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
 {
 	SCL_check_domain(tdbb, name, SCL_drop);
-	return true;
 }
 
 void DropDomainNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch,
@@ -5221,13 +5448,15 @@ string CreateAlterExceptionNode::internalPrint(NodePrinter& printer) const
 	return "CreateAlterExceptionNode";
 }
 
-bool CreateAlterExceptionNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
+void CreateAlterExceptionNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
 {
 	if (alter)
-		SCL_check_exception(tdbb, name, SCL_alter);
-	else
-		SCL_check_create_access(tdbb, SCL_object_exception);
-	return true;
+	{
+		if (SCL_check_exception(tdbb, name, SCL_alter) || !create)
+			return;
+	}
+
+	SCL_check_create_access(tdbb, SCL_object_exception);
 }
 
 void CreateAlterExceptionNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch,
@@ -5264,7 +5493,7 @@ void CreateAlterExceptionNode::executeCreate(thread_db* tdbb, DsqlCompilerScratc
 	jrd_tra* transaction)
 {
 	Attachment* const attachment = transaction->getAttachment();
-	const string& userName = attachment->att_user->usr_user_name;
+	const MetaString& userName = attachment->att_user->getUserName();
 
 	executeDdlTrigger(tdbb, dsqlScratch, transaction, DTW_BEFORE,
 		DDL_TRIGGER_CREATE_EXCEPTION, name, NULL);
@@ -5362,10 +5591,9 @@ string DropExceptionNode::internalPrint(NodePrinter& printer) const
 	return "DropExceptionNode";
 }
 
-bool DropExceptionNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
+void DropExceptionNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
 {
 	SCL_check_exception(tdbb, name, SCL_drop);
-	return true;
 }
 
 void DropExceptionNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch,
@@ -5437,13 +5665,15 @@ string CreateAlterSequenceNode::internalPrint(NodePrinter& printer) const
 	return "CreateAlterSequenceNode";
 }
 
-bool CreateAlterSequenceNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
+void CreateAlterSequenceNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
 {
 	if (alter)
-		SCL_check_generator(tdbb, name, SCL_alter);
-	else
-		SCL_check_create_access(tdbb, SCL_object_generator);
-	return true;
+	{
+		if (SCL_check_generator(tdbb, name, SCL_alter) || !create)
+			return;
+	}
+
+	SCL_check_create_access(tdbb, SCL_object_generator);
 }
 
 void CreateAlterSequenceNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch,
@@ -5505,7 +5735,7 @@ void CreateAlterSequenceNode::executeCreate(thread_db* tdbb, DsqlCompilerScratch
 	executeDdlTrigger(tdbb, dsqlScratch, transaction, DTW_BEFORE, DDL_TRIGGER_CREATE_SEQUENCE,
 		name, NULL);
 
-	const SINT64 val = value.specified ? value.value : 0;
+	const SINT64 val = value.orElse(1);
 	SLONG initialStep = 1;
 	if (step.specified)
 	{
@@ -5605,15 +5835,8 @@ bool CreateAlterSequenceNode::executeAlter(thread_db* tdbb, DsqlCompilerScratch*
 			const SINT64 oldValue = !X.RDB$INITIAL_VALUE.NULL ? X.RDB$INITIAL_VALUE : 0;
 			const SINT64 newValue = value.specified ? value.value : oldValue;
 
-			transaction->getGenIdCache()->put(id, newValue);
-
-			if (newValue != oldValue)
-			{
-				MODIFY X
-					X.RDB$INITIAL_VALUE.NULL = FALSE;
-					X.RDB$INITIAL_VALUE = newValue;
-				END_MODIFY
-			}
+			transaction->getGenIdCache()->put(id,
+				newValue - (!X.RDB$GENERATOR_INCREMENT.NULL ? X.RDB$GENERATOR_INCREMENT : 1));
 		}
 
 		dsc desc;
@@ -5637,7 +5860,7 @@ SSHORT CreateAlterSequenceNode::store(thread_db* tdbb, jrd_tra* transaction, con
 	fb_sysflag sysFlag, SINT64 val, SLONG step)
 {
 	Attachment* const attachment = transaction->tra_attachment;
-	const string& userName = attachment->att_user->usr_user_name;
+	const MetaString& userName = attachment->att_user->getUserName();
 
 	DYN_UTIL_check_unique_name(tdbb, transaction, name, obj_generator);
 
@@ -5691,7 +5914,7 @@ SSHORT CreateAlterSequenceNode::store(thread_db* tdbb, jrd_tra* transaction, con
 
 	// The STORE above has caused the DFW item to be posted, so we just adjust the cached
 	// generator value.
-	transaction->getGenIdCache()->put(storedId, val);
+	transaction->getGenIdCache()->put(storedId, val - step);
 
 	return storedId;
 }
@@ -5710,10 +5933,9 @@ string DropSequenceNode::internalPrint(NodePrinter& printer) const
 	return "DropSequenceNode";
 }
 
-bool DropSequenceNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
+void DropSequenceNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
 {
 	SCL_check_generator(tdbb, name, SCL_drop);
-	return true;
 }
 
 void DropSequenceNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction)
@@ -5904,7 +6126,7 @@ void RelationNode::FieldDefinition::store(thread_db* tdbb, jrd_tra* transaction)
 			strcpy(RFR.RDB$GENERATOR_NAME, identitySequence.c_str());
 
 			RFR.RDB$IDENTITY_TYPE.NULL = FALSE;
-			RFR.RDB$IDENTITY_TYPE = IDENT_TYPE_BY_DEFAULT;
+			RFR.RDB$IDENTITY_TYPE = identityType.value;
 		}
 
 		if (notNullFlag.specified)
@@ -6167,7 +6389,7 @@ void RelationNode::defineField(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch
 		ObjectsArray<CreateDropConstraint> constraints;
 		bool notNullFlag = false;
 
-		if (clause->identity)
+		if (clause->identityOptions)
 			notNullFlag = true;	// identity columns are implicitly not null
 
 		for (ObjectsArray<AddConstraintClause>::iterator ptr = clause->constraints.begin();
@@ -6230,8 +6452,15 @@ void RelationNode::defineField(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch
 		if (clause->collate.hasData())
 			DDL_resolve_intl_type(dsqlScratch, field, clause->collate);
 
-		if (clause->identity)
+		if (clause->identityOptions)
 		{
+			if (clause->identityOptions->increment.orElse(1) == 0)
+			{
+				status_exception::raise(Arg::Gds(isc_dyn_cant_use_zero_inc_ident) <<
+					Arg::Str(field->fld_name) <<
+					Arg::Str(name));
+			}
+
 			dsc desc;
 			MET_get_domain(tdbb, *tdbb->getDefaultPool(), fieldDefinition.fieldSource, &desc, NULL);
 
@@ -6242,9 +6471,12 @@ void RelationNode::defineField(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch
 			}
 
 			DYN_UTIL_generate_generator_name(tdbb, fieldDefinition.identitySequence);
+			fieldDefinition.identityType = clause->identityOptions->type;
 
 			CreateAlterSequenceNode::store(tdbb, transaction, fieldDefinition.identitySequence,
-				fb_sysflag_identity_generator, clause->identityStart, 1);
+				fb_sysflag_identity_generator,
+				clause->identityOptions->startValue.orElse(1),
+				clause->identityOptions->increment.orElse(1));
 		}
 
 		BlrDebugWriter::BlrData defaultValue;
@@ -6308,7 +6540,7 @@ bool RelationNode::defineDefault(thread_db* /*tdbb*/, DsqlCompilerScratch* dsqlS
 
 	value.assign(dsqlScratch->getBlrData());
 
-	return ExprNode::is<NullNode>(input);
+	return nodeIs<NullNode>(input);
 }
 
 // Make a constraint object from a legacy node.
@@ -6316,7 +6548,7 @@ void RelationNode::makeConstraint(thread_db* /*tdbb*/, DsqlCompilerScratch* dsql
 	jrd_tra* transaction, AddConstraintClause* clause,
 	ObjectsArray<CreateDropConstraint>& constraints, bool* notNull)
 {
-	MemoryPool& pool = constraints.getPool();
+	MemoryPool& pool = dsqlScratch->getPool();
 
 	switch (clause->constraintType)
 	{
@@ -6812,104 +7044,78 @@ void RelationNode::defineSetDefaultTrigger(DsqlCompilerScratch* dsqlScratch,
 	Constraint::BlrWriter& blrWriter = constraint.blrWritersHolder.add();
 	blrWriter.init(dsqlScratch);
 
-	generateUnnamedTriggerBeginning(constraint, onUpdate, blrWriter);
+	blrWriter.appendUChar(blr_begin);
 
-	const int BLOB_BUFFER_SIZE = 4096;	// to read in blr blob for default values
-	UCHAR defaultVal[BLOB_BUFFER_SIZE];
+	USHORT index = 0;
 
 	for (ObjectsArray<MetaName>::const_iterator column(constraint.columns.begin());
 		 column != constraint.columns.end();
-		 ++column)
+		 ++column, index += 2)
+	{
+		// If the FK table's column is NOT NULL without DEFAULT, we want to avoid the engine throwing a constraint
+		// violation on our trigger's variable, so we declare two variables, one with blr_domain_type_of (don't use
+		// DEFAULT and null flag) and another blr_domain_full with DEFAULT and null flag. We swallow the error when
+		// transfering the value from the second to the first variable.
+
+		// This could be better done with blr_default, but let's maintain backward compatible BLR for now.
+
+		blrWriter.appendUChar(blr_dcl_variable);
+		blrWriter.appendUShort(index);
+
+		blrWriter.appendUChar(blr_column_name);
+		blrWriter.appendUChar(blr_domain_type_of);
+		blrWriter.appendNullString(0, name.c_str());
+		blrWriter.appendNullString(0, column->c_str());
+
+		blrWriter.appendUChar(blr_dcl_variable);
+		blrWriter.appendUShort(index + 1);
+
+		blrWriter.appendUChar(blr_column_name);
+		blrWriter.appendUChar(blr_domain_full);
+		blrWriter.appendNullString(0, name.c_str());
+		blrWriter.appendNullString(0, column->c_str());
+
+		blrWriter.appendUChar(blr_assignment);
+		blrWriter.appendUChar(blr_null);
+		blrWriter.appendUChar(blr_variable);
+		blrWriter.appendUShort(index);
+
+		blrWriter.appendUChar(blr_block);	// 1
+
+		blrWriter.appendUChar(blr_begin);	// 2
+
+		blrWriter.appendUChar(blr_init_variable);
+		blrWriter.appendUShort(index + 1);
+
+		blrWriter.appendUChar(blr_assignment);
+		blrWriter.appendUChar(blr_variable);
+		blrWriter.appendUShort(index + 1);
+		blrWriter.appendUChar(blr_variable);
+		blrWriter.appendUShort(index);
+
+		blrWriter.appendUChar(blr_end);		// 2
+
+		blrWriter.appendUChar(blr_error_handler);
+		blrWriter.appendUShort(1);
+		blrWriter.appendUChar(blr_default_code);
+		blrWriter.appendUChar(blr_begin);	// 3
+		blrWriter.appendUChar(blr_end);		// 3
+
+		blrWriter.appendUChar(blr_end);		// 1
+	}
+
+	generateUnnamedTriggerBeginning(constraint, onUpdate, blrWriter);
+
+	index = 0;
+
+	for (ObjectsArray<MetaName>::const_iterator column(constraint.columns.begin());
+		 column != constraint.columns.end();
+		 ++column, index += 2)
 	{
 		blrWriter.appendUChar(blr_assignment);
 
-		// ASF: This is wrong way to do the thing. See CORE-3073.
-
-		// Here stuff the default value as blr_literal .... or blr_null
-		// if this column does not have an applicable default.
-		// The default is determined in many cases:
-		// (1) the info. for the column is in memory. (This is because
-		// the column is being created in this ddl statement).
-		// (1-a) the table has a column level default. We get this by
-		// searching the dsql parse tree.
-		// (1-b) the table does not have a column level default, but
-		// has a domain default. We get the domain name from the dsql
-		// parse tree and call METD_get_domain_default to read the
-		// default from the system tables.
-		// (2) The default-info for this column is not in memory (This is
-		// because this is an alter table ddl statement). The table
-		// already exists; therefore we get the column and/or domain
-		// default value from the system tables by calling:
-		// METD_get_col_default().
-
-		bool foundDefault = false;
-		bool searchForDefault = true;
-
-		// Search the parse tree to find the column
-
-		for (NestConst<Clause>* ptr = clauses.begin(); ptr != clauses.end(); ++ptr)
-		{
-			if ((*ptr)->type != Clause::TYPE_ADD_COLUMN)
-				continue;
-
-			AddColumnClause* clause = static_cast<AddColumnClause*>(ptr->getObject());
-
-			if (*column != clause->field->fld_name)
-				continue;
-
-			// Now we have the right column in the parse tree. case (1) above
-
-			if (clause->defaultValue)
-			{
-				// case (1-a) above: There is a column level default
-
-				dsqlScratch->getBlrData().clear();
-				dsqlScratch->getDebugData().clear();
-
-				GEN_expr(dsqlScratch, clause->defaultValue->value);
-
-				foundDefault = true;
-				searchForDefault = false;
-
-				// Move the blr to the constraint blrWriter.
-				blrWriter.getBlrData().join(dsqlScratch->getBlrData());
-			}
-			else
-			{
-				if (!clause->field->typeOfName.hasData())
-					break;
-
-				// case: (1-b): Domain name is available. Column level default
-				// is not declared. So get the domain default.
-				const USHORT defaultLen = METD_get_domain_default(dsqlScratch->getTransaction(),
-					clause->field->typeOfName, &foundDefault, defaultVal, sizeof(defaultVal));
-
-				searchForDefault = false;
-
-				if (foundDefault)
-					stuffDefaultBlr(ByteChunk(defaultVal, defaultLen), blrWriter);
-				else
-				{
-					// Neither column level nor domain level default exists.
-					blrWriter.appendUChar(blr_null);
-				}
-			}
-
-			break;
-		}
-
-		if (searchForDefault)
-		{
-			// case 2: See if the column/domain has already been created.
-
-			const USHORT defaultLen = METD_get_col_default(dsqlScratch->getTransaction(),
-				name.c_str(), column->c_str(), &foundDefault, defaultVal, sizeof(defaultVal));
-
-			if (foundDefault)
-				stuffDefaultBlr(ByteChunk(defaultVal, defaultLen), blrWriter);
-			else
-				blrWriter.appendUChar(blr_null);
-		}
+		blrWriter.appendUChar(blr_variable);
+		blrWriter.appendUShort(index);
 
 		// The context for the foreign key relation.
 		blrWriter.appendUChar(blr_field);
@@ -6921,6 +7127,8 @@ void RelationNode::defineSetDefaultTrigger(DsqlCompilerScratch* dsqlScratch,
 
 	if (onUpdate)
 		blrWriter.appendUCharRepeated(blr_end, 3);
+
+	blrWriter.appendUChar(blr_end);
 
 	blrWriter.appendUChar(blr_eoc);	// end of the blr
 
@@ -7154,6 +7362,44 @@ void RelationNode::stuffTriggerFiringCondition(const Constraint& constraint, Blr
 }
 
 
+void RelationNode::addToPublication(thread_db* tdbb,
+									jrd_tra* transaction,
+									const MetaName& tableName,
+									const MetaName& pubName)
+{
+	AutoCacheRequest request(tdbb, drq_s_pub_tab, DYN_REQUESTS);
+
+	STORE(REQUEST_HANDLE request TRANSACTION_HANDLE transaction)
+		PTAB IN RDB$PUBLICATION_TABLES
+	{
+		strcpy(PTAB.RDB$PUBLICATION_NAME, pubName.c_str());
+		PTAB.RDB$PUBLICATION_NAME.NULL = FALSE;
+
+		strcpy(PTAB.RDB$TABLE_NAME, tableName.c_str());
+		PTAB.RDB$TABLE_NAME.NULL = FALSE;
+	}
+	END_STORE
+}
+
+
+void RelationNode::dropFromPublication(thread_db* tdbb,
+									   jrd_tra* transaction,
+									   const MetaName& tableName,
+									   const MetaName& pubName)
+{
+	AutoCacheRequest request(tdbb, drq_e_pub_tab, DYN_REQUESTS);
+
+	FOR(REQUEST_HANDLE request TRANSACTION_HANDLE transaction)
+		PTAB IN RDB$PUBLICATION_TABLES
+		WITH PTAB.RDB$PUBLICATION_NAME EQ pubName.c_str()
+			AND PTAB.RDB$TABLE_NAME EQ tableName.c_str()
+	{
+		ERASE PTAB;
+	}
+	END_FOR
+}
+
+
 //----------------------
 
 
@@ -7167,10 +7413,9 @@ string CreateRelationNode::internalPrint(NodePrinter& printer) const
 	return "CreateRelationNode";
 }
 
-bool CreateRelationNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
+void CreateRelationNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
 {
 	SCL_check_create_access(tdbb, SCL_object_table);
-	return true;
 }
 
 void CreateRelationNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch,
@@ -7192,7 +7437,9 @@ void CreateRelationNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScrat
 
 	DYN_UTIL_check_unique_name(tdbb, transaction, name, obj_relation);
 
-	checkRelationTempScope(tdbb, transaction, name, relationType);
+	fb_assert(relationType.specified);
+
+	checkRelationTempScope(tdbb, transaction, name, relationType.value);
 
 	AutoCacheRequest request(tdbb, drq_s_rels2, DYN_REQUESTS);
 
@@ -7202,7 +7449,15 @@ void CreateRelationNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScrat
 		strcpy(REL.RDB$RELATION_NAME, name.c_str());
 		REL.RDB$SYSTEM_FLAG = 0;
 		REL.RDB$FLAGS = REL_sql;
-		REL.RDB$RELATION_TYPE = relationType;
+		REL.RDB$RELATION_TYPE = relationType.value;
+
+		if (ssDefiner.specified)
+		{
+			REL.RDB$SQL_SECURITY.NULL = FALSE;
+			REL.RDB$SQL_SECURITY = ssDefiner.value ? FB_TRUE : FB_FALSE;
+		}
+		else
+			REL.RDB$SQL_SECURITY.NULL = TRUE;
 
 		REL.RDB$VIEW_BLR.NULL = TRUE;
 		REL.RDB$VIEW_SOURCE.NULL = TRUE;
@@ -7222,6 +7477,31 @@ void CreateRelationNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScrat
 		}
 	}
 	END_STORE
+
+	bool replicationEnabled;
+
+	if (replicationState.specified)
+		replicationEnabled = replicationState.value;
+	else
+	{
+		// Apply the default replication state to the table being created
+
+		AutoCacheRequest request2(tdbb, drq_l_pub_mode, DYN_REQUESTS);
+
+		FOR(REQUEST_HANDLE request2 TRANSACTION_HANDLE transaction)
+			PUB IN RDB$PUBLICATIONS
+			WITH PUB.RDB$PUBLICATION_NAME EQ DEFAULT_PUBLICATION
+		{
+			replicationEnabled = (PUB.RDB$AUTO_ENABLE != 0);
+		}
+		END_FOR
+	}
+
+	if (replicationEnabled)
+	{
+		// Add table to the default publication
+		RelationNode::addToPublication(tdbb, transaction, name, DEFAULT_PUBLICATION);
+	}
 
 	storePrivileges(tdbb, transaction, name, obj_relation, ALL_PRIVILEGES);
 
@@ -7297,12 +7577,11 @@ string AlterRelationNode::internalPrint(NodePrinter& printer) const
 	return "AlterRelationNode";
 }
 
-bool AlterRelationNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
+void AlterRelationNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
 {
 	dsc dscName;
 	dscName.makeText(name.length(), CS_METADATA, (UCHAR*) name.c_str());
 	SCL_check_relation(tdbb, &dscName, SCL_alter);
-	return true;
 }
 
 void AlterRelationNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch,
@@ -7402,6 +7681,22 @@ void AlterRelationNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratc
 						// msg 176: "column %s does not exist in table/view %s"
 						status_exception::raise(Arg::PrivateDyn(176) << clause->fromName << name);
 					}
+
+					AutoRequest request2;
+
+					FOR(REQUEST_HANDLE request2 TRANSACTION_HANDLE transaction)
+						RCL IN RDB$RELATION_CONSTRAINTS CROSS
+						CHK IN RDB$CHECK_CONSTRAINTS
+						WITH RCL.RDB$RELATION_NAME EQ name.c_str() AND
+							 RCL.RDB$CONSTRAINT_TYPE EQ NOT_NULL_CNSTRT AND
+							 CHK.RDB$CONSTRAINT_NAME EQ RCL.RDB$CONSTRAINT_NAME AND
+							 CHK.RDB$TRIGGER_NAME EQ clause->fromName.c_str()
+					{
+						MODIFY CHK
+							strcpy(CHK.RDB$TRIGGER_NAME, clause->toName.c_str());
+						END_MODIFY
+					}
+					END_FOR
 
 					break;
 				}
@@ -7522,6 +7817,64 @@ void AlterRelationNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratc
 					CreateDropConstraint& dropConstraint = constraints.add();
 					dropConstraint.name =
 						static_cast<const DropConstraintClause*>(i->getObject())->name;
+					break;
+				}
+
+				case Clause::TYPE_ALTER_SQL_SECURITY:
+				{
+					AutoRequest request;
+
+					FOR(REQUEST_HANDLE request TRANSACTION_HANDLE transaction)
+						REL IN RDB$RELATIONS
+						WITH REL.RDB$RELATION_NAME EQ name.c_str()
+					{
+						MODIFY REL
+						{
+							if (ssDefiner.specified)
+							{
+								REL.RDB$SQL_SECURITY.NULL = FALSE;
+								REL.RDB$SQL_SECURITY = ssDefiner.value ? FB_TRUE : FB_FALSE;
+							}
+							else
+								REL.RDB$SQL_SECURITY.NULL = TRUE;
+						}
+						END_MODIFY
+					}
+					END_FOR
+
+					break;
+				}
+
+				case Clause::TYPE_ALTER_PUBLICATION:
+				{
+					fb_assert(replicationState.specified);
+
+					if (replicationState.value)
+					{
+						// Add table to the publication
+
+						try
+						{
+							RelationNode::addToPublication(tdbb, transaction,
+														   name, DEFAULT_PUBLICATION);
+						}
+						catch (const status_exception& ex)
+						{
+							if (ex.value()[1] != isc_unique_key_violation)
+								throw;
+
+							// Ignore duplicated records
+							fb_utils::init_status(tdbb->tdbb_status_vector);
+						}
+					}
+					else
+					{
+						// Drop table from the publication
+
+						RelationNode::dropFromPublication(tdbb, transaction,
+														  name, DEFAULT_PUBLICATION);
+					}
+
 					break;
 				}
 
@@ -7753,7 +8106,22 @@ void AlterRelationNode::modifyField(thread_db* tdbb, DsqlCompilerScratch* dsqlSc
 					}
 				END_MODIFY
 			}
-			else if (clause->identityRestart)
+			else if (clause->dropIdentity)
+			{
+				if (RFR.RDB$GENERATOR_NAME.NULL)
+				{
+					// msg 285: "Column @1 is not an identity column"
+					status_exception::raise(Arg::PrivateDyn(285) << field->fld_name);
+				}
+
+				DropSequenceNode::deleteIdentity(tdbb, transaction, RFR.RDB$GENERATOR_NAME);
+
+				MODIFY RFR
+					RFR.RDB$GENERATOR_NAME.NULL = TRUE;
+					RFR.RDB$IDENTITY_TYPE.NULL = TRUE;
+				END_MODIFY
+			}
+			else if (clause->identityOptions)
 			{
 				bool found = false;
 				AutoRequest request2;
@@ -7764,11 +8132,38 @@ void AlterRelationNode::modifyField(thread_db* tdbb, DsqlCompilerScratch* dsqlSc
 				{
 					const SLONG id = GEN.RDB$GENERATOR_ID;
 					const MetaName genName(RFR.RDB$GENERATOR_NAME);
-					const SINT64 val = clause->identityRestartValue.specified ?
-						clause->identityRestartValue.value :
-						(!GEN.RDB$INITIAL_VALUE.NULL ? GEN.RDB$INITIAL_VALUE : 0);
 
-					transaction->getGenIdCache()->put(id, val);
+					if (clause->identityOptions->restart)
+					{
+						const SINT64 val =
+							clause->identityOptions->startValue
+								.orElse(!GEN.RDB$INITIAL_VALUE.NULL ? GEN.RDB$INITIAL_VALUE : 0) -
+							clause->identityOptions->increment
+								.orElse(!GEN.RDB$GENERATOR_INCREMENT.NULL ? GEN.RDB$GENERATOR_INCREMENT : 1);
+
+						transaction->getGenIdCache()->put(id, val);
+					}
+
+					if (clause->identityOptions->type.specified)
+					{
+						MODIFY RFR
+							RFR.RDB$IDENTITY_TYPE = clause->identityOptions->type.value;
+						END_MODIFY
+					}
+
+					if (clause->identityOptions->increment.specified)
+					{
+						if (clause->identityOptions->increment.value == 0)
+						{
+							status_exception::raise(Arg::Gds(isc_dyn_cant_use_zero_inc_ident) <<
+								Arg::Str(field->fld_name) <<
+								Arg::Str(name));
+						}
+
+						MET_update_generator_increment(tdbb, id,
+							clause->identityOptions->increment.value);
+					}
+
 					dsc desc;
 					desc.makeText((USHORT) genName.length(), ttype_metadata,
 						(UCHAR*) genName.c_str());
@@ -7835,7 +8230,7 @@ void AlterRelationNode::modifyField(thread_db* tdbb, DsqlCompilerScratch* dsqlSc
 					if (clause->computed && field->dtype == dtype_unknown)
 					{
 						dsc desc;
-						MAKE_desc(dsqlScratch, &desc, clause->computed->value);
+						DsqlDescMaker::fromNode(dsqlScratch, &desc, clause->computed->value);
 
 						field->dtype = desc.dsc_dtype;
 						field->length = desc.dsc_length;
@@ -8035,7 +8430,7 @@ string DropRelationNode::internalPrint(NodePrinter& printer) const
 	return "DropRelationNode";
 }
 
-bool DropRelationNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
+void DropRelationNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
 {
 	dsc dscName;
 	dscName.makeText(name.length(), CS_METADATA, (UCHAR*) name.c_str());
@@ -8043,7 +8438,6 @@ bool DropRelationNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
 		SCL_check_view(tdbb, &dscName, SCL_drop);
 	else
 		SCL_check_relation(tdbb, &dscName, SCL_drop);
-	return true;
 }
 
 void DropRelationNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch,
@@ -8251,6 +8645,18 @@ void DropRelationNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch
 	}
 	END_FOR
 
+	// Drop table from all publications
+
+	request.reset(tdbb, drq_e_pub_tab_all, DYN_REQUESTS);
+
+	FOR(REQUEST_HANDLE request TRANSACTION_HANDLE transaction)
+		PTAB IN RDB$PUBLICATION_TABLES
+		WITH PTAB.RDB$TABLE_NAME EQ name.c_str()
+	{
+		ERASE PTAB;
+	}
+	END_FOR
+
 	if (found)
 		executeDdlTrigger(tdbb, dsqlScratch, transaction, DTW_AFTER, ddlTriggerAction, name, NULL);
 	else
@@ -8289,22 +8695,24 @@ DdlNode* CreateAlterViewNode::dsqlPass(DsqlCompilerScratch* dsqlScratch)
 	return DdlNode::dsqlPass(dsqlScratch);
 }
 
-bool CreateAlterViewNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
+void CreateAlterViewNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
 {
 	dsc dscName;
 	dscName.makeText(name.length(), CS_METADATA, (UCHAR*) name.c_str());
 	if (alter)
-		SCL_check_view(tdbb, &dscName, SCL_alter);
-	else
-		SCL_check_create_access(tdbb, SCL_object_view);
-	return true;
+	{
+		if (SCL_check_view(tdbb, &dscName, SCL_alter) || !create)
+			return;
+	}
+
+	SCL_check_create_access(tdbb, SCL_object_view);
 }
 
 void CreateAlterViewNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch,
 	jrd_tra* transaction)
 {
 	Attachment* const attachment = transaction->tra_attachment;
-	const string& userName = attachment->att_user->usr_user_name;
+	const MetaString& userName = attachment->att_user->getUserName();
 
 	const dsql_rel* modifyingView = NULL;
 
@@ -8531,22 +8939,21 @@ void CreateAlterViewNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScra
 		ValueExprNode* nameNode = fieldNode;
 		const char* aliasName = NULL;
 
-		while (nameNode->is<DsqlAliasNode>() || nameNode->is<DerivedFieldNode>() ||
-			nameNode->is<DsqlMapNode>())
+		while (nodeIs<DsqlAliasNode>(nameNode) || nodeIs<DerivedFieldNode>(nameNode) || nodeIs<DsqlMapNode>(nameNode))
 		{
 			DsqlAliasNode* aliasNode;
 			DsqlMapNode* mapNode;
 			DerivedFieldNode* derivedField;
 
-			if ((aliasNode = nameNode->as<DsqlAliasNode>()))
+			if ((aliasNode = nodeAs<DsqlAliasNode>(nameNode)))
 			{
 				if (!aliasName)
 					aliasName = aliasNode->name.c_str();
 				nameNode = aliasNode->value;
 			}
-			else if ((mapNode = nameNode->as<DsqlMapNode>()))
+			else if ((mapNode = nodeAs<DsqlMapNode>(nameNode)))
 				nameNode = mapNode->map->map_node;
-			else if ((derivedField = nameNode->as<DerivedFieldNode>()))
+			else if ((derivedField = nodeAs<DerivedFieldNode>(nameNode)))
 			{
 				if (!aliasName)
 					aliasName = derivedField->name.c_str();
@@ -8555,7 +8962,7 @@ void CreateAlterViewNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScra
 		}
 
 		const dsql_fld* nameField = NULL;
-		const FieldNode* fieldNameNode = nameNode->as<FieldNode>();
+		const FieldNode* fieldNameNode = nodeAs<FieldNode>(nameNode);
 
 		if (fieldNameNode)
 			nameField = fieldNameNode->dsqlField;
@@ -8569,7 +8976,7 @@ void CreateAlterViewNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScra
 
 		// Check if this is a field or an expression.
 
-		DsqlAliasNode* aliasNode = fieldNode->as<DsqlAliasNode>();
+		DsqlAliasNode* aliasNode = nodeAs<DsqlAliasNode>(fieldNode);
 
 		if (aliasNode)
 			fieldNode = aliasNode->value;
@@ -8577,7 +8984,7 @@ void CreateAlterViewNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScra
 		dsql_fld* field = NULL;
 		const dsql_ctx* context = NULL;
 
-		fieldNameNode = fieldNode->as<FieldNode>();
+		fieldNameNode = nodeAs<FieldNode>(fieldNode);
 
 		if (fieldNameNode)
 		{
@@ -8604,7 +9011,7 @@ void CreateAlterViewNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScra
 		if (ptr)
 		{
 			if (ptr < end)
-				fieldStr = (*ptr)->as<FieldNode>()->dsqlName.c_str();
+				fieldStr = nodeAs<FieldNode>(*ptr)->dsqlName.c_str();
 			else
 			{
 				// Generate an error when going out of this loop.
@@ -8695,7 +9102,7 @@ void CreateAlterViewNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScra
 
 			// Get the type of the expression.
 			dsc desc;
-			MAKE_desc(dsqlScratch, &desc, fieldNode);
+			DsqlDescMaker::fromNode(dsqlScratch, &desc, fieldNode);
 
 			dsql_fld newField(*tdbb->getDefaultPool());
 			newField.dtype = desc.dsc_dtype;
@@ -8713,12 +9120,14 @@ void CreateAlterViewNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScra
 				const USHORT adjust =
 					(desc.dsc_dtype == dtype_varying) ? sizeof(USHORT) : 0;
 				const USHORT bpc =
-					METD_get_charset_bpc(dsqlScratch->getTransaction(), newField.charSetId);
+					METD_get_charset_bpc(dsqlScratch->getTransaction(), newField.charSetId.value);
 
 				newField.charLength = (newField.length - adjust) / bpc;
 			}
 			else
 				newField.subType = desc.dsc_sub_type;
+
+			newField.setExactPrecision();
 
 			if (relField)	// modifying a view
 			{
@@ -8815,11 +9224,11 @@ void CreateAlterViewNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScra
 				Arg::Gds(isc_col_name_err));
 		}
 
-		RseNode* querySpec = selectExpr->querySpec->as<RseNode>();
+		RseNode* querySpec = nodeAs<RseNode>(selectExpr->querySpec);
 		fb_assert(querySpec);
 
 		if (querySpec->dsqlFrom->items.getCount() != 1 ||
-			!querySpec->dsqlFrom->items[0]->is<ProcedureSourceNode>())
+			!nodeIs<ProcedureSourceNode>(querySpec->dsqlFrom->items[0]))
 		{
 			// Only one table allowed for VIEW WITH CHECK OPTION
 			status_exception::raise(
@@ -8887,10 +9296,10 @@ void CreateAlterViewNode::createCheckTrigger(thread_db* tdbb, DsqlCompilerScratc
 
 	dsqlScratch->resetContextStack();
 
-	RseNode* querySpec = selectExpr->querySpec->as<RseNode>();
+	RseNode* querySpec = nodeAs<RseNode>(selectExpr->querySpec);
 	fb_assert(querySpec);
 
-	ProcedureSourceNode* sourceNode = querySpec->dsqlFrom->items[0]->as<ProcedureSourceNode>();
+	ProcedureSourceNode* sourceNode = nodeAs<ProcedureSourceNode>(querySpec->dsqlFrom->items[0]);
 
 	if (triggerType == PRE_MODIFY_TRIGGER)
 	{
@@ -8959,14 +9368,14 @@ void CreateAlterViewNode::createCheckTrigger(thread_db* tdbb, DsqlCompilerScratc
 			NestConst<ValueExprNode> valueNod = *ptr2;
 			DsqlAliasNode* aliasNode;
 
-			if ((aliasNode = fieldNod->as<DsqlAliasNode>()))
+			if ((aliasNode = nodeAs<DsqlAliasNode>(fieldNod)))
 				fieldNod = aliasNode->value;
 
-			if ((aliasNode = valueNod->as<DsqlAliasNode>()))
+			if ((aliasNode = nodeAs<DsqlAliasNode>(valueNod)))
 				valueNod = aliasNode->value;
 
-			FieldNode* fieldNode = fieldNod->as<FieldNode>();
-			FieldNode* valueNode = valueNod->as<FieldNode>();
+			FieldNode* fieldNode = nodeAs<FieldNode>(fieldNod);
+			FieldNode* valueNode = nodeAs<FieldNode>(valueNod);
 
 			// Generate the actual comparisons.
 
@@ -9025,10 +9434,10 @@ void CreateAlterViewNode::createCheckTrigger(thread_db* tdbb, DsqlCompilerScratc
 		ValueExprNode* valueNode = *ptr;
 		DsqlAliasNode* aliasNode;
 
-		if ((aliasNode = valueNode->as<DsqlAliasNode>()))
+		if ((aliasNode = nodeAs<DsqlAliasNode>(valueNode)))
 			valueNode = aliasNode->value;
 
-		FieldNode* fieldNode = valueNode->as<FieldNode>();
+		FieldNode* fieldNode = nodeAs<FieldNode>(valueNode);
 		fb_assert(fieldNode);
 
 		savedNames.add(field->fld_name);
@@ -9433,13 +9842,12 @@ string CreateIndexNode::internalPrint(NodePrinter& printer) const
 	return "CreateIndexNode";
 }
 
-bool CreateIndexNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
+void CreateIndexNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
 {
 	dsc dscName;
 	const MetaName &relationName = relation->dsqlName;
 	dscName.makeText(relationName.length(), CS_METADATA, (UCHAR*) relationName.c_str());
-	SCL_check_relation(tdbb, &dscName, SCL_alter);
-	return true;
+	SCL_check_relation(tdbb, &dscName, SCL_alter, false);
 }
 
 // Define an index.
@@ -9467,7 +9875,7 @@ void CreateIndexNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch,
 		for (; ptr != end; ++ptr)
 		{
 			MetaName& column = definition.columns.add();
-			column = (*ptr)->as<FieldNode>()->dsqlName;
+			column = nodeAs<FieldNode>(*ptr)->dsqlName;
 		}
 	}
 	else if (computed)
@@ -9504,15 +9912,15 @@ string AlterIndexNode::internalPrint(NodePrinter& printer) const
 	return "AlterIndexNode";
 }
 
-bool AlterIndexNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
+void AlterIndexNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
 {
-	MetaName relationName = getIndexRelationName(tdbb, transaction, name);
+	bool systemIndex;
+	MetaName relationName = getIndexRelationName(tdbb, transaction, name, systemIndex);
 
 	dsc dscName;
 	dscName.makeText(relationName.length(), CS_METADATA, (UCHAR*) relationName.c_str());
 
-	SCL_check_relation(tdbb, &dscName, SCL_alter);
-	return true;
+	SCL_check_relation(tdbb, &dscName, SCL_alter, systemIndex);
 }
 
 void AlterIndexNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction)
@@ -9566,15 +9974,15 @@ string SetStatisticsNode::internalPrint(NodePrinter& printer) const
 	return "SetStatisticsNode";
 }
 
-bool SetStatisticsNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
+void SetStatisticsNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
 {
-	MetaName relationName = getIndexRelationName(tdbb, transaction, name);
+	bool systemIndex;
+	MetaName relationName = getIndexRelationName(tdbb, transaction, name, systemIndex);
 
 	dsc dscName;
 	dscName.makeText(relationName.length(), CS_METADATA, (UCHAR*) relationName.c_str());
 
 	SCL_check_relation(tdbb, &dscName, SCL_alter, false);
-	return true;
 }
 
 void SetStatisticsNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction)
@@ -9647,15 +10055,15 @@ string DropIndexNode::internalPrint(NodePrinter& printer) const
 	return "DropIndexNode";
 }
 
-bool DropIndexNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
+void DropIndexNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
 {
-	MetaName relationName = getIndexRelationName(tdbb, transaction, name);
+	bool systemIndex;
+	MetaName relationName = getIndexRelationName(tdbb, transaction, name, systemIndex);
 
 	dsc dscName;
 	dscName.makeText(relationName.length(), CS_METADATA, (UCHAR*) relationName.c_str());
 
-	SCL_check_relation(tdbb, &dscName, SCL_alter);
-	return true;
+	SCL_check_relation(tdbb, &dscName, SCL_alter, systemIndex);
 }
 
 void DropIndexNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction)
@@ -9716,16 +10124,15 @@ string CreateFilterNode::internalPrint(NodePrinter& printer) const
 	return "CreateFilterNode";
 }
 
-bool CreateFilterNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
+void CreateFilterNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
 {
 	SCL_check_create_access(tdbb, SCL_object_filter);
-	return true;
 }
 
 // Define a blob filter.
 void CreateFilterNode::execute(thread_db* tdbb, DsqlCompilerScratch* /*dsqlScratch*/, jrd_tra* transaction)
 {
-	MetaName ownerName(tdbb->getAttachment()->att_user->usr_user_name);
+	MetaName ownerName(tdbb->getAttachment()->att_user->getUserName());
 
 	// run all statements under savepoint control
 	AutoSavePoint savePoint(tdbb, transaction);
@@ -9797,10 +10204,9 @@ string DropFilterNode::internalPrint(NodePrinter& printer) const
 	return "DropFilterNode";
 }
 
-bool DropFilterNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
+void DropFilterNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
 {
 	SCL_check_filter(tdbb, name, SCL_drop);
-	return true;
 }
 
 void DropFilterNode::execute(thread_db* tdbb, DsqlCompilerScratch* /*dsqlScratch*/, jrd_tra* transaction)
@@ -9846,10 +10252,9 @@ string CreateShadowNode::internalPrint(NodePrinter& printer) const
 	return "CreateShadowNode";
 }
 
-bool CreateShadowNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
+void CreateShadowNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
 {
 	SCL_check_database(tdbb, SCL_alter);
-	return true;
 }
 
 void CreateShadowNode::execute(thread_db* tdbb, DsqlCompilerScratch* /*dsqlScratch*/, jrd_tra* transaction)
@@ -9916,10 +10321,9 @@ string DropShadowNode::internalPrint(NodePrinter& printer) const
 	return "DropShadowNode";
 }
 
-bool DropShadowNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
+void DropShadowNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
 {
 	SCL_check_database(tdbb, SCL_alter);
-	return true;
 }
 
 void DropShadowNode::execute(thread_db* tdbb, DsqlCompilerScratch* /*dsqlScratch*/, jrd_tra* transaction)
@@ -9935,7 +10339,7 @@ void DropShadowNode::execute(thread_db* tdbb, DsqlCompilerScratch* /*dsqlScratch
 	{
 		if (nodelete)
 		{
-			AutoSetRestoreFlag<USHORT> noDfw(&tdbb->tdbb_flags, TDBB_dont_post_dfw, true);
+			AutoSetRestoreFlag<ULONG> noDfw(&tdbb->tdbb_flags, TDBB_dont_post_dfw, true);
 			MODIFY FIL USING
 				FIL.RDB$FILE_FLAGS |= FILE_nodelete;
 			END_MODIFY
@@ -9953,30 +10357,50 @@ void DropShadowNode::execute(thread_db* tdbb, DsqlCompilerScratch* /*dsqlScratch
 //----------------------
 
 
-string CreateRoleNode::internalPrint(NodePrinter& printer) const
+USHORT PrivilegesNode::convertPrivilegeFromString(thread_db* tdbb, jrd_tra* transaction, MetaName privilege)
+{
+	string priv(privilege.c_str());
+	priv.upper();
+
+	return SCL_convert_privilege(tdbb, transaction, priv);
+}
+
+
+//----------------------
+
+
+string CreateAlterRoleNode::internalPrint(NodePrinter& printer) const
 {
 	DdlNode::internalPrint(printer);
 
 	NODE_PRINT(printer, name);
 
-	return "CreateRoleNode";
+	return "CreateAlterRoleNode";
 }
 
-bool CreateRoleNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
+void CreateAlterRoleNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
 {
-	SCL_check_create_access(tdbb, SCL_object_role);
-	return true;
+	if (createFlag)
+		SCL_check_create_access(tdbb, SCL_object_role);
+	else
+		SCL_check_role(tdbb, name, SCL_alter);
 }
 
-void CreateRoleNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction)
+void CreateAlterRoleNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction)
 {
-	MetaName ownerName(tdbb->getAttachment()->att_user->usr_user_name);
+	if (createFlag && sysPrivDrop)
+	{
+		// msg 293: DROP SYSTEM PRIVILEGES should not be used in CREATE ROLE
+		Arg::PrivateDyn(293).raise();
+	}
+
+	MetaName ownerName(tdbb->getAttachment()->att_user->getUserName());
 
 	// run all statements under savepoint control
 	AutoSavePoint savePoint(tdbb, transaction);
 
 	executeDdlTrigger(tdbb, dsqlScratch, transaction, DTW_BEFORE,
-		DDL_TRIGGER_CREATE_ROLE, name, NULL);
+		createFlag ? DDL_TRIGGER_CREATE_ROLE : DDL_TRIGGER_ALTER_ROLE, name, NULL);
 
 	if (name == ownerName)
 	{
@@ -9997,31 +10421,64 @@ void CreateRoleNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, 
 	}
 
 	MetaName dummyName;
-	if (isItSqlRole(tdbb, transaction, name, dummyName))
+	if (createFlag && isItSqlRole(tdbb, transaction, name, dummyName))
 	{
 		// msg 194: "SQL role @1 already exists"
 		status_exception::raise(Arg::PrivateDyn(194) << name);
 	}
 
-	AutoCacheRequest request(tdbb, drq_role_gens, DYN_REQUESTS);
-
-	STORE(REQUEST_HANDLE request TRANSACTION_HANDLE transaction)
-		X IN RDB$ROLES
+	if (privileges.hasData() || sysPrivDrop)
 	{
-		strcpy(X.RDB$ROLE_NAME, name.c_str());
-		strcpy(X.RDB$OWNER_NAME, ownerName.c_str());
-		X.RDB$SYSTEM_FLAG = 0;
+		if (!tdbb->getAttachment()->locksmith(tdbb, CREATE_PRIVILEGED_ROLES))
+		{
+			// msg 294: Access to SYSTEM PRIVILEGES in ROLES denied to @1
+			(Arg::PrivateDyn(294) << ownerName).raise();
+		}
 	}
-	END_STORE
+
+	UserId::Privileges newPrivileges;
+	if (privileges.hasData() && !sysPrivDrop)
+	{
+		const MetaName* const end = privileges.end();
+		for (const MetaName* privName = privileges.begin(); privName < end; ++privName)
+			newPrivileges.set(convertPrivilegeFromString(tdbb, transaction, *privName));
+	}
+
+	Attachment* attachment = tdbb->getAttachment();
+
+	string p;
+	newPrivileges.store(p.getBuffer(newPrivileges.BYTES_COUNT));
+
+	if (createFlag)
+	{
+		PreparedStatement::Builder sql;
+		sql << "insert into rdb$roles(rdb$role_name, rdb$owner_name, rdb$system_privileges, rdb$system_flag)"
+			<< "values(" << name << "," << ownerName << "," << p << ", 0)";
+
+		AutoPreparedStatement ps(attachment->prepareStatement(tdbb, transaction, sql));
+		ps->execute(tdbb, transaction);
+	}
+	else if (privileges.hasData() || sysPrivDrop)
+	{
+		PreparedStatement::Builder sql;
+		sql << "update rdb$roles set rdb$system_privileges =" << p << "where rdb$role_name =" << name;
+
+		AutoPreparedStatement ps(attachment->prepareStatement(tdbb, transaction, sql));
+		if (ps->executeUpdate(tdbb, transaction) == 0)
+		{
+			// msg 155: "Role %s not found"
+			(Arg::PrivateDyn(155) << name).raise();
+		}
+	}
 
 	executeDdlTrigger(tdbb, dsqlScratch, transaction, DTW_AFTER,
-		DDL_TRIGGER_CREATE_ROLE, name, NULL);
+		createFlag ? DDL_TRIGGER_CREATE_ROLE : DDL_TRIGGER_ALTER_ROLE, name, NULL);
 
 	savePoint.release();	// everything is ok
 }
 
 // If role name is user name returns true. Otherwise returns false.
-bool CreateRoleNode::isItUserName(thread_db* tdbb, jrd_tra* transaction)
+bool CreateAlterRoleNode::isItUserName(thread_db* tdbb, jrd_tra* transaction)
 {
 	bool found = false;
 
@@ -10087,24 +10544,25 @@ void MappingNode::validateAdmin()
 		Arg::Gds(isc_alter_role).raise();
 }
 
-// add some item to DDL in "double quotes"
-void MappingNode::addItem(string& ddl, const char* text)
+// add some item to DDL in quotes
+void MappingNode::addItem(string& ddl, const char* text, char quote)
 {
-	ddl += '"';
+	ddl += quote;
 	char c;
-	while (c = *text++)
+
+	while ((c = *text++))
 	{
 		ddl += c;
-		if (c == '"')
+		if (c == quote)
 			ddl += c;
 	}
-	ddl += '"';
+
+	ddl += quote;
 }
 
-bool MappingNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
+void MappingNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
 {
 	//DDL_TODO
-	return false;
 }
 
 void MappingNode::runInSecurityDb(SecDbContext* secDbContext)
@@ -10175,7 +10633,7 @@ void MappingNode::runInSecurityDb(SecDbContext* secDbContext)
 			ddl += ' ';
 			if (from)
 			{
-				addItem(ddl, from->getString().c_str());
+				addItem(ddl, fromUtf8.c_str(), '\'');
 				ddl += ' ';
 			}
 		}
@@ -10203,7 +10661,7 @@ void MappingNode::runInSecurityDb(SecDbContext* secDbContext)
 
 			// check presence of such record in the table
 			Message msgCheck;
-			Field<Varying> nm(msgCheck, 1);
+			Field<Varying> nm(msgCheck, MAX_SQL_IDENTIFIER_LEN);
 			nm = name.c_str();
 
 			Message result;
@@ -10259,7 +10717,7 @@ void MappingNode::runInSecurityDb(SecDbContext* secDbContext)
 			if (fromType)
 				type2 = fromType->c_str();
 			if (from)
-				f2 = from->getString().c_str();
+				f2 = fromUtf8.c_str();
 			nm2 = name.c_str();
 
 			Message* msg = NULL;
@@ -10308,8 +10766,11 @@ void MappingNode::runInSecurityDb(SecDbContext* secDbContext)
 // It's purpose is to add/drop mapping from any security name to DB security object.
 void MappingNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction)
 {
-	if (!(tdbb->getAttachment() && tdbb->getAttachment()->locksmith()))
-		status_exception::raise(Arg::Gds(isc_adm_task_denied));
+	if (!(tdbb->getAttachment() && tdbb->getAttachment()->locksmith(tdbb, CHANGE_MAPPING_RULES)))
+		(Arg::Gds(isc_adm_task_denied) << Arg::Gds(isc_miss_prvlg) << "CHANGE_MAPPING_RULES").raise();
+
+	if (from)
+		fromUtf8 = from->toUtf8(dsqlScratch);
 
 	if (global)
 	{
@@ -10372,7 +10833,7 @@ void MappingNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd
 				strcpy(M.RDB$MAP_FROM_TYPE, fromType->c_str());
 				M.RDB$MAP_FROM.NULL = fromNull;
 				if (!fromNull)
-					strcpy(M.RDB$MAP_FROM, from->getString().c_str());
+					strcpy(M.RDB$MAP_FROM, fromUtf8.c_str());
 			END_MODIFY
 			break;
 
@@ -10420,7 +10881,7 @@ void MappingNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd
 			strcpy(M.RDB$MAP_FROM_TYPE, fromType->c_str());
 			M.RDB$MAP_FROM.NULL = fromNull;
 			if (!fromNull)
-				strcpy(M.RDB$MAP_FROM, from->getString().c_str());
+				strcpy(M.RDB$MAP_FROM, fromUtf8.c_str());
 
 			M.RDB$MAP_TO_TYPE = role ? 1 : 0;
 			if (to)
@@ -10448,7 +10909,7 @@ void MappingNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd
 	if (ddlTriggerAction > 0)
 		executeDdlTrigger(tdbb, dsqlScratch, transaction, DTW_AFTER, ddlTriggerAction, name, NULL);
 
-	DFW_post_work(transaction, dfw_clear_mapping, NULL, 0);
+	DFW_post_work(transaction, dfw_clear_cache, NULL, Mapping::MAPPING_CACHE);
 	savePoint.release();	// everything is ok
 }
 
@@ -10465,15 +10926,14 @@ string DropRoleNode::internalPrint(NodePrinter& printer) const
 	return "DropRoleNode";
 }
 
-bool DropRoleNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
+void DropRoleNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
 {
 	SCL_check_role(tdbb, name, SCL_drop);
-	return true;
 }
 
 void DropRoleNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction)
 {
-	MetaName user(tdbb->getAttachment()->att_user->usr_user_name);
+	MetaName user(tdbb->getAttachment()->att_user->getUserName());
 
 	// run all statements under savepoint control
 	AutoSavePoint savePoint(tdbb, transaction);
@@ -10521,6 +10981,9 @@ void DropRoleNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jr
 		ERASE ROL;
 
 		found = true;
+
+		if (!ROL.RDB$SECURITY_CLASS.NULL)
+			deleteSecurityClass(tdbb, transaction, ROL.RDB$SECURITY_CLASS);
 	}
 	END_FOR
 
@@ -10542,7 +11005,7 @@ void DropRoleNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jr
 //----------------------
 
 
-Firebird::MetaName UserNode::upper(const Firebird::MetaName& str)
+MetaName UserNode::upper(const MetaName& str)
 {
 	return str;
 }
@@ -10595,10 +11058,9 @@ static void setCharField(Auth::CharField& field, const string* value)
 }
 
 
-bool CreateAlterUserNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
+void CreateAlterUserNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
 {
 	//DDL_TODO
-	return false;
 }
 
 
@@ -10624,7 +11086,7 @@ void CreateAlterUserNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScra
 
 	Auth::DynamicUserData* userData = FB_NEW_POOL(*transaction->tra_pool) Auth::DynamicUserData;
 
-	string text = name.c_str();
+	MetaName text(name);
 	if (text.isEmpty() && mode == USER_MOD)
 	{
 		// alter current user
@@ -10634,7 +11096,7 @@ void CreateAlterUserNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScra
 		if (!usr)
 			(Arg::Gds(isc_random) << "Missing user name for ALTER CURRENT USER").raise();
 
-		text = usr->usr_user_name;
+		text = usr->getUserName();
 	}
 
 	Firebird::LocalStatus s;
@@ -10725,14 +11187,14 @@ string DropUserNode::internalPrint(NodePrinter& printer) const
 
 	NODE_PRINT(printer, name);
 	NODE_PRINT(printer, plugin);
+	NODE_PRINT(printer, silent);
 
 	return "DropUserNode";
 }
 
-bool DropUserNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
+void DropUserNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
 {
 	//DDL_TODO
-	return false;
 }
 
 void DropUserNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction)
@@ -10751,6 +11213,7 @@ void DropUserNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jr
 	userData->user.set(&statusWrapper, text.c_str());
 	userData->user.setEntered(&statusWrapper, 1);
 	userData->plugin = plugin;
+	userData->silent = silent;
 	check(&statusWrapper);
 
 	executeDdlTrigger(tdbb, dsqlScratch, transaction, DTW_BEFORE, DDL_TRIGGER_DROP_USER,
@@ -10785,10 +11248,9 @@ string GrantRevokeNode::internalPrint(NodePrinter& printer) const
 	return "GrantRevokeNode";
 }
 
-bool GrantRevokeNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
+void GrantRevokeNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
 {
 	// GRANT OPTION will be checked in grantRevoke method
-	return false;
 }
 
 void GrantRevokeNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction)
@@ -10825,13 +11287,19 @@ void GrantRevokeNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch,
 			if (grantAdminOption)
 				option = 2; // with admin option
 
+			const GranteeClause* rolesPtr = roles.begin();
 			const GranteeClause* rolesEnd = roles.end();
-			for (const GranteeClause* rolesPtr = roles.begin(); rolesPtr != rolesEnd; ++rolesPtr)
+			const bool* defaultRolesPtr = defaultRoles.begin();
+			for (; rolesPtr != rolesEnd; ++rolesPtr, ++defaultRolesPtr)
 			{
 				usersEnd = users.end();
+				const bool defaultRole = *defaultRolesPtr;
 				for (usersPtr = users.begin(); usersPtr != usersEnd; ++usersPtr)
-					grantRevoke(tdbb, transaction, rolesPtr, usersPtr, "M", NULL, option);
+					grantRevoke(tdbb, transaction, rolesPtr, usersPtr, "M", defaultRole ? "D" : NULL, option);
 			}
+
+			// Invalidate system privileges cache
+			DFW_post_work(transaction, dfw_clear_cache, NULL, Mapping::SYSTEM_PRIVILEGES_CACHE);
 		}
 	}
 
@@ -10949,7 +11417,7 @@ void GrantRevokeNode::modifyPrivileges(thread_db* tdbb, jrd_tra* transaction, SS
 			for (NestConst<ValueExprNode>* ptr = fields->items.begin(); ptr != fields->items.end(); ++ptr)
 			{
 				grantRevoke(tdbb, transaction, object, user, privs0,
-					(*ptr)->as<FieldNode>()->dsqlName, option);
+					nodeAs<FieldNode>(*ptr)->dsqlName, option);
 			}
 		}
 		else
@@ -10961,19 +11429,140 @@ void GrantRevokeNode::modifyPrivileges(thread_db* tdbb, jrd_tra* transaction, SS
 }
 
 
+static bool checkObjectExist(thread_db* tdbb, jrd_tra* transaction, const MetaName& name, int type)
+{
+	bool rc = false;
+
+	switch (type)
+	{
+		case obj_procedure:
+		{
+			AutoCacheRequest request(tdbb, drq_proc_exist, DYN_REQUESTS);
+			FOR(REQUEST_HANDLE request TRANSACTION_HANDLE transaction)
+				X IN RDB$PROCEDURES
+				WITH X.RDB$PROCEDURE_NAME EQ name.c_str() AND X.RDB$PACKAGE_NAME MISSING
+			{
+				rc = true;
+			}
+			END_FOR
+			break;
+		}
+
+		case obj_udf:
+		{
+			AutoCacheRequest request(tdbb, drq_udf_exist, DYN_REQUESTS);
+			FOR(REQUEST_HANDLE request TRANSACTION_HANDLE transaction)
+				X IN RDB$FUNCTIONS
+				WITH X.RDB$FUNCTION_NAME EQ name.c_str() AND X.RDB$PACKAGE_NAME MISSING
+			{
+				rc = true;
+			}
+			END_FOR
+			break;
+		}
+
+		case obj_package_header:
+		{
+			AutoCacheRequest request(tdbb, drq_package_exist, DYN_REQUESTS);
+			FOR(REQUEST_HANDLE request TRANSACTION_HANDLE transaction)
+				X IN RDB$PACKAGES
+				WITH X.RDB$PACKAGE_NAME EQ name.c_str()
+			{
+				rc = true;
+			}
+			END_FOR
+			break;
+		}
+
+		case obj_trigger:
+		{
+			AutoCacheRequest request(tdbb, drq_trigger_exist, DYN_REQUESTS);
+			FOR(REQUEST_HANDLE request TRANSACTION_HANDLE transaction)
+				X IN RDB$TRIGGERS
+				WITH X.RDB$TRIGGER_NAME EQ name.c_str()
+			{
+				rc = true;
+			}
+			END_FOR
+			break;
+		}
+
+		case obj_relation:
+		case obj_view:
+		{
+			AutoCacheRequest request(tdbb, drq_rel_exist, DYN_REQUESTS);
+			FOR(REQUEST_HANDLE request TRANSACTION_HANDLE transaction)
+				X IN RDB$RELATIONS
+				WITH X.RDB$RELATION_NAME EQ name.c_str()
+			{
+				rc = (type != obj_view) || !X.RDB$VIEW_BLR.NULL;
+			}
+			END_FOR
+			break;
+		}
+
+		case obj_exception:
+		{
+			AutoCacheRequest request(tdbb, drq_exception_exist, DYN_REQUESTS);
+			FOR(REQUEST_HANDLE request TRANSACTION_HANDLE transaction)
+				X IN RDB$EXCEPTIONS
+				WITH X.RDB$EXCEPTION_NAME EQ name.c_str()
+			{
+				rc = true;
+			}
+			END_FOR
+			break;
+		}
+
+		case obj_generator:
+		{
+			AutoCacheRequest request(tdbb, drq_generator_exist, DYN_REQUESTS);
+			FOR(REQUEST_HANDLE request TRANSACTION_HANDLE transaction)
+				X IN RDB$GENERATORS
+				WITH X.RDB$GENERATOR_NAME EQ name.c_str()
+			{
+				rc = true;
+			}
+			END_FOR
+			break;
+		}
+	}
+
+	return rc;
+}
+
+static bool checkFieldExist(thread_db* tdbb, jrd_tra* transaction, const MetaName& relation, const MetaName& field)
+{
+	bool rc = false;
+
+	AutoCacheRequest request(tdbb, drq_rel_field_exist, DYN_REQUESTS);
+	FOR(REQUEST_HANDLE request TRANSACTION_HANDLE transaction)
+		X IN RDB$RELATION_FIELDS
+		WITH X.RDB$RELATION_NAME EQ relation.c_str() AND
+			 X.RDB$FIELD_NAME EQ field.c_str()
+	{
+		rc = true;
+	}
+	END_FOR
+
+	return rc;
+}
+
 // Execute SQL grant/revoke operation.
 void GrantRevokeNode::grantRevoke(thread_db* tdbb, jrd_tra* transaction, const GranteeClause* object,
 	const GranteeClause* userNod, const char* privs,
-	const MetaName& field, int options)
+	MetaName field, int options)
 {
 	SSHORT userType = userNod->first;
 	MetaName user(userNod->second);
-    MetaName dummyName;
+	MetaName dummyName;
 	const SSHORT objType = object ? object->first : obj_type_MAX;
-    bool crdb = false;
+	const MetaName objName(object ? object->second : "");
+	bool crdb = false;
 
-	char privileges[16];
+	AutoPtr<char, ArrayDelete> privileges(new char[MAX(strlen(ALL_PRIVILEGES), strlen(privs ? privs : "")) + 1]);
 	strcpy(privileges, privs ? privs : "");
+
 	if (strcmp(privileges, "A") == 0)
 		strcpy(privileges, ALL_PRIVILEGES);
 
@@ -10998,6 +11587,7 @@ void GrantRevokeNode::grantRevoke(thread_db* tdbb, jrd_tra* transaction, const G
 		memmove(cPtr, cPtr + 1, len);
 	}
 
+	// Check if grant object exists
 	switch (userType)
 	{
 		case obj_user_or_role:
@@ -11012,16 +11602,40 @@ void GrantRevokeNode::grantRevoke(thread_db* tdbb, jrd_tra* transaction, const G
 				}
 			}
 			else
-			{
 				userType = obj_user;
-			}
 			break;
 
 		case obj_user:
+			// We may grant privilege to non existing user
+			break;
+
+		case obj_udf:
+			if (!checkObjectExist(tdbb, transaction, user, userType))
+				status_exception::raise(Arg::PrivateDyn(301) << user.c_str());	// Function @1 does not exist
+			break;
+
+		case obj_procedure:
+			if (!checkObjectExist(tdbb, transaction, user, userType))
+				status_exception::raise(Arg::PrivateDyn(302) << user.c_str());	// Procedure @1 does not exist
+			break;
+
+		case obj_package_header:
+			if (!checkObjectExist(tdbb, transaction, user, userType))
+				status_exception::raise(Arg::PrivateDyn(303) << user.c_str());	// Package @1 does not exist
+			break;
+
+		case obj_trigger:
+			if (!checkObjectExist(tdbb, transaction, user, userType))
+				status_exception::raise(Arg::PrivateDyn(304) << user.c_str());	// Trigger @1 does not exist
+			break;
+
+		case obj_view:
+			if (!checkObjectExist(tdbb, transaction, user, userType))
+				status_exception::raise(Arg::PrivateDyn(305) << user.c_str());	// View @1 does not exist
 			break;
 
 		case obj_sql_role:
-			if ((!crdb) && (!isItSqlRole(tdbb, transaction, user, dummyName)))
+			if (!crdb && (!isItSqlRole(tdbb, transaction, user, dummyName)))
 			{
 				// msg 188: Role doesn't exist.
 				status_exception::raise(Arg::PrivateDyn(188) << user.c_str());
@@ -11032,6 +11646,69 @@ void GrantRevokeNode::grantRevoke(thread_db* tdbb, jrd_tra* transaction, const G
 				status_exception::raise(Arg::PrivateDyn(195) << user.c_str());
 			}
 			break;
+
+		case obj_privilege:		// Should convert symbolic privilege name to bit number
+			{
+				USHORT p = convertPrivilegeFromString(tdbb, transaction, user);
+				user.printf("%d", p);
+			}
+			break;
+
+	}
+
+	// Check if grant subject exists
+	switch (objType)
+	{
+		case obj_view:
+			if (!checkObjectExist(tdbb, transaction, objName, objType))
+				status_exception::raise(Arg::PrivateDyn(305) << objName.c_str());	// View @1 does not exist
+			break;
+
+		case obj_relation:
+			if (!checkObjectExist(tdbb, transaction, objName, objType))
+				status_exception::raise(Arg::PrivateDyn(306) << objName.c_str());	// Table @1 does not exist
+
+			if (field.hasData() && !checkFieldExist(tdbb, transaction, objName, field))
+				status_exception::raise(Arg::PrivateDyn(309) << field.c_str() << objName.c_str());	// Field @1 of table @2 does not exist
+			break;
+
+		case obj_trigger:
+			if (!checkObjectExist(tdbb, transaction, objName, objType))
+				status_exception::raise(Arg::PrivateDyn(304) << objName.c_str());	// Trigger @1 does not exist
+			break;
+
+		case obj_procedure:
+			if (!checkObjectExist(tdbb, transaction, objName, objType))
+				status_exception::raise(Arg::PrivateDyn(302) << objName.c_str());	// Procedure @1 does not exist
+			break;
+
+		case obj_exception:
+			if (!checkObjectExist(tdbb, transaction, objName, objType))
+				status_exception::raise(Arg::PrivateDyn(307) << objName.c_str());	// Exception @1 does not exist
+			break;
+
+		case obj_generator:
+			if (!checkObjectExist(tdbb, transaction, objName, objType))
+				status_exception::raise(Arg::PrivateDyn(308) << objName.c_str());	// Generator/Sequence @1 does not exist
+			break;
+
+		case obj_udf:
+			if (!checkObjectExist(tdbb, transaction, objName, objType))
+				status_exception::raise(Arg::PrivateDyn(301) << objName.c_str());	// Function @1 does not exist
+			break;
+
+		case obj_package_header:
+			if (!checkObjectExist(tdbb, transaction, objName, objType))
+				status_exception::raise(Arg::PrivateDyn(303) << objName.c_str());	// Package @1 does not exist
+			break;
+
+		case obj_sql_role:
+			if (!isItSqlRole(tdbb, transaction, objName, dummyName))
+				status_exception::raise(Arg::PrivateDyn(188) << objName.c_str());	// Role doesn't exist.
+			break;
+
+		default:
+			fb_assert(object == NULL || objType >= obj_database);
 	}
 
 	if (options == 1)	// with grant option
@@ -11050,16 +11727,37 @@ void GrantRevokeNode::grantRevoke(thread_db* tdbb, jrd_tra* transaction, const G
 				ERRD_post(Arg::Gds(isc_dsql_cant_grant_option) << Arg::Str("views"));
 				break;
 
+			case obj_privilege:
+				ERRD_post(Arg::Gds(isc_dsql_cant_grant_option) << Arg::Str("system privileges"));
+				break;
+
+			case obj_udf:
+				ERRD_post(Arg::Gds(isc_dsql_cant_grant_option) << Arg::Str("functions"));
+				break;
+
+			case obj_package_header:
+				ERRD_post(Arg::Gds(isc_dsql_cant_grant_option) << Arg::Str("packages"));
+				break;
+
 			default:
 				break;
 		}
 	}
 
-	MetaName grantorRevoker(grantor ?
-		*grantor : tdbb->getAttachment()->att_user->usr_user_name);
+	const Attachment* attachment = tdbb->getAttachment();
 
-	if (grantor && !tdbb->getAttachment()->locksmith())
-		status_exception::raise(Arg::PrivateDyn(252) << SYSDBA_USER_NAME);
+	if (grantor && !attachment->locksmith(tdbb, USE_GRANTED_BY_CLAUSE))
+	{
+		const MetaName& owner(tdbb->getDatabase()->dbb_owner);
+
+		if (owner == DBA_USER_NAME)
+			(Arg::PrivateDyn(252) << DBA_USER_NAME).raise();
+		else
+			(Arg::PrivateDyn(295) << DBA_USER_NAME << owner).raise();
+	}
+
+	MetaName currentUser(attachment->getEffectiveUserId()->getUserName());
+	MetaName grantorRevoker(grantor ? *grantor : currentUser);
 
 	if (!isGrant && !privs)	// REVOKE ALL ON ALL
 	{
@@ -11074,7 +11772,8 @@ void GrantRevokeNode::grantRevoke(thread_db* tdbb, jrd_tra* transaction, const G
 				 PRIV.RDB$USER_TYPE = userType AND
 				 PRIV.RDB$GRANTOR NOT MISSING
 		{
-			if (tdbb->getAttachment()->att_user->locksmith() || grantorRevoker == PRIV.RDB$GRANTOR)
+			if (attachment->att_user->locksmith(tdbb, GRANT_REVOKE_ON_ANY_OBJECT) ||
+				grantorRevoker == PRIV.RDB$GRANTOR)
 			{
 				ERASE PRIV;
 				all.grantErased = true;
@@ -11088,8 +11787,6 @@ void GrantRevokeNode::grantRevoke(thread_db* tdbb, jrd_tra* transaction, const G
 
 		return;
 	}
-
-	const MetaName objName(object->second);
 
 	if (objType == obj_sql_role && objName == NULL_ROLE)
 	{
@@ -11117,8 +11814,6 @@ void GrantRevokeNode::grantRevoke(thread_db* tdbb, jrd_tra* transaction, const G
 	char priv[2];
 	priv[1] = '\0';
 
-	AutoSetRestoreFlag<USHORT> trDdl(&tdbb->tdbb_flags, TDBB_trusted_ddl, true);
-
 	if (isGrant)
 	{
 		AutoCacheRequest request(tdbb, drq_l_grant1, DYN_REQUESTS);
@@ -11126,6 +11821,8 @@ void GrantRevokeNode::grantRevoke(thread_db* tdbb, jrd_tra* transaction, const G
 		for (const char* pr = privileges; *pr; ++pr)
 		{
 			bool duplicate = false;
+			MetaName newField = field;
+			int newOptions = options;
 			priv[0] = *pr;
 
 			FOR(REQUEST_HANDLE request TRANSACTION_HANDLE transaction)
@@ -11136,16 +11833,28 @@ void GrantRevokeNode::grantRevoke(thread_db* tdbb, jrd_tra* transaction, const G
 					 PRIV.RDB$USER = user.c_str() AND
 					 PRIV.RDB$USER_TYPE = userType AND
 					 PRIV.RDB$GRANTOR EQ grantorRevoker.c_str() AND
-					 PRIV.RDB$FIELD_NAME EQUIV NULLIF(field.c_str(), '')
+					 (PRIV.RDB$FIELD_NAME EQUIV NULLIF(field.c_str(), '') OR
+					  (PRIV.RDB$OBJECT_TYPE EQ obj_sql_role))
 			{
-				if (PRIV.RDB$GRANT_OPTION.NULL ||
-					PRIV.RDB$GRANT_OPTION ||
-					PRIV.RDB$GRANT_OPTION == options)
-				{
-					duplicate = true;
-				}
-				else
-					ERASE PRIV;	// has to be 0 and options == 1
+				// It means we have such privilege without grant option but
+				// user grants it with grant option. We should re-grant existing privilege.
+				const bool addGrantOption = (!PRIV.RDB$GRANT_OPTION.NULL && !PRIV.RDB$GRANT_OPTION &&
+					PRIV.RDB$GRANT_OPTION != options);
+
+				// It means we have such granted role but without DEFAULT but user grants with DEFAULT.
+				// We should re-grant it.
+				const bool addDefaultRole = (objType == obj_sql_role && field == "D" && PRIV.RDB$FIELD_NAME.NULL);
+
+				if (addGrantOption && !addDefaultRole) // Save DEFAULT option for re-grant
+						newField = PRIV.RDB$FIELD_NAME;
+
+				if (addDefaultRole && !addGrantOption) // Add grant option was requested
+						newOptions = PRIV.RDB$GRANT_OPTION;
+
+				duplicate = !addGrantOption && !addDefaultRole;
+
+				if (!duplicate)
+					ERASE PRIV;
 			}
 			END_FOR
 
@@ -11158,9 +11867,15 @@ void GrantRevokeNode::grantRevoke(thread_db* tdbb, jrd_tra* transaction, const G
 
 				if (userType == obj_sql_role)
 				{
-					// Temporary restriction. This should be removed once GRANT role1 TO rolex is
-					// supported and this message could be reused for blocking cycles of role grants.
-					status_exception::raise(Arg::PrivateDyn(192) << user.c_str());
+					// Check for blocking cycles of role grants.
+					UserId grantedRoles;
+					grantedRoles.setSqlRole(objName);
+
+					if (grantedRoles.roleInUse(tdbb, user))
+					{
+						// 292: role @1 can not be granted to role @2
+						status_exception::raise(Arg::PrivateDyn(292) << objName.c_str() << user.c_str());
+					}
 				}
 			}
 			else
@@ -11176,34 +11891,56 @@ void GrantRevokeNode::grantRevoke(thread_db* tdbb, jrd_tra* transaction, const G
 				// As long as only locksmith can use GRANTED BY, no need specially checking
 				// for privileges of current user. AP-2008
 
-				if (objType == 0)
+				switch (objType)
 				{
-					// Relation or view because we cannot distinguish at this point.
-					checkGrantorCanGrant(tdbb, transaction,
-						tdbb->getAttachment()->att_user->usr_user_name.c_str(), priv, objName,
-						field, true);
-				}
-				else if (objType >= obj_database)
-				{
-					checkGrantorCanGrantDdl(tdbb, transaction,
-						tdbb->getAttachment()->att_user->usr_user_name.c_str(), priv, objName);
+					case obj_relation:
+					{
+						// Relation or view because we cannot distinguish at this point.
+						checkGrantorCanGrantRelation(tdbb, transaction, currentUser.c_str(), priv, objName,
+							field, true);
+						break;
+					}
+
+					case obj_procedure:
+					case obj_udf:
+					case obj_exception:
+					case obj_generator:
+					case obj_package_header:
+					{
+						checkGrantorCanGrantObject(tdbb, transaction, currentUser.c_str(), priv, objName, objType);
+						break;
+					}
+
+					default:
+						if (objType >= obj_database)
+						{
+							checkGrantorCanGrantDdl(tdbb, transaction, currentUser.c_str(), priv, objName);
+						}
+						else
+							fb_assert(false);
 				}
 			}
 
-			storePrivilege(tdbb, transaction, objName, user, field, pr, userType, objType,
-				options, grantorRevoker);
+			storePrivilege(tdbb, transaction, objName, user, newField, pr, userType, objType,
+				newOptions, grantorRevoker);
 		}
 	}
 	else	// REVOKE
 	{
-		AutoCacheRequest request(tdbb, (field.hasData() ? drq_e_grant1 : drq_e_grant2), DYN_REQUESTS);
+		const bool revokeDefaultRole = (objType == obj_sql_role) && field.hasData();
+		const bool revokeGrantOption = options;
+
+		// This var must be identical for request (1) and if below (2)
+		const bool withField = field.hasData() && objType != obj_sql_role;
+
+		AutoCacheRequest request(tdbb, (withField ? drq_e_grant1 : drq_e_grant2), DYN_REQUESTS); // (1)
 
 		for (const char* pr = privileges; (priv[0] = *pr); ++pr)
 		{
 			bool grantErased = false;
 			bool badGrantor = false;
 
-			if (field.hasData())
+			if (withField)	// (2)
 			{
 				FOR(REQUEST_HANDLE request TRANSACTION_HANDLE transaction)
 					PRIV IN RDB$USER_PRIVILEGES
@@ -11217,8 +11954,21 @@ void GrantRevokeNode::grantRevoke(thread_db* tdbb, jrd_tra* transaction, const G
 				{
 					if (grantorRevoker == PRIV.RDB$GRANTOR)
 					{
+						MetaName newField = NULL;
+						int newOptions = 0;
+						if (!revokeGrantOption && !PRIV.RDB$GRANT_OPTION.NULL)
+							newOptions = PRIV.RDB$GRANT_OPTION;
+						if (!revokeDefaultRole && !PRIV.RDB$FIELD_NAME.NULL)
+							newField = PRIV.RDB$FIELD_NAME;
+
 						ERASE PRIV;
 						grantErased = true;
+
+						if (revokeDefaultRole || revokeGrantOption)
+						{
+							storePrivilege(tdbb, transaction, objName, user, newField, pr, userType, objType,
+								newOptions, grantorRevoker);
+						}
 					}
 					else
 						badGrantor = true;
@@ -11240,10 +11990,30 @@ void GrantRevokeNode::grantRevoke(thread_db* tdbb, jrd_tra* transaction, const G
 					// columns. So for all fields in this table which have been granted the
 					// privilege, we erase the entries from RDB$USER_PRIVILEGES.
 
-					if (grantorRevoker == PRIV.RDB$GRANTOR)
+					MetaName owner;
+					if ((grantorRevoker == PRIV.RDB$GRANTOR) ||
+						((objType == obj_sql_role) && (PRIV.RDB$PRIVILEGE[0] == 'M') &&		// This is ROLE to USER grant
+						 (currentUser != user) &&						// And current user does not revoke his own grant
+						 ((isItSqlRole(tdbb, transaction, objName, owner) &&		// Pick up role owner name
+						   (attachment->locksmith(tdbb, GRANT_REVOKE_ON_ANY_OBJECT) ||	// God-like check
+						    (owner == currentUser))) ||					// Current user is role owner
+						  (getGrantorOption(tdbb, transaction, currentUser, obj_user, objName) == 2))))	// or has ADMIN option
 					{
+						MetaName newField = NULL;
+						int newOptions = 0;
+						if (!revokeGrantOption && !PRIV.RDB$GRANT_OPTION.NULL)
+							newOptions = PRIV.RDB$GRANT_OPTION;
+						if (!revokeDefaultRole && !PRIV.RDB$FIELD_NAME.NULL)
+							newField = PRIV.RDB$FIELD_NAME;
+
 						ERASE PRIV;
 						grantErased = true;
+
+						if (revokeDefaultRole || revokeGrantOption)
+						{
+							storePrivilege(tdbb, transaction, objName, user, newField, pr, userType, objType,
+								newOptions, grantorRevoker);
+						}
 					}
 					else
 						badGrantor = true;
@@ -11251,26 +12021,16 @@ void GrantRevokeNode::grantRevoke(thread_db* tdbb, jrd_tra* transaction, const G
 				END_FOR
 			}
 
-			if (options && grantErased)
-			{
-				// Add the privilege without the grant option. There is a modify trigger on the
-				// rdb$user_privileges which disallows the table from being updated. It would have
-				// to be changed such that only the grant_option field can be updated.
-
-				storePrivilege(tdbb, transaction, objName, user, field, pr, userType, objType,
-					0, grantorRevoker);
-			}
-
-			if (badGrantor && !grantErased)
-			{
-				// msg 246: @1 is not grantor of @2 on @3 to @4.
-				status_exception::raise(Arg::PrivateDyn(246) <<
-					grantorRevoker.c_str() << privilegeName(priv[0]) << objName.c_str() <<
-					user.c_str());
-			}
-
 			if (!grantErased)
 			{
+				if (badGrantor)
+				{
+					// msg 246: @1 is not grantor of @2 on @3 to @4.
+					status_exception::raise(Arg::PrivateDyn(246) <<
+						grantorRevoker.c_str() << privilegeName(priv[0]) << objName.c_str() <<
+						user.c_str());
+				}
+
 				// msg 247: Warning: @1 on @2 is not granted to @3.
 				ERR_post_warning(
 					Arg::Warning(isc_dyn_miss_priv_warning) <<
@@ -11281,10 +12041,12 @@ void GrantRevokeNode::grantRevoke(thread_db* tdbb, jrd_tra* transaction, const G
 }
 
 // Check if the grantor has grant privilege on the relation/field.
-void GrantRevokeNode::checkGrantorCanGrant(thread_db* tdbb, jrd_tra* transaction,
+void GrantRevokeNode::checkGrantorCanGrantRelation(thread_db* tdbb, jrd_tra* transaction,
 	const char* grantor, const char* privilege, const MetaName& relationName,
 	const MetaName& fieldName, bool topLevel)
 {
+	const Attachment* attachment = tdbb->getAttachment();
+
 	// Verify that the input relation exists.
 
 	AutoCacheRequest request(tdbb, drq_gcg4, DYN_REQUESTS);
@@ -11335,7 +12097,7 @@ void GrantRevokeNode::checkGrantorCanGrant(thread_db* tdbb, jrd_tra* transaction
 
 	// If the current user is locksmith - allow all grants to occur
 
-	if (tdbb->getAttachment()->locksmith())
+	if (attachment->locksmith(tdbb, GRANT_REVOKE_ON_ANY_OBJECT))
 		return;
 
 	// If this is a non-sql table, then the owner will probably not have any
@@ -11372,32 +12134,35 @@ void GrantRevokeNode::checkGrantorCanGrant(thread_db* tdbb, jrd_tra* transaction
 
 	FOR(REQUEST_HANDLE request TRANSACTION_HANDLE transaction)
 		PRV IN RDB$USER_PRIVILEGES WITH
-			PRV.RDB$USER = UPPERCASE(grantor) AND
-			PRV.RDB$USER_TYPE = obj_user AND
+			((PRV.RDB$USER = UPPERCASE(grantor) AND
+				PRV.RDB$USER_TYPE = obj_user) OR (PRV.RDB$USER_TYPE = obj_sql_role)) AND
 			PRV.RDB$RELATION_NAME = relationName.c_str() AND
 			PRV.RDB$OBJECT_TYPE = obj_relation AND
 			PRV.RDB$PRIVILEGE = privilege
 	{
+		if ( (PRV.RDB$USER_TYPE == obj_sql_role) && !attachment->att_user->roleInUse(tdbb, PRV.RDB$USER))
+			continue;
+
+		const bool hasGrantOption = !PRV.RDB$GRANT_OPTION.NULL && PRV.RDB$GRANT_OPTION;
 		if (PRV.RDB$FIELD_NAME.NULL)
 		{
-			if (PRV.RDB$GRANT_OPTION.NULL || !PRV.RDB$GRANT_OPTION)
-				goRel = 0;
-			else if (goRel)
-				goRel = 1;
+			if (goRel == -1)
+				goRel = hasGrantOption ? WITH_GRANT_OPTION : 0;
+			else if ((goRel == 0) && hasGrantOption)
+				goRel = WITH_GRANT_OPTION;
 		}
 		else
 		{
-			if (PRV.RDB$GRANT_OPTION.NULL || !PRV.RDB$GRANT_OPTION)
+			if (fieldName.hasData() && fieldName == PRV.RDB$FIELD_NAME)
 			{
-				if (fieldName.hasData() && fieldName == PRV.RDB$FIELD_NAME)
-					goFld = 0;
-			}
-			else
-			{
-				if (fieldName.hasData() && fieldName == PRV.RDB$FIELD_NAME)
-					goFld = 1;
+				if (goFld == -1)
+					goFld = hasGrantOption ? WITH_GRANT_OPTION : 0;
+				else if ((goFld == 0) && hasGrantOption)
+					goFld = WITH_GRANT_OPTION;
 			}
 		}
+		if ( (goRel > 0) && (goFld > 0 || !fieldName.hasData()) )
+			break;	// We've found a privilege with grant option and can break the loop
 	}
 	END_FOR
 
@@ -11407,7 +12172,7 @@ void GrantRevokeNode::checkGrantorCanGrant(thread_db* tdbb, jrd_tra* transaction
 		{
 			// no grant option for privilege .. on column .. of [base] table/view ..
 			status_exception::raise(Arg::PrivateDyn(topLevel ? 167 : 168) <<
-				privilege << fieldName.c_str() << relationName.c_str());
+				privilegeName(*privilege) << fieldName.c_str() << relationName.c_str());
 		}
 
 		if (goFld == -1)
@@ -11416,14 +12181,14 @@ void GrantRevokeNode::checkGrantorCanGrant(thread_db* tdbb, jrd_tra* transaction
 			{
 				// no grant option for privilege .. on [base] table/view .. (for column ..)
 				status_exception::raise(Arg::PrivateDyn(topLevel ? 169 : 170) <<
-					privilege << relationName.c_str() << fieldName.c_str());
+					privilegeName(*privilege) << relationName.c_str() << fieldName.c_str());
 			}
 
 			if (goRel == -1)
 			{
 				// no .. privilege with grant option on [base] table/view .. (for column ..)
 				status_exception::raise(Arg::PrivateDyn(topLevel ? 171 : 172) <<
-					privilege << relationName.c_str() << fieldName.c_str());
+					privilegeName(*privilege) << relationName.c_str() << fieldName.c_str());
 			}
 		}
 	}
@@ -11432,13 +12197,13 @@ void GrantRevokeNode::checkGrantorCanGrant(thread_db* tdbb, jrd_tra* transaction
 		if (goRel == 0)
 		{
 			// no grant option for privilege .. on table/view ..
-			status_exception::raise(Arg::PrivateDyn(173) << privilege << relationName.c_str());
+			status_exception::raise(Arg::PrivateDyn(173) << privilegeName(*privilege) << relationName.c_str());
 		}
 
 		if (goRel == -1)
 		{
 			// no .. privilege with grant option on table/view ..
-			status_exception::raise(Arg::PrivateDyn(174) << privilege << relationName.c_str());
+			status_exception::raise(Arg::PrivateDyn(174) << privilegeName(*privilege) << relationName.c_str());
 		}
 	}
 
@@ -11465,20 +12230,69 @@ void GrantRevokeNode::checkGrantorCanGrant(thread_db* tdbb, jrd_tra* transaction
 		{
 			if (fieldName == G_FLD.RDB$FIELD_NAME)
 			{
-				checkGrantorCanGrant(tdbb, transaction, grantor, privilege,
+				checkGrantorCanGrantRelation(tdbb, transaction, grantor, privilege,
 					G_VIEW.RDB$RELATION_NAME, G_FLD.RDB$BASE_FIELD, false);
 			}
 		}
 		else
 		{
-			checkGrantorCanGrant(tdbb, transaction, grantor, privilege,
+			checkGrantorCanGrantRelation(tdbb, transaction, grantor, privilege,
 				G_VIEW.RDB$RELATION_NAME, G_FLD.RDB$BASE_FIELD, false);
 		}
 	}
 	END_FOR
 }
 
-// Check if the grantor has admin privilege on the role.
+/*
+ * Function takes a role and grantor name and go through all roles granted to specified one.
+ * If found target role with admin option returns 2, without admin option - 1.
+ * Otherwise returns 0;
+ *
+ */
+static int getGrantorOption(thread_db* tdbb, jrd_tra* transaction, const MetaName& grantor,
+	int grantorType, const MetaName& roleName)
+{
+	AutoCacheRequest request(tdbb, drq_get_role_au, DYN_REQUESTS);
+
+	FOR(REQUEST_HANDLE request TRANSACTION_HANDLE transaction)
+		PRV IN RDB$USER_PRIVILEGES WITH
+			PRV.RDB$USER = UPPERCASE(grantor.c_str()) AND
+			PRV.RDB$USER_TYPE = grantorType AND
+			PRV.RDB$OBJECT_TYPE = obj_sql_role AND
+			PRV.RDB$PRIVILEGE EQ "M"
+	{
+		const MetaName role = PRV.RDB$RELATION_NAME;
+		const bool grantable = PRV.RDB$GRANT_OPTION == WITH_ADMIN_OPTION;
+
+		if (role == roleName)
+			return grantable ? 2 : 1;
+		else
+		{
+			switch (getGrantorOption(tdbb, transaction, role, obj_sql_role, roleName))
+			{
+			case 0:
+				continue;
+			case 1: // call found roleName we should stop searching
+				return 1;
+			case 2: // call found roleName with admin option but have we admin option of intermediate roles?
+				return grantable ? 2 : 1;
+			}
+		}
+	}
+	END_FOR
+
+	// we and calls did not found granted roleName and have to return 0
+	return 0;
+}
+
+/*
+ * Check if the grantor has admin privilege on the role or admin privilege on another role
+ * which has admin privilege on it, etc
+ * If recursive call of getGrantorOption returns:
+ * 0 - role does not grant to grantor.
+ * 1 - found but without admin option.
+ * 2 - with admin option.
+*/
 void GrantRevokeNode::checkGrantorCanGrantRole(thread_db* tdbb, jrd_tra* transaction,
 	const MetaName& grantor, const MetaName& roleName)
 {
@@ -11487,7 +12301,7 @@ void GrantRevokeNode::checkGrantorCanGrantRole(thread_db* tdbb, jrd_tra* transac
 	if (isItSqlRole(tdbb, transaction, roleName, owner))
 	{
 		// Both SYSDBA and the owner of this ROLE can grant membership
-		if (tdbb->getAttachment()->locksmith() || owner == grantor)
+		if (tdbb->getAttachment()->locksmith(tdbb, GRANT_REVOKE_ON_ANY_OBJECT) || owner == grantor)
 			return;
 	}
 	else
@@ -11496,32 +12310,13 @@ void GrantRevokeNode::checkGrantorCanGrantRole(thread_db* tdbb, jrd_tra* transac
 		status_exception::raise(Arg::PrivateDyn(188) << roleName.c_str());
 	}
 
-	AutoCacheRequest request(tdbb, drq_get_role_au, DYN_REQUESTS);
-	bool grantable = false;
-	bool noAdmin = false;
+	const int r = getGrantorOption(tdbb, transaction, grantor, obj_user, roleName);
 
-	// The 'grantor' is not the owner of the ROLE, see if they have admin privilege on the role.
-	FOR(REQUEST_HANDLE request TRANSACTION_HANDLE transaction)
-		PRV IN RDB$USER_PRIVILEGES WITH
-			PRV.RDB$USER = UPPERCASE(grantor.c_str()) AND
-			PRV.RDB$USER_TYPE = obj_user AND
-			PRV.RDB$RELATION_NAME EQ roleName.c_str() AND
-			PRV.RDB$OBJECT_TYPE = obj_sql_role AND
-			PRV.RDB$PRIVILEGE EQ "M"
-	{
-		if (PRV.RDB$GRANT_OPTION == 2)
-			grantable = true;
-		else
-			noAdmin = true;
-	}
-	END_FOR
-
-	if (!grantable)
+	if (r < 2)
 	{
 		// 189: user have no admin option.
 		// 190: user is not a member of the role.
-		status_exception::raise(Arg::PrivateDyn(noAdmin ? 189 : 190) <<
-			grantor.c_str() << roleName.c_str());
+		status_exception::raise(Arg::PrivateDyn(r ? 189 : 190) << grantor.c_str() << roleName.c_str());
 	}
 }
 
@@ -11529,7 +12324,9 @@ void GrantRevokeNode::checkGrantorCanGrantRole(thread_db* tdbb, jrd_tra* transac
 void GrantRevokeNode::checkGrantorCanGrantDdl(thread_db* tdbb, jrd_tra* transaction,
 	const MetaName& grantor, const char* privilege, const MetaName& objName)
 {
-	if (tdbb->getAttachment()->locksmith())
+	const Attachment* attachment = tdbb->getAttachment();
+
+	if (attachment->locksmith(tdbb, GRANT_REVOKE_ANY_DDL_RIGHT))
 		return;
 
 	AutoCacheRequest request(tdbb, drq_l_grant_option, DYN_REQUESTS);
@@ -11537,22 +12334,69 @@ void GrantRevokeNode::checkGrantorCanGrantDdl(thread_db* tdbb, jrd_tra* transact
 
 	FOR (REQUEST_HANDLE request TRANSACTION_HANDLE transaction)
 		PRV IN RDB$USER_PRIVILEGES
-		WITH PRV.RDB$USER = UPPERCASE(grantor.c_str()) AND
-			 PRV.RDB$USER_TYPE = obj_user AND
+		WITH ((PRV.RDB$USER = UPPERCASE(grantor.c_str()) AND
+				PRV.RDB$USER_TYPE = obj_user) OR (PRV.RDB$USER_TYPE = obj_sql_role)) AND
 			 PRV.RDB$RELATION_NAME EQ objName.c_str() AND
 			 PRV.RDB$OBJECT_TYPE >= obj_database AND
 			 PRV.RDB$PRIVILEGE EQ privilege
 	{
-		grantable = PRV.RDB$GRANT_OPTION == 1;
+		if ( (PRV.RDB$USER_TYPE == obj_sql_role) && !attachment->att_user->roleInUse(tdbb, PRV.RDB$USER))
+			continue;
+
+		if (PRV.RDB$GRANT_OPTION == WITH_GRANT_OPTION)
+		{
+			grantable = true;
+			break;	// We've found a privilege with grant option and can break the loop
+		}
 	}
 	END_FOR
 
 	if (!grantable)
 	{
-		// no .. privilege with grant option on DDL ..
-		status_exception::raise(Arg::PrivateDyn(174) << privilege << objName.c_str());
+		// no @1 privilege with grant option on DDL @2
+		status_exception::raise(Arg::PrivateDyn(299) << privilegeName(*privilege) << objName.c_str());
 	}
 }
+
+
+// Check if the grantor has grant option on generator privilege
+void GrantRevokeNode::checkGrantorCanGrantObject(thread_db* tdbb, jrd_tra* transaction, const char* grantor,
+		const char* privilege, const MetaName& objName, SSHORT objType)
+{
+	const Attachment* attachment = tdbb->getAttachment();
+
+	if (attachment->locksmith(tdbb, GRANT_REVOKE_ON_ANY_OBJECT))
+		return;
+
+	AutoCacheRequest request(tdbb, drq_l_grant_object, DYN_REQUESTS);
+	bool grantable = false;
+
+	FOR (REQUEST_HANDLE request TRANSACTION_HANDLE transaction)
+		PRV IN RDB$USER_PRIVILEGES
+		WITH ((PRV.RDB$USER = UPPERCASE(grantor) AND
+				PRV.RDB$USER_TYPE = obj_user) OR (PRV.RDB$USER_TYPE = obj_sql_role)) AND
+			 PRV.RDB$RELATION_NAME EQ objName.c_str() AND
+			 PRV.RDB$OBJECT_TYPE = objType AND
+			 PRV.RDB$PRIVILEGE EQ privilege
+	{
+		if ( (PRV.RDB$USER_TYPE == obj_sql_role) && !attachment->att_user->roleInUse(tdbb, PRV.RDB$USER))
+			continue;
+
+		if (PRV.RDB$GRANT_OPTION == WITH_GRANT_OPTION)
+		{
+			grantable = true;
+			break;	// We've found a privilege with grant option and can break the loop
+		}
+	}
+	END_FOR
+
+	if (!grantable)
+	{
+		// no @1 privilege with grant option on object @2
+		status_exception::raise(Arg::PrivateDyn(300) << privilegeName(*privilege) << objName.c_str());
+	}
+}
+
 
 void GrantRevokeNode::storePrivilege(thread_db* tdbb, jrd_tra* transaction, const MetaName& object,
 	const MetaName& user, const MetaName& field, const TEXT* privilege, SSHORT userType,
@@ -11642,43 +12486,204 @@ string AlterDatabaseNode::internalPrint(NodePrinter& printer) const
 	return "AlterDatabaseNode";
 }
 
-bool AlterDatabaseNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
+void AlterDatabaseNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
 {
 	SCL_check_database(tdbb, SCL_alter);
-	return true;
+}
+
+void AlterDatabaseNode::checkClauses(thread_db* tdbb)
+{
+	// Raises msg 298: Incompatible ALTER DATABASE clauses: '@1' and '@2'
+
+	if (clauses & CLAUSE_END_BACKUP)
+	{
+		if (clauses & CLAUSE_BEGIN_BACKUP)
+			(Arg::PrivateDyn(298) << Arg::Str("BEGIN BACKUP") << Arg::Str("END BACKUP")).raise();
+
+		if (differenceFile.hasData())
+			(Arg::PrivateDyn(298) << Arg::Str("END BACKUP") << Arg::Str("ADD DIFFERENCE FILE")).raise();
+
+		if (clauses & CLAUSE_DROP_DIFFERENCE)
+			(Arg::PrivateDyn(298) << Arg::Str("END BACKUP") << Arg::Str("DROP DIFFERENCE FILE")).raise();
+	}
+
+	if ((clauses & CLAUSE_DROP_DIFFERENCE) && differenceFile.hasData())
+		(Arg::PrivateDyn(298) << Arg::Str("ADD DIFFERENCE FILE") << Arg::Str("DROP DIFFERENCE FILE")).raise();
+
+	if ((clauses & CLAUSE_ENABLE_PUB) && (clauses & CLAUSE_DISABLE_PUB))
+		(Arg::PrivateDyn(298) << Arg::Str("ENABLE PUBLICATION") << Arg::Str("DISABLE PUBLICATION")).raise();
+
+	if ((clauses & CLAUSE_PUB_INCL_TABLE) && (clauses & CLAUSE_PUB_EXCL_TABLE))
+		(Arg::PrivateDyn(298) << Arg::Str("INCLUDE TABLE TO PUBLICATION") << Arg::Str("EXCLUDE TABLE FROM PUBLICATION")).raise();
 }
 
 void AlterDatabaseNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch,
 	jrd_tra* transaction)
 {
+	checkClauses(tdbb);
+
+	// Take a LCK_alter_database lock to prevent altering of the database from
+	// parallel transactions
+
+	if (!transaction->tra_alter_db_lock)
+	{
+		Lock* lock = FB_NEW_RPT(*transaction->tra_pool, 0) Lock(tdbb, 0, LCK_alter_database);
+		lock->lck_data = transaction->tra_number;
+		if (LCK_lock(tdbb, lock, LCK_write, transaction->getLockWait()))
+			transaction->tra_alter_db_lock = lock;
+		else
+		{
+			const TraNumber conflict_trans = LCK_read_data(tdbb, lock);
+			delete lock;
+
+			// msg 297: Concurrent ALTER DATABASE is not supported
+			if (!conflict_trans)
+				Arg::PrivateDyn(297).raise();
+
+			// Cannot use Arg::Num here because transaction number is 64-bit unsigned integer
+			(Arg::PrivateDyn(297) << Arg::Gds(isc_concurrent_transaction) << Arg::Int64(conflict_trans)).raise();
+		}
+	}
+
 	// run all statements under savepoint control
 	AutoSavePoint savePoint(tdbb, transaction);
 
-	Attachment* const attachment = transaction->tra_attachment;
-	dsql_dbb* dbb = transaction->getDsqlAttachment();
+	if (clauses & CLAUSE_DROP_DIFFERENCE)
+		changeBackupMode(tdbb, transaction, CLAUSE_DROP_DIFFERENCE);
+
+	if (clauses & (CLAUSE_ENABLE_PUB | CLAUSE_DISABLE_PUB))
+	{
+		AutoCacheRequest request(tdbb, drq_m_pub_state, DYN_REQUESTS);
+
+		FOR(REQUEST_HANDLE request TRANSACTION_HANDLE transaction)
+			PUB IN RDB$PUBLICATIONS
+			WITH PUB.RDB$PUBLICATION_NAME EQ DEFAULT_PUBLICATION
+		{
+			MODIFY PUB
+				PUB.RDB$ACTIVE_FLAG.NULL = FALSE;
+				PUB.RDB$ACTIVE_FLAG = (clauses & CLAUSE_ENABLE_PUB) ? 1 : 0;
+			END_MODIFY
+		}
+		END_FOR
+	}
+
+	if (clauses & (CLAUSE_PUB_INCL_TABLE | CLAUSE_PUB_EXCL_TABLE))
+	{
+		if (pubTables.isEmpty())
+		{
+			AutoCacheRequest request(tdbb, drq_l_pub_all_rels, DYN_REQUESTS);
+
+			FOR(REQUEST_HANDLE request TRANSACTION_HANDLE transaction)
+				REL IN RDB$RELATIONS
+				WITH REL.RDB$SYSTEM_FLAG EQ 0
+					AND REL.RDB$VIEW_BLR MISSING
+			{
+				const rel_t relType =
+					relationType(REL.RDB$RELATION_TYPE.NULL, REL.RDB$RELATION_TYPE);
+
+				if (relType == rel_persistent)
+					pubTables.add(REL.RDB$RELATION_NAME);
+			}
+			END_FOR
+
+			AutoCacheRequest request2(tdbb, drq_m_pub_mode, DYN_REQUESTS);
+
+			FOR(REQUEST_HANDLE request2 TRANSACTION_HANDLE transaction)
+				PUB IN RDB$PUBLICATIONS
+				WITH PUB.RDB$PUBLICATION_NAME EQ DEFAULT_PUBLICATION
+			{
+				MODIFY PUB
+					PUB.RDB$AUTO_ENABLE = (clauses & CLAUSE_PUB_INCL_TABLE) ? 1 : 0;
+					PUB.RDB$AUTO_ENABLE.NULL = FALSE;
+				END_MODIFY
+			}
+			END_FOR
+		}
+		else
+		{
+			AutoCacheRequest request(tdbb, drq_l_pub_rel_name, DYN_REQUESTS);
+
+			for (const MetaName* iter = pubTables.begin(); iter != pubTables.end(); ++iter)
+			{
+				const MetaName& tableName = *iter;
+				bool found = false;
+
+				FOR(REQUEST_HANDLE request TRANSACTION_HANDLE transaction)
+					REL IN RDB$RELATIONS
+					WITH REL.RDB$SYSTEM_FLAG EQ 0
+						AND REL.RDB$VIEW_BLR MISSING
+						AND REL.RDB$RELATION_NAME EQ tableName.c_str()
+				{
+					const rel_t relType =
+						relationType(REL.RDB$RELATION_TYPE.NULL, REL.RDB$RELATION_TYPE);
+
+					if (relType == rel_persistent)
+						found = true;
+				}
+				END_FOR
+
+				if (!found)
+					status_exception::raise(Arg::Gds(isc_dyn_table_not_found) << tableName);
+			}
+		}
+
+		for (const MetaName* iter = pubTables.begin(); iter != pubTables.end(); ++iter)
+		{
+			const MetaName& tableName = *iter;
+
+			if (clauses & CLAUSE_PUB_INCL_TABLE)
+			{
+				try
+				{
+					RelationNode::addToPublication(tdbb, transaction,
+												   tableName, DEFAULT_PUBLICATION);
+				}
+				catch (const status_exception& ex)
+				{
+					if (ex.value()[1] != isc_unique_key_violation)
+						throw;
+
+					// Ignore duplicated records
+					fb_utils::init_status(tdbb->tdbb_status_vector);
+				}
+			}
+			else
+			{
+				RelationNode::dropFromPublication(tdbb, transaction,
+												  tableName, DEFAULT_PUBLICATION);
+			}
+		}
+	}
+
 	SLONG dbAlloc = PageSpace::maxAlloc(tdbb->getDatabase());
 	SLONG start = create ? createLength + 1 : 0;
-	AutoCacheRequest request(tdbb, drq_m_database, DYN_REQUESTS);
-
-	FOR(REQUEST_HANDLE request TRANSACTION_HANDLE transaction)
-		DBB IN RDB$DATABASE
+	for (NestConst<DbFileClause>* i = files.begin(); i != files.end(); ++i)
 	{
-		MODIFY DBB USING
-			if (clauses & CLAUSE_DROP_DIFFERENCE)
-				changeBackupMode(tdbb, transaction, CLAUSE_DROP_DIFFERENCE);
+		DbFileClause* file = *i;
 
-			for (NestConst<DbFileClause>* i = files.begin(); i != files.end(); ++i)
-			{
-				DbFileClause* file = *i;
+		start = MAX(start, file->start);
+		defineFile(tdbb, transaction, 0, false, false, dbAlloc,
+			file->name.c_str(), start, file->length);
+		start += file->length;
+	}
 
-				start = MAX(start, file->start);
-				defineFile(tdbb, transaction, 0, false, false, dbAlloc,
-					file->name.c_str(), start, file->length);
-				start += file->length;
-			}
+	if (differenceFile.hasData())
+		defineDifference(tdbb, transaction, differenceFile.c_str());
 
-			if (differenceFile.hasData())
-				defineDifference(tdbb, transaction, differenceFile.c_str());
+	if (clauses & CLAUSE_BEGIN_BACKUP)
+		changeBackupMode(tdbb, transaction, CLAUSE_BEGIN_BACKUP);
+
+	if (clauses & CLAUSE_END_BACKUP)
+		changeBackupMode(tdbb, transaction, CLAUSE_END_BACKUP);
+
+	if (setDefaultCharSet.hasData() || setDefaultCollation.hasData() || linger >= 0 ||
+		ssDefiner.specified)
+	{
+		AutoCacheRequest request(tdbb, drq_m_database, DYN_REQUESTS);
+		FOR(REQUEST_HANDLE request TRANSACTION_HANDLE transaction)
+			DBB IN RDB$DATABASE
+		{
+			MODIFY DBB USING
 
 			if (setDefaultCharSet.hasData())
 			{
@@ -11692,12 +12697,13 @@ void AlterDatabaseNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratc
 				DBB.RDB$CHARACTER_SET_NAME.NULL = FALSE;
 				strcpy(DBB.RDB$CHARACTER_SET_NAME, setDefaultCharSet.c_str());
 
+				dsql_dbb* dbb = transaction->getDsqlAttachment();
 				dbb->dbb_dfl_charset = "";	// reset in the cache
 			}
 
 			if (!DBB.RDB$CHARACTER_SET_NAME.NULL && setDefaultCollation.hasData())
 			{
-				AlterCharSetNode alterCharSetNode(getPool(), setDefaultCharSet, setDefaultCollation);
+				AlterCharSetNode alterCharSetNode(dsqlScratch->getPool(), setDefaultCharSet, setDefaultCollation);
 				alterCharSetNode.execute(tdbb, dsqlScratch, transaction);
 			}
 
@@ -11707,17 +12713,18 @@ void AlterDatabaseNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratc
 				DBB.RDB$LINGER = linger;
 			}
 
-			if (clauses & CLAUSE_BEGIN_BACKUP)
-				changeBackupMode(tdbb, transaction, CLAUSE_BEGIN_BACKUP);
+			if (ssDefiner.specified)
+			{
+				DBB.RDB$SQL_SECURITY.NULL = FALSE;
+				DBB.RDB$SQL_SECURITY = ssDefiner.value ? FB_TRUE : FB_FALSE;
+			}
 
-			if (clauses & CLAUSE_END_BACKUP)
-				changeBackupMode(tdbb, transaction, CLAUSE_END_BACKUP);
-		END_MODIFY
+			END_MODIFY
+		}
+		END_FOR
 	}
-	END_FOR
 
-	// Allow update above to work as a lock, preventing altering of the database from parallel transactions
-	// Moreover, it should load crypt plugin if it (by a miracle) wasn't already loaded yet
+	// Load crypt plugin if it (by a miracle) wasn't already loaded yet
 	if (clauses & CLAUSE_CRYPT)
 	{
 		Database* const db = tdbb->getDatabase();

@@ -36,16 +36,18 @@
 //#define ISC_TIME_SECONDS_PRECISION_SCALE	-4
 
 #include "firebird.h"
-#include "firebird/Interface.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include "firebird/Interface.h"
 #include "../common/gdsassert.h"
 #include "../common/file_params.h"
 #include "../common/msg_encode.h"
 #include "../yvalve/gds_proto.h"
 #include "../common/os/path_utils.h"
 #include "../common/dsc.h"
+#include "../common/TimeZoneUtil.h"
 #include "../jrd/constants.h"
 #include "../jrd/status.h"
 #include "../common/os/os_utils.h"
@@ -57,6 +59,8 @@
 #include "../common/classes/init.h"
 #include "../common/classes/TempFile.h"
 #include "../common/utils_proto.h"
+#include "../common/ThreadStart.h"
+#include "../common/Int128.h"
 
 #ifdef HAVE_UNISTD_H
 #include <unistd.h>
@@ -78,7 +82,6 @@
 #endif
 
 #include <sys/types.h>
-#include <sys/stat.h>
 #ifdef HAVE_SYS_FILE_H
 #include <sys/file.h>
 #endif
@@ -92,9 +95,9 @@
 #include "gen/sql_code.h"
 #include "gen/sql_state.h"
 #include "gen/iberror.h"
-#include "../jrd/ibase.h"
+#include "ibase.h"
 
-#include "../jrd/blr.h"
+#include "firebird/impl/blr.h"
 #include "../yvalve/msg.h"
 #include "../common/isc_proto.h"
 #include "../common/os/isc_i_proto.h"
@@ -119,10 +122,6 @@ static char* fb_prefix_msg = NULL;
 
 #include "gen/msgs.h"
 
-#ifndef O_BINARY
-#define O_BINARY	0
-#endif
-
 const SLONG GENERIC_SQLCODE		= -999;
 
 #include "fb_types.h"
@@ -132,6 +131,7 @@ const SLONG GENERIC_SQLCODE		= -999;
 #include "../common/classes/MsgPrint.h"
 
 using Firebird::TimeStamp;
+using Firebird::TimeZoneUtil;
 using Firebird::BlrReader;
 
 // This structure is used to parse the firebird.msg file.
@@ -259,6 +259,7 @@ const int op_derived_expr	= 25;
 const int op_partition_args	= 26;
 const int op_subproc_decl	= 27;
 const int op_subfunc_decl	= 28;
+const int op_window_win		= 29;
 
 static const UCHAR
 	// generic print formats
@@ -273,6 +274,7 @@ static const UCHAR
 	byte_verb_verb[] = { op_byte, op_line, op_verb, op_verb, 0},
 	byte_literal[] = { op_byte, op_literal, op_line, 0},
 	byte_byte_verb[] = { op_byte, op_byte, op_line, op_verb, 0},
+	verb_byte_verb[] = { op_verb, op_byte, op_line, op_verb, 0},
 	parm[]		= { op_byte, op_word, op_line, 0},	// also field id
 
 	parm2[]		= { op_byte, op_word, op_word, op_line, 0},
@@ -339,7 +341,12 @@ static const UCHAR
 	decode[] = { op_line, op_verb, op_indent, op_byte, op_line, op_args, op_indent, op_byte,
 				 op_line, op_args, 0},
 	subproc_decl[] = { op_subproc_decl, 0},
-	subfunc_decl[] = { op_subfunc_decl, 0};
+	subfunc_decl[] = { op_subfunc_decl, 0},
+	window_win[] = { op_byte, op_window_win, 0},
+	relation_field[] = { op_line, op_indent, op_byte, op_literal,
+						 op_line, op_indent, op_byte, op_literal, op_pad, op_line, 0},
+	store3[] = { op_line, op_byte, op_line, op_verb, op_verb, op_verb, 0},
+	marks[] = { op_byte, op_literal, op_line, op_verb, 0};
 
 
 #include "../jrd/blp.h"
@@ -615,7 +622,7 @@ SINT64 API_ROUTINE isc_portable_integer(const UCHAR* ptr, SSHORT length)
  *
  * Functional description
  *	Pick up (and convert) a Little Endian (VAX) style integer
- *      of length 1, 2, 4 or 8 bytes to local system's Endian format.
+ *      of variable length to local system's Endian format.
  *
  *   various parameter blocks (i.e., dpb, tpb, spb) flatten out multibyte
  *   values into little endian byte ordering before network transmission.
@@ -634,10 +641,15 @@ SINT64 API_ROUTINE isc_portable_integer(const UCHAR* ptr, SSHORT length)
 		return 0;
 
 	SINT64 value = 0;
+	int shift = 0;
 
-	for (int shift = 0; --length >= 0; shift += 8) {
+	while (--length > 0)
+	{
 		value += ((SINT64) *ptr++) << shift;
+		shift += 8;
 	}
+
+	value += ((SINT64)(SCHAR) *ptr) << shift;
 
 	return value;
 }
@@ -1192,7 +1204,7 @@ void API_ROUTINE gds__log(const TEXT* text, ...)
 #ifdef HAVE_FLOCK
 		if (flock(fileno(file), LOCK_EX))
 #else
-		if (lockf(fileno(file), F_LOCK, 0))
+		if (os_utils::lockf(fileno(file), F_LOCK, 0))
 #endif
 		{
 			// give up
@@ -1511,7 +1523,7 @@ SSHORT API_ROUTINE gds__msg_lookup(void* handle,
 		status = 0;
 		for (USHORT n = 1; !status; n++)
 		{
-			if (lseek(messageL->msg_file, LSEEK_OFFSET_CAST position, 0) < 0)
+			if (os_utils::lseek(messageL->msg_file, LSEEK_OFFSET_CAST position, 0) < 0)
 				status = -6;
 			else if (read(messageL->msg_file, messageL->msg_bucket, messageL->msg_bucket_size) < 0)
 				status = -7;
@@ -1695,7 +1707,7 @@ SLONG API_ROUTINE gds__get_prefix(SSHORT arg_type, const TEXT* passed_string)
 	if (arg_type == IB_PREFIX_TYPE)
 	{
 		// it's very important to do it BEFORE GDS_init_prefix()
-		Config::setRootDirectoryFromCommandLine(prefix);
+		Firebird::Config::setRootDirectoryFromCommandLine(prefix);
 	}
 
 	GDS_init_prefix();
@@ -2532,18 +2544,22 @@ SLONG API_ROUTINE gds__vax_integer(const UCHAR* ptr, SSHORT length)
  **************************************
  *
  * Functional description
- *	Pick up (and convert) a VAX style integer of length 1, 2, or 4
- *	bytes.
+ *	Pick up (and convert) a VAX style integer of variable length.
  *
  **************************************/
 	if (!ptr || length <= 0 || length > 4)
 		return 0;
 
 	SLONG value = 0;
+	int shift = 0;
 
-	for (int shift = 0; --length >= 0; shift += 8) {
+	while (--length > 0)
+	{
 		value += ((SLONG) *ptr++) << shift;
+		shift += 8;
 	}
+
+	value += ((SLONG)(SCHAR) *ptr) << shift;
 
 	return value;
 }
@@ -2933,9 +2949,19 @@ static int blr_print_dtype(gds_ctl* control)
 		length = 8;
 		break;
 
+	case blr_timestamp_tz:
+		string = "timestamp_tz";
+		length = 10;
+		break;
+
 	case blr_sql_time:
 		string = "sql_time";
 		length = 4;
+		break;
+
+	case blr_sql_time_tz:
+		string = "sql_time_tz";
+		length = 6;
 		break;
 
 	case blr_sql_date:
@@ -2949,10 +2975,11 @@ static int blr_print_dtype(gds_ctl* control)
 		break;
 
 	case blr_double:
+	case blr_dec128:
 		{
-			string = "double";
+			string = dtype == blr_double ? "double" : "dec128";
 
-			// for double literal, return the length of the numeric string
+			// for double/dec_128 literal, return the length of the numeric string
 			const UCHAR* pos = control->ctl_blr_reader.getPos();
 			const UCHAR v1 = control->ctl_blr_reader.getByte();
 			const UCHAR v2 = control->ctl_blr_reader.getByte();
@@ -2998,6 +3025,16 @@ static int blr_print_dtype(gds_ctl* control)
 	case blr_bool:
 		string = "bool";
 		length = 1;
+		break;
+
+	case blr_dec64:
+		string = "dec64";
+		length = sizeof(Firebird::Decimal64);
+		break;
+
+	case blr_int128:
+		string = "int128";
+		length = sizeof(Firebird::Int128);
 		break;
 
 	case blr_domain_name:
@@ -3061,6 +3098,7 @@ static int blr_print_dtype(gds_ctl* control)
 	case blr_long:
 	case blr_quad:
 	case blr_int64:
+	case blr_int128:
 		blr_print_byte(control);
 		break;
 
@@ -3383,10 +3421,14 @@ static void blr_print_verb(gds_ctl* control, SSHORT level)
 
 			int inputs = 0;
 			int outputs = 0;
+
 			while ((blr_operator = control->ctl_blr_reader.getByte()) != blr_end)
 			{
 				blr_indent(control, level);
-				blr_format(control, "blr_exec_stmt_%s, ", sub_codes[blr_operator]);
+
+				if (blr_operator > 0 && blr_operator < FB_NELEM(sub_codes))
+					blr_format(control, "blr_exec_stmt_%s, ", sub_codes[blr_operator]);
+
 				switch (blr_operator)
 				{
 				case blr_exec_stmt_inputs:
@@ -3593,6 +3635,94 @@ static void blr_print_verb(gds_ctl* control, SSHORT level)
 			break;
 		}
 
+		case op_window_win:
+		{
+			offset = blr_print_line(control, offset);
+			static const char* sub_codes[] =
+			{
+				NULL,
+				"partition",
+				"order",
+				"map",
+				"extent_unit",
+				"extent_frame_bound",
+				"extent_frame_value",
+				"exclusion"
+			};
+
+			while ((blr_operator = control->ctl_blr_reader.getByte()) != blr_end)
+			{
+				blr_indent(control, level);
+
+				if (blr_operator > 0 && blr_operator < FB_NELEM(sub_codes))
+					blr_format(control, "blr_window_win_%s, ", sub_codes[blr_operator]);
+
+				switch (blr_operator)
+				{
+					case blr_window_win_partition:
+					case blr_window_win_order:
+						n = blr_print_byte(control);
+						offset = blr_print_line(control, offset);
+						++level;
+
+						while (--n >= 0)
+						{
+							blr_print_verb(control, level);
+
+							if (blr_operator == blr_window_win_partition)
+								blr_print_verb(control, level);
+						}
+
+						--level;
+						break;
+
+					case blr_window_win_map:
+						n = blr_print_word(control);
+						offset = blr_print_line(control, offset);
+						++level;
+
+						while (--n >= 0)
+						{
+							blr_indent(control, level);
+							blr_print_word(control);
+							offset = blr_print_line(control, (SSHORT) offset);
+							blr_print_verb(control, level);
+						}
+
+						--level;
+						break;
+
+					case blr_window_win_extent_unit:
+					case blr_window_win_exclusion:
+						blr_print_byte(control);
+						offset = blr_print_line(control, offset);
+						break;
+
+					case blr_window_win_extent_frame_bound:
+						blr_print_byte(control);
+						blr_print_byte(control);
+						offset = blr_print_line(control, offset);
+						break;
+
+					case blr_window_win_extent_frame_value:
+						blr_print_byte(control);
+						offset = blr_print_line(control, offset);
+						++level;
+						blr_print_verb(control, level);
+						--level;
+						break;
+
+					default:
+						fb_assert(false);
+				}
+			}
+
+			// print blr_end
+			control->ctl_blr_reader.seekBackward(1);
+			blr_print_verb(control, level);
+			break;
+		}
+
 		default:
 			fb_assert(false);
 			break;
@@ -3732,7 +3862,7 @@ public:
 		Firebird::PathName prefix;
 		try
 		{
-			prefix = Config::getRootDirectory();
+			prefix = Firebird::Config::getRootDirectory();
 			if (prefix.isEmpty() && !GetProgramFilesDir(prefix))
 				prefix = FB_CONFDIR[0] ? FB_CONFDIR : FB_PREFIX;
 		}
@@ -3775,35 +3905,6 @@ public:
 #ifndef WIN_NT
 			PathUtils::concatPath(lockPrefix, WORKFILE, LOCKDIR);
 #else
-#ifdef WIN9X_SUPPORT
-			// shell32.dll version 5.0 and later supports SHGetFolderPath entry point
-			HMODULE hShFolder = LoadLibrary("shell32.dll");
-			PFNSHGETFOLDERPATHA pfnSHGetFolderPath =
-				(PFNSHGETFOLDERPATHA) GetProcAddress(hShFolder, "SHGetFolderPathA");
-
-			if (!pfnSHGetFolderPath)
-			{
-				// For old OS versions fall back to shfolder.dll
-				FreeLibrary(hShFolder);
-				hShFolder = LoadLibrary("shfolder.dll");
-				pfnSHGetFolderPath =
-					(PFNSHGETFOLDERPATHA) GetProcAddress(hShFolder, "SHGetFolderPathA");
-			}
-
-			char cmnData[MAXPATHLEN];
-			if (pfnSHGetFolderPath &&
-				pfnSHGetFolderPath(NULL, CSIDL_COMMON_APPDATA | CSIDL_FLAG_CREATE, NULL,
-					SHGFP_TYPE_CURRENT, cmnData) == S_OK)
-			{
-				PathUtils::concatPath(lockPrefix, cmnData, LOCKDIR);
-			}
-			else
-			{
-				// If shfolder.dll is missing or API fails fall back to using old style location for locks
-				lockPrefix = prefix;
-			}
-			FreeLibrary(hShFolder);
-#else
 			char cmnData[MAXPATHLEN];
 			if (SHGetSpecialFolderPath(NULL, cmnData, CSIDL_COMMON_APPDATA, TRUE))
 			{
@@ -3813,7 +3914,6 @@ public:
 			{
 				lockPrefix = prefix;	// emergency default
 			}
-#endif  // WIN9X_SUPPORT
 #endif  // WIN_NT
 		}
 		lockPrefix.copyTo(fb_prefix_lock_val, sizeof(fb_prefix_lock_val));
@@ -3827,6 +3927,8 @@ public:
 		}
 		msgPrefix.copyTo(fb_prefix_msg_val, sizeof(fb_prefix_msg_val));
 		fb_prefix_msg = fb_prefix_msg_val;
+
+		TimeZoneUtil::initTimeZoneEnv();
 	}
 	static void cleanup()
 	{

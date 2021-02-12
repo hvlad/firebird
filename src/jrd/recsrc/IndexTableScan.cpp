@@ -49,12 +49,15 @@ IndexTableScan::IndexTableScan(CompilerScratch* csb, const string& alias,
 {
 	fb_assert(m_index);
 
-	FB_SIZE_T size = sizeof(Impure) + 2u * m_length;
+	// Reserve one excess byte for the upper key - in case when length of
+	// upper key at retrieval is greater than declared index key length.
+	// See also comments at openStream().
+	FB_SIZE_T size = sizeof(Impure) + 2u * m_length + 1u;
 	size = FB_ALIGN(size, FB_ALIGNMENT);
 	m_offset = size;
 	size += sizeof(index_desc);
 
-	m_impure = CMP_impure(csb, static_cast<ULONG>(size));
+	m_impure = csb->allocImpure(FB_ALIGNMENT, static_cast<ULONG>(size));
 }
 
 void IndexTableScan::open(thread_db* tdbb) const
@@ -94,22 +97,35 @@ void IndexTableScan::close(thread_db* tdbb) const
 			impure->irsb_nav_records_visited = NULL;
 		}
 
-		if (impure->irsb_nav_page)
+		if (impure->irsb_nav_btr_gc_lock)
 		{
-			fb_assert(impure->irsb_nav_btr_gc_lock);
+#ifdef DEBUG_LCK_LIST
+			if (!impure->irsb_nav_page)
+				gds__log("DEBUG_LCK_LIST: irsb_nav_btr_gc_lock && !irsb_nav_page");
+#endif
 			impure->irsb_nav_btr_gc_lock->enablePageGC(tdbb);
 			delete impure->irsb_nav_btr_gc_lock;
 			impure->irsb_nav_btr_gc_lock = NULL;
-
-			impure->irsb_nav_page = 0;
 		}
+		impure->irsb_nav_page = 0;
 	}
+#ifdef DEBUG_LCK_LIST
+	// paranoid check
+	else if (impure->irsb_nav_btr_gc_lock)
+	{
+		gds__log("DEBUG_LCK_LIST: irsb_nav_btr_gc_lock && !(irsb_flags & irsb_open)");
+
+		impure->irsb_nav_btr_gc_lock->enablePageGC(tdbb);
+		delete impure->irsb_nav_btr_gc_lock;
+		impure->irsb_nav_btr_gc_lock = NULL;
+		impure->irsb_nav_page = 0;
+	}
+#endif
 }
 
 bool IndexTableScan::getRecord(thread_db* tdbb) const
 {
-	if (--tdbb->tdbb_quantum < 0)
-		JRD_reschedule(tdbb, 0, true);
+	JRD_reschedule(tdbb);
 
 	jrd_req* const request = tdbb->getRequest();
 	record_param* const rpb = &request->req_rpb[m_stream];
@@ -318,44 +334,37 @@ int IndexTableScan::compareKeys(const index_desc* idx,
 		// figure out what segment we're on; if it's a
 		// character segment we've matched the partial string
 		const UCHAR* segment = NULL;
-		const index_desc::idx_repeat* tail;
+		USHORT segnum = 0;
+
 		if (idx->idx_count > 1)
 		{
 			segment = key_string1 + ((length2 - 1) / (Ods::STUFF_COUNT + 1)) * (Ods::STUFF_COUNT + 1);
-			tail = idx->idx_rpt + (idx->idx_count - *segment);
-		}
-		else
-		{
-			tail = &idx->idx_rpt[0];
+			segnum = idx->idx_count - (UCHAR) ((flags & irb_descending) ? ((*segment) ^ -1) : *segment);
 		}
 
 		// If it's a string type key, and we're allowing "starting with" fuzzy
 		// type matching, we're done
-		if ((flags & irb_starting) &&
-			(tail->idx_itype == idx_string ||
-			 tail->idx_itype == idx_byte_array ||
-			 tail->idx_itype == idx_metadata ||
-			 tail->idx_itype >= idx_first_intl_string))
+		if (flags & irb_starting)
 		{
-			return 0;
+			const index_desc::idx_repeat* const tail = idx->idx_rpt + segnum;
+
+			if (tail->idx_itype == idx_string ||
+				tail->idx_itype == idx_byte_array ||
+				tail->idx_itype == idx_metadata ||
+				tail->idx_itype >= idx_first_intl_string)
+			{
+				return 0;
+			}
 		}
 
 		if (idx->idx_count > 1)
 		{
 			// If we search for NULLs at the beginning then we're done if the first
-			// segment isn't the first one possible (0 for ASC, 255 for DESC).
+			// segment isn't the first one possible
 			if (length2 == 0)
 			{
-				if (flags & irb_descending)
-				{
-					if (*segment != 255)
-						return 0;
-				}
-				else
-				{
-					if (*segment != 0)
-						return 0;
-				}
+				if (segnum != 0)
+					return 0;
 			}
 
 			// if we've exhausted the segment, we've found a match
@@ -514,8 +523,11 @@ UCHAR* IndexTableScan::openStream(thread_db* tdbb, Impure* impure, win* window) 
 	temporary_key* limit_ptr = NULL;
 	if (retrieval->irb_upper_count)
 	{
-		impure->irsb_nav_upper_length = upper.key_length;
-		memcpy(impure->irsb_nav_data + m_length, upper.key_data, upper.key_length);
+		// If upper key length is greater than declared key length, we need
+		// one "excess" byte for correct comparison. Without it there could
+		// be false equality hits.
+		impure->irsb_nav_upper_length = MIN(m_length + 1, upper.key_length);
+		memcpy(impure->irsb_nav_data + m_length, upper.key_data, impure->irsb_nav_upper_length);
 	}
 
 	if (retrieval->irb_lower_count)
@@ -564,7 +576,11 @@ void IndexTableScan::setPage(thread_db* tdbb, Impure* impure, win* window) const
 			if (!impure->irsb_nav_btr_gc_lock)
 			{
 				impure->irsb_nav_btr_gc_lock =
+#ifdef DEBUG_LCK_LIST
+					FB_NEW_RPT(*tdbb->getDefaultPool(), 0) BtrPageGCLock(tdbb, tdbb->getDefaultPool());
+#else
 					FB_NEW_RPT(*tdbb->getDefaultPool(), 0) BtrPageGCLock(tdbb);
+#endif
 			}
 
 			impure->irsb_nav_btr_gc_lock->disablePageGC(tdbb, window->win_page);
@@ -588,6 +604,7 @@ void IndexTableScan::setPosition(thread_db* tdbb,
 	impure->irsb_nav_number = rpb->rpb_number;
 
 	// save the current key value
+	fb_assert(key.key_length <= m_length);
 	impure->irsb_nav_length = key.key_length;
 	memcpy(impure->irsb_nav_data, key.key_data, key.key_length);
 

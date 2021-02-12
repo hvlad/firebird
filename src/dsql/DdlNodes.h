@@ -23,7 +23,7 @@
 #ifndef DSQL_DDL_NODES_H
 #define DSQL_DDL_NODES_H
 
-#include "../jrd/blr.h"
+#include "firebird/impl/blr.h"
 #include "../jrd/dyn.h"
 #include "../common/msg_encode.h"
 #include "../dsql/make_proto.h"
@@ -155,7 +155,7 @@ public:
 
 public:
 	Firebird::string name;
-	Firebird::MetaName engine;
+	MetaName engine;
 	Firebird::string udfModule;
 };
 
@@ -163,14 +163,14 @@ public:
 class ParameterClause : public Printable
 {
 public:
-	ParameterClause(MemoryPool& pool, dsql_fld* field, const Firebird::MetaName& aCollate,
+	ParameterClause(MemoryPool& pool, dsql_fld* field, const MetaName& aCollate,
 		ValueSourceClause* aDefaultClause = NULL, ValueExprNode* aParameterExpr = NULL);
 
 public:
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
 
 public:
-	Firebird::MetaName name;
+	MetaName name;
 	NestConst<dsql_fld> type;
 	NestConst<ValueSourceClause> defaultClause;
 	NestConst<ValueExprNode> parameterExpr;
@@ -193,7 +193,7 @@ struct CollectedParameter
 };
 
 typedef Firebird::GenericMap<
-			Firebird::Pair<Firebird::Left<Firebird::MetaName, CollectedParameter> > >
+			Firebird::Pair<Firebird::Left<MetaName, CollectedParameter> > >
 	CollectedParameterMap;
 
 
@@ -232,9 +232,10 @@ public:
 		return "RecreateNode";
 	}
 
-	virtual bool checkPermission(thread_db* tdbb, jrd_tra* transaction)
+	virtual void checkPermission(thread_db* tdbb, jrd_tra* transaction)
 	{
-		return dropNode.checkPermission(tdbb, transaction) && createNode->checkPermission(tdbb, transaction);
+		dropNode.checkPermission(tdbb, transaction);
+		createNode->checkPermission(tdbb, transaction);
 	}
 
 	virtual void execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction)
@@ -270,8 +271,8 @@ protected:
 class AlterCharSetNode : public DdlNode
 {
 public:
-	AlterCharSetNode(MemoryPool& pool, const Firebird::MetaName& aCharSet,
-				const Firebird::MetaName& aDefaultCollation)
+	AlterCharSetNode(MemoryPool& pool, const MetaName& aCharSet,
+				const MetaName& aDefaultCollation)
 		: DdlNode(pool),
 		  charSet(pool, aCharSet),
 		  defaultCollation(pool, aDefaultCollation)
@@ -280,7 +281,7 @@ public:
 
 public:
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
-	virtual bool checkPermission(thread_db* tdbb, jrd_tra* transaction);
+	virtual void checkPermission(thread_db* tdbb, jrd_tra* transaction);
 	virtual void execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction);
 
 protected:
@@ -290,8 +291,77 @@ protected:
 	}
 
 private:
-	Firebird::MetaName charSet;
-	Firebird::MetaName defaultCollation;
+	MetaName charSet;
+	MetaName defaultCollation;
+};
+
+
+class AlterEDSPoolSetNode : public DdlNode
+{
+public:
+	enum PARAM { POOL_SIZE, POOL_LIFETIME };
+
+	AlterEDSPoolSetNode(MemoryPool& pool, PARAM prm, int val)
+		: DdlNode(pool),
+		  m_param(prm),
+		  m_value(val)
+	{
+	}
+
+public:
+	virtual void checkPermission(thread_db* tdbb, jrd_tra* transaction);
+	virtual Firebird::string internalPrint(NodePrinter& printer) const;
+	virtual void execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction);
+
+	virtual bool mustBeReplicated() const
+	{
+		return false;
+	}
+
+protected:
+	virtual void putErrorPrefix(Firebird::Arg::StatusVector& statusVector)
+	{
+		// TODO: statusVector << Firebird::Arg::Gds(??);
+	}
+
+private:
+	PARAM m_param;
+	int m_value;
+};
+
+
+class AlterEDSPoolClearNode : public DdlNode
+{
+public:
+	enum PARAM { POOL_ALL, POOL_OLDEST, POOL_DB };
+
+	AlterEDSPoolClearNode(MemoryPool& pool, PARAM prm, const Firebird::string& val = "")
+		: DdlNode(pool),
+		  m_param(prm),
+		  m_value(pool)
+	{
+		m_value = val;
+	}
+
+public:
+	virtual void checkPermission(thread_db* tdbb, jrd_tra* transaction);
+	virtual Firebird::string internalPrint(NodePrinter& printer) const;
+	virtual void execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction);
+
+	virtual bool mustBeReplicated() const
+	{
+		return false;
+	}
+
+protected:
+	virtual void putErrorPrefix(Firebird::Arg::StatusVector& statusVector)
+	{
+		// TODO: statusVector << Firebird::Arg::Gds(??);
+	}
+
+private:
+	PARAM m_param;
+	Firebird::string m_value;
 };
 
 
@@ -299,7 +369,7 @@ class CommentOnNode : public DdlNode
 {
 public:
 	CommentOnNode(MemoryPool& pool, int aObjType,
-				const Firebird::QualifiedName& aObjName, const Firebird::MetaName& aSubName,
+				const QualifiedName& aObjName, const MetaName& aSubName,
 				const Firebird::string aText)
 		: DdlNode(pool),
 		  objType(aObjType),
@@ -312,7 +382,7 @@ public:
 
 public:
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
-	virtual bool checkPermission(thread_db* tdbb, jrd_tra* transaction);
+	virtual void checkPermission(thread_db* tdbb, jrd_tra* transaction);
 	virtual void execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction);
 
 protected:
@@ -328,8 +398,8 @@ protected:
 
 private:
 	int objType;
-	Firebird::QualifiedName objName;
-	Firebird::MetaName subName;
+	QualifiedName objName;
+	MetaName subName;
 	Firebird::string text, str;
 };
 
@@ -337,7 +407,7 @@ private:
 class CreateAlterFunctionNode : public DdlNode
 {
 public:
-	CreateAlterFunctionNode(MemoryPool& pool, const Firebird::MetaName& aName)
+	CreateAlterFunctionNode(MemoryPool& pool, const MetaName& aName)
 		: DdlNode(pool),
 		  name(pool, aName),
 		  create(true),
@@ -362,7 +432,7 @@ public:
 public:
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
 	virtual DdlNode* dsqlPass(DsqlCompilerScratch* dsqlScratch);
-	virtual bool checkPermission(thread_db* tdbb, jrd_tra* transaction);
+	virtual void checkPermission(thread_db* tdbb, jrd_tra* transaction);
 	virtual void execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction);
 
 protected:
@@ -392,7 +462,7 @@ private:
 	void collectParameters(thread_db* tdbb, jrd_tra* transaction, CollectedParameterMap& items);
 
 public:
-	Firebird::MetaName name;
+	MetaName name;
 	bool create;
 	bool alter;
 	NestConst<ExternalClause> external;
@@ -404,18 +474,19 @@ public:
 	NestConst<StmtNode> body;
 	bool compiled;
 	bool invalid;
-	Firebird::MetaName package;
-	Firebird::string packageOwner;
+	MetaName package;
+	MetaName packageOwner;
 	bool privateScope;
 	bool preserveDefaults;
 	SLONG udfReturnPos;
+	Nullable<bool> ssDefiner;
 };
 
 
 class AlterExternalFunctionNode : public DdlNode
 {
 public:
-	AlterExternalFunctionNode(MemoryPool& p, const Firebird::MetaName& aName)
+	AlterExternalFunctionNode(MemoryPool& p, const MetaName& aName)
 		: DdlNode(p),
 		  name(p, aName),
 		  clauses(p)
@@ -424,7 +495,7 @@ public:
 
 public:
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
-	virtual bool checkPermission(thread_db* tdbb, jrd_tra* transaction);
+	virtual void checkPermission(thread_db* tdbb, jrd_tra* transaction);
 	virtual void execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction);
 
 protected:
@@ -434,7 +505,7 @@ protected:
 	}
 
 public:
-	Firebird::MetaName name;
+	MetaName name;
 	ExternalClause clauses;
 };
 
@@ -442,7 +513,7 @@ public:
 class DropFunctionNode : public DdlNode
 {
 public:
-	DropFunctionNode(MemoryPool& pool, const Firebird::MetaName& aName)
+	DropFunctionNode(MemoryPool& pool, const MetaName& aName)
 		: DdlNode(pool),
 		  name(pool, aName),
 		  silent(false),
@@ -452,12 +523,12 @@ public:
 
 public:
 	static void dropArguments(thread_db* tdbb, jrd_tra* transaction,
-		const Firebird::MetaName& functionName, const Firebird::MetaName& packageName);
+		const MetaName& functionName, const MetaName& packageName);
 
 public:
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
 	virtual DdlNode* dsqlPass(DsqlCompilerScratch* dsqlScratch);
-	virtual bool checkPermission(thread_db* tdbb, jrd_tra* transaction);
+	virtual void checkPermission(thread_db* tdbb, jrd_tra* transaction);
 	virtual void execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction);
 
 protected:
@@ -467,9 +538,9 @@ protected:
 	}
 
 public:
-	Firebird::MetaName name;
+	MetaName name;
 	bool silent;
-	Firebird::MetaName package;
+	MetaName package;
 };
 
 
@@ -480,7 +551,7 @@ typedef RecreateNode<CreateAlterFunctionNode, DropFunctionNode, isc_dsql_recreat
 class CreateAlterProcedureNode : public DdlNode
 {
 public:
-	CreateAlterProcedureNode(MemoryPool& pool, const Firebird::MetaName& aName)
+	CreateAlterProcedureNode(MemoryPool& pool, const MetaName& aName)
 		: DdlNode(pool),
 		  name(pool, aName),
 		  create(true),
@@ -503,7 +574,7 @@ public:
 public:
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
 	virtual DdlNode* dsqlPass(DsqlCompilerScratch* dsqlScratch);
-	virtual bool checkPermission(thread_db* tdbb, jrd_tra* transaction);
+	virtual void checkPermission(thread_db* tdbb, jrd_tra* transaction);
 	virtual void execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction);
 
 protected:
@@ -527,7 +598,7 @@ private:
 	void collectParameters(thread_db* tdbb, jrd_tra* transaction, CollectedParameterMap& items);
 
 public:
-	Firebird::MetaName name;
+	MetaName name;
 	bool create;
 	bool alter;
 	NestConst<ExternalClause> external;
@@ -538,17 +609,18 @@ public:
 	NestConst<StmtNode> body;
 	bool compiled;
 	bool invalid;
-	Firebird::MetaName package;
-	Firebird::string packageOwner;
+	MetaName package;
+	MetaName packageOwner;
 	bool privateScope;
 	bool preserveDefaults;
+	Nullable<bool> ssDefiner;
 };
 
 
 class DropProcedureNode : public DdlNode
 {
 public:
-	DropProcedureNode(MemoryPool& pool, const Firebird::MetaName& aName)
+	DropProcedureNode(MemoryPool& pool, const MetaName& aName)
 		: DdlNode(pool),
 		  name(pool, aName),
 		  silent(false),
@@ -558,12 +630,12 @@ public:
 
 public:
 	static void dropParameters(thread_db* tdbb, jrd_tra* transaction,
-		const Firebird::MetaName& procedureName, const Firebird::MetaName& packageName);
+		const MetaName& procedureName, const MetaName& packageName);
 
 public:
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
 	virtual DdlNode* dsqlPass(DsqlCompilerScratch* dsqlScratch);
-	virtual bool checkPermission(thread_db* tdbb, jrd_tra* transaction);
+	virtual void checkPermission(thread_db* tdbb, jrd_tra* transaction);
 	virtual void execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction);
 
 protected:
@@ -573,9 +645,9 @@ protected:
 	}
 
 public:
-	Firebird::MetaName name;
+	MetaName name;
 	bool silent;
-	Firebird::MetaName package;
+	MetaName package;
 };
 
 
@@ -586,6 +658,13 @@ typedef RecreateNode<CreateAlterProcedureNode, DropProcedureNode, isc_dsql_recre
 class TriggerDefinition
 {
 public:
+	enum SqlSecurity
+	{
+		SS_INVOKER,
+		SS_DEFINER,
+		SS_DROP
+	};
+
 	explicit TriggerDefinition(MemoryPool& p)
 		: name(p),
 		  relationName(p),
@@ -615,8 +694,8 @@ protected:
 	}
 
 public:
-	Firebird::MetaName name;
-	Firebird::MetaName relationName;
+	MetaName name;
+	MetaName relationName;
 	Nullable<FB_UINT64> type;
 	Nullable<bool> active;
 	Nullable<int> position;
@@ -626,13 +705,14 @@ public:
 	Firebird::ByteChunk debugData;
 	USHORT systemFlag;
 	bool fkTrigger;
+	Nullable<SqlSecurity> ssDefiner;
 };
 
 
 class CreateAlterTriggerNode : public DdlNode, public TriggerDefinition
 {
 public:
-	CreateAlterTriggerNode(MemoryPool& p, const Firebird::MetaName& aName)
+	CreateAlterTriggerNode(MemoryPool& p, const MetaName& aName)
 		: DdlNode(p),
 		  TriggerDefinition(p),
 		  create(true),
@@ -648,7 +728,7 @@ public:
 public:
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
 	virtual DdlNode* dsqlPass(DsqlCompilerScratch* dsqlScratch);
-	virtual bool checkPermission(thread_db* tdbb, jrd_tra* transaction);
+	virtual void checkPermission(thread_db* tdbb, jrd_tra* transaction);
 	virtual void execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction);
 
 protected:
@@ -712,7 +792,7 @@ public:
 class DropTriggerNode : public DdlNode
 {
 public:
-	DropTriggerNode(MemoryPool& p, const Firebird::MetaName& aName)
+	DropTriggerNode(MemoryPool& p, const MetaName& aName)
 		: DdlNode(p),
 		  name(p, aName),
 		  silent(false)
@@ -722,7 +802,7 @@ public:
 public:
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
 	virtual DdlNode* dsqlPass(DsqlCompilerScratch* dsqlScratch);
-	virtual bool checkPermission(thread_db* tdbb, jrd_tra* transaction);
+	virtual void checkPermission(thread_db* tdbb, jrd_tra* transaction);
 	virtual void execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction);
 
 protected:
@@ -732,7 +812,7 @@ protected:
 	}
 
 public:
-	Firebird::MetaName name;
+	MetaName name;
 	bool silent;
 };
 
@@ -744,8 +824,8 @@ typedef RecreateNode<CreateAlterTriggerNode, DropTriggerNode, isc_dsql_recreate_
 class CreateCollationNode : public DdlNode
 {
 public:
-	CreateCollationNode(MemoryPool& p, const Firebird::MetaName& aName,
-				const Firebird::MetaName& aForCharSet)
+	CreateCollationNode(MemoryPool& p, const MetaName& aName,
+				const MetaName& aForCharSet)
 		: DdlNode(p),
 		  name(p, aName),
 		  forCharSet(p, aForCharSet),
@@ -762,7 +842,7 @@ public:
 public:
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
 	virtual DdlNode* dsqlPass(DsqlCompilerScratch* dsqlScratch);
-	virtual bool checkPermission(thread_db* tdbb, jrd_tra* transaction);
+	virtual void checkPermission(thread_db* tdbb, jrd_tra* transaction);
 	virtual void execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction);
 
 	void setAttribute(USHORT attribute)
@@ -796,9 +876,9 @@ protected:
 	}
 
 public:
-	Firebird::MetaName name;
-	Firebird::MetaName forCharSet;
-	Firebird::MetaName fromName;
+	MetaName name;
+	MetaName forCharSet;
+	MetaName fromName;
 	Firebird::string fromExternal;
 	Firebird::UCharBuffer specificAttributes;
 
@@ -813,7 +893,7 @@ private:
 class DropCollationNode : public DdlNode
 {
 public:
-	DropCollationNode(MemoryPool& p, const Firebird::MetaName& aName)
+	DropCollationNode(MemoryPool& p, const MetaName& aName)
 		: DdlNode(p),
 		  name(p, aName)
 	{
@@ -821,7 +901,7 @@ public:
 
 public:
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
-	virtual bool checkPermission(thread_db* tdbb, jrd_tra* transaction);
+	virtual void checkPermission(thread_db* tdbb, jrd_tra* transaction);
 	virtual void execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction);
 
 protected:
@@ -831,7 +911,7 @@ protected:
 	}
 
 public:
-	Firebird::MetaName name;
+	MetaName name;
 };
 
 
@@ -848,7 +928,7 @@ public:
 
 public:
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
-	virtual bool checkPermission(thread_db* tdbb, jrd_tra* transaction);
+	virtual void checkPermission(thread_db* tdbb, jrd_tra* transaction);
 	virtual void execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction);
 
 protected:
@@ -867,7 +947,7 @@ public:
 class AlterDomainNode : public DdlNode
 {
 public:
-	AlterDomainNode(MemoryPool& p, const Firebird::MetaName& aName)
+	AlterDomainNode(MemoryPool& p, const MetaName& aName)
 		: DdlNode(p),
 		  name(p, aName),
 		  dropConstraint(false),
@@ -883,11 +963,11 @@ public:
 	static ULONG checkUpdateNumericType(const dyn_fld& origFld, const dyn_fld& newFld);
 	static void getDomainType(thread_db* tdbb, jrd_tra* transaction, dyn_fld& dynFld);
 	static void modifyLocalFieldIndex(thread_db* tdbb, jrd_tra* transaction,
-		const Firebird::MetaName& relationName, const Firebird::MetaName& fieldName,
-		const Firebird::MetaName& newFieldName);
+		const MetaName& relationName, const MetaName& fieldName,
+		const MetaName& newFieldName);
 
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
-	virtual bool checkPermission(thread_db* tdbb, jrd_tra* transaction);
+	virtual void checkPermission(thread_db* tdbb, jrd_tra* transaction);
 	virtual void execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction);
 
 protected:
@@ -900,12 +980,12 @@ private:
 	void rename(thread_db* tdbb, jrd_tra* transaction, SSHORT dimensions);
 
 public:
-	Firebird::MetaName name;
+	MetaName name;
 	bool dropConstraint;
 	bool dropDefault;
 	NestConst<BoolSourceClause> setConstraint;
 	NestConst<ValueSourceClause> setDefault;
-	Firebird::MetaName renameTo;
+	MetaName renameTo;
 	Firebird::AutoPtr<dsql_fld> type;
 	Nullable<bool> notNullFlag;	// true = NOT NULL / false = NULL
 };
@@ -914,18 +994,18 @@ public:
 class DropDomainNode : public DdlNode
 {
 public:
-	DropDomainNode(MemoryPool& p, const Firebird::MetaName& aName)
+	DropDomainNode(MemoryPool& p, const MetaName& aName)
 		: DdlNode(p),
 		  name(p, aName)
 	{
 	}
 
 	static bool deleteDimensionRecords(thread_db* tdbb, jrd_tra* transaction,
-		const Firebird::MetaName& name);
+		const MetaName& name);
 
 public:
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
-	virtual bool checkPermission(thread_db* tdbb, jrd_tra* transaction);
+	virtual void checkPermission(thread_db* tdbb, jrd_tra* transaction);
 	virtual void execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction);
 
 protected:
@@ -938,14 +1018,14 @@ private:
 	void check(thread_db* tdbb, jrd_tra* transaction);
 
 public:
-	Firebird::MetaName name;
+	MetaName name;
 };
 
 
 class CreateAlterExceptionNode : public DdlNode
 {
 public:
-	CreateAlterExceptionNode(MemoryPool& p, const Firebird::MetaName& aName,
+	CreateAlterExceptionNode(MemoryPool& p, const MetaName& aName,
 				const Firebird::string& aMessage)
 		: DdlNode(p),
 		  name(p, aName),
@@ -957,7 +1037,7 @@ public:
 
 public:
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
-	virtual bool checkPermission(thread_db* tdbb, jrd_tra* transaction);
+	virtual void checkPermission(thread_db* tdbb, jrd_tra* transaction);
 	virtual void execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction);
 
 protected:
@@ -975,7 +1055,7 @@ private:
 	bool executeAlter(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction);
 
 public:
-	Firebird::MetaName name;
+	MetaName name;
 	Firebird::string message;
 	bool create;
 	bool alter;
@@ -985,7 +1065,7 @@ public:
 class DropExceptionNode : public DdlNode
 {
 public:
-	DropExceptionNode(MemoryPool& p, const Firebird::MetaName& aName)
+	DropExceptionNode(MemoryPool& p, const MetaName& aName)
 		: DdlNode(p),
 		  name(p, aName),
 		  silent(false)
@@ -994,7 +1074,7 @@ public:
 
 public:
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
-	virtual bool checkPermission(thread_db* tdbb, jrd_tra* transaction);
+	virtual void checkPermission(thread_db* tdbb, jrd_tra* transaction);
 	virtual void execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction);
 
 protected:
@@ -1004,7 +1084,7 @@ protected:
 	}
 
 public:
-	Firebird::MetaName name;
+	MetaName name;
 	bool silent;
 };
 
@@ -1016,7 +1096,7 @@ typedef RecreateNode<CreateAlterExceptionNode, DropExceptionNode, isc_dsql_recre
 class CreateAlterSequenceNode : public DdlNode
 {
 public:
-	CreateAlterSequenceNode(MemoryPool& pool, const Firebird::MetaName& aName)
+	CreateAlterSequenceNode(MemoryPool& pool, const MetaName& aName)
 		: DdlNode(pool),
 		  create(true),
 		  alter(false),
@@ -1039,12 +1119,12 @@ public:
 		value.specified = false;
 	}
 
-	static SSHORT store(thread_db* tdbb, jrd_tra* transaction, const Firebird::MetaName& name,
+	static SSHORT store(thread_db* tdbb, jrd_tra* transaction, const MetaName& name,
 		fb_sysflag sysFlag, SINT64 value, SLONG step);
 
 public:
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
-	virtual bool checkPermission(thread_db* tdbb, jrd_tra* transaction);
+	virtual void checkPermission(thread_db* tdbb, jrd_tra* transaction);
 	virtual void execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction);
 
 	virtual DdlNode* dsqlPass(DsqlCompilerScratch* dsqlScratch)
@@ -1066,7 +1146,7 @@ public:
 	bool alter;
 	bool legacy;
 	bool restartSpecified;
-	const Firebird::MetaName name;
+	const MetaName name;
 	BaseNullable<SINT64> value;
 	Nullable<SLONG> step;
 };
@@ -1075,7 +1155,7 @@ public:
 class DropSequenceNode : public DdlNode
 {
 public:
-	DropSequenceNode(MemoryPool& pool, const Firebird::MetaName& aName)
+	DropSequenceNode(MemoryPool& pool, const MetaName& aName)
 		: DdlNode(pool),
 		  name(pool, aName),
 		  silent(false)
@@ -1083,11 +1163,11 @@ public:
 	}
 
 	static void deleteIdentity(thread_db* tdbb, jrd_tra* transaction,
-		const Firebird::MetaName& name);
+		const MetaName& name);
 
 public:
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
-	virtual bool checkPermission(thread_db* tdbb, jrd_tra* transaction);
+	virtual void checkPermission(thread_db* tdbb, jrd_tra* transaction);
 	virtual void execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction);
 
 protected:
@@ -1097,7 +1177,7 @@ protected:
 	}
 
 public:
-	Firebird::MetaName name;
+	MetaName name;
 	bool silent;
 };
 
@@ -1126,17 +1206,18 @@ public:
 		void store(thread_db* tdbb, jrd_tra* transaction);
 
 	public:
-		Firebird::MetaName name;
-		Firebird::MetaName relationName;
-		Firebird::MetaName fieldSource;
-		Firebird::MetaName identitySequence;
+		MetaName name;
+		MetaName relationName;
+		MetaName fieldSource;
+		MetaName identitySequence;
+		Nullable<IdentityType> identityType;
 		Nullable<USHORT> collationId;
 		Nullable<bool> notNullFlag;	// true = NOT NULL / false = NULL
 		Nullable<USHORT> position;
 		Firebird::string defaultSource;
 		Firebird::ByteChunk defaultValue;
 		Nullable<USHORT> viewContext;
-		Firebird::MetaName baseField;
+		MetaName baseField;
 	};
 
 	struct IndexConstraintClause
@@ -1147,11 +1228,11 @@ public:
 		{
 		}
 
-		Firebird::MetaName name;
+		MetaName name;
 		bool descending;
 	};
 
-	struct Constraint : public PermanentStorage
+	struct Constraint
 	{
 		enum Type { TYPE_CHECK, TYPE_NOT_NULL, TYPE_PK, TYPE_UNIQUE, TYPE_FK };
 
@@ -1183,8 +1264,7 @@ public:
 		};
 
 		explicit Constraint(MemoryPool& p)
-			: PermanentStorage(p),
-			  type(TYPE_CHECK),	// Just something to initialize. Do not assume it.
+			: type(TYPE_CHECK),	// Just something to initialize. Do not assume it.
 			  columns(p),
 			  index(NULL),
 			  refRelation(p),
@@ -1197,29 +1277,28 @@ public:
 		}
 
 		Constraint::Type type;
-		Firebird::ObjectsArray<Firebird::MetaName> columns;
+		Firebird::ObjectsArray<MetaName> columns;
 		NestConst<IndexConstraintClause> index;
-		Firebird::MetaName refRelation;
-		Firebird::ObjectsArray<Firebird::MetaName> refColumns;
+		MetaName refRelation;
+		Firebird::ObjectsArray<MetaName> refColumns;
 		const char* refUpdateAction;
 		const char* refDeleteAction;
 		Firebird::ObjectsArray<TriggerDefinition> triggers;
 		Firebird::ObjectsArray<BlrWriter> blrWritersHolder;
 	};
 
-	struct CreateDropConstraint : public PermanentStorage
+	struct CreateDropConstraint
 	{
 		explicit CreateDropConstraint(MemoryPool& p)
-			: PermanentStorage(p),
-			  name(p)
+			: name(p)
 		{
 		}
 
-		Firebird::MetaName name;
+		MetaName name;
 		Firebird::AutoPtr<Constraint> create;
 	};
 
-	struct Clause : public PermanentStorage
+	struct Clause
 	{
 		enum Type
 		{
@@ -1230,12 +1309,13 @@ public:
 			TYPE_ALTER_COL_POS,
 			TYPE_ALTER_COL_TYPE,
 			TYPE_DROP_COLUMN,
-			TYPE_DROP_CONSTRAINT
+			TYPE_DROP_CONSTRAINT,
+			TYPE_ALTER_SQL_SECURITY,
+			TYPE_ALTER_PUBLICATION
 		};
 
 		explicit Clause(MemoryPool& p, Type aType)
-			: PermanentStorage(p),
-			  type(aType)
+			: type(aType)
 		{
 		}
 
@@ -1283,14 +1363,33 @@ public:
 		{
 		}
 
-		Firebird::MetaName name;
+		MetaName name;
 		ConstraintType constraintType;
-		Firebird::ObjectsArray<Firebird::MetaName> columns;
+		Firebird::ObjectsArray<MetaName> columns;
 		NestConst<IndexConstraintClause> index;
-		Firebird::MetaName refRelation;
-		Firebird::ObjectsArray<Firebird::MetaName> refColumns;
+		MetaName refRelation;
+		Firebird::ObjectsArray<MetaName> refColumns;
 		NestConst<RefActionClause> refAction;
 		NestConst<BoolSourceClause> check;
+	};
+
+	struct IdentityOptions
+	{
+		IdentityOptions(MemoryPool&, IdentityType aType)
+			: type(aType),
+			  restart(false)
+		{
+		}
+
+		IdentityOptions(MemoryPool&)
+			: restart(false)
+		{
+		}
+
+		Nullable<IdentityType> type;
+		Nullable<SINT64> startValue;
+		Nullable<SLONG> increment;
+		bool restart;	// used in ALTER
 	};
 
 	struct AddColumnClause : public Clause
@@ -1302,8 +1401,7 @@ public:
 			  constraints(p),
 			  collate(p),
 			  computed(NULL),
-			  identity(false),
-			  identityStart(0),
+			  identityOptions(NULL),
 			  notNullSpecified(false)
 		{
 		}
@@ -1311,10 +1409,9 @@ public:
 		dsql_fld* field;
 		NestConst<ValueSourceClause> defaultValue;
 		Firebird::ObjectsArray<AddConstraintClause> constraints;
-		Firebird::MetaName collate;
+		MetaName collate;
 		NestConst<ValueSourceClause> computed;
-		bool identity;
-		SINT64 identityStart;
+		NestConst<IdentityOptions> identityOptions;
 		bool notNullSpecified;
 	};
 
@@ -1327,8 +1424,8 @@ public:
 		{
 		}
 
-		Firebird::MetaName fromName;
-		Firebird::MetaName toName;
+		MetaName fromName;
+		MetaName toName;
 	};
 
 	struct AlterColNullClause : public Clause
@@ -1340,7 +1437,7 @@ public:
 		{
 		}
 
-		Firebird::MetaName name;
+		MetaName name;
 		bool notNullFlag;
 	};
 
@@ -1353,7 +1450,7 @@ public:
 		{
 		}
 
-		Firebird::MetaName name;
+		MetaName name;
 		SSHORT newPos;
 	};
 
@@ -1364,7 +1461,8 @@ public:
 			  field(NULL),
 			  defaultValue(NULL),
 			  dropDefault(false),
-			  identityRestart(false),
+			  dropIdentity(false),
+			  identityOptions(NULL),
 			  computed(NULL)
 		{
 		}
@@ -1372,8 +1470,8 @@ public:
 		dsql_fld* field;
 		NestConst<ValueSourceClause> defaultValue;
 		bool dropDefault;
-		bool identityRestart;
-		Nullable<SINT64> identityRestartValue;
+		bool dropIdentity;
+		NestConst<IdentityOptions> identityOptions;
 		NestConst<ValueSourceClause> computed;
 	};
 
@@ -1386,7 +1484,7 @@ public:
 		{
 		}
 
-		Firebird::MetaName name;
+		MetaName name;
 		bool cascade;
 	};
 
@@ -1398,13 +1496,18 @@ public:
 		{
 		}
 
-		Firebird::MetaName name;
+		MetaName name;
 	};
 
 	RelationNode(MemoryPool& p, RelationSourceNode* aDsqlNode);
 
 	static void deleteLocalField(thread_db* tdbb, jrd_tra* transaction,
-		const Firebird::MetaName& relationName, const Firebird::MetaName& fieldName);
+		const MetaName& relationName, const MetaName& fieldName);
+
+	static void addToPublication(thread_db* tdbb, jrd_tra* transaction,
+		const MetaName& tableName, const MetaName& pubTame);
+	static void dropFromPublication(thread_db* tdbb, jrd_tra* transaction,
+		const MetaName& tableName, const MetaName& pubTame);
 
 protected:
 	virtual Firebird::string internalPrint(NodePrinter& printer) const
@@ -1420,14 +1523,14 @@ protected:
 
 	void defineField(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction,
 		AddColumnClause* clause, SSHORT position,
-		const Firebird::ObjectsArray<Firebird::MetaName>* pkcols);
+		const Firebird::ObjectsArray<MetaName>* pkcols);
 	bool defineDefault(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, dsql_fld* field,
 		ValueSourceClause* clause, Firebird::string& source, BlrDebugWriter::BlrData& value);
 	void makeConstraint(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction,
 		AddConstraintClause* clause, Firebird::ObjectsArray<CreateDropConstraint>& constraints,
 		bool* notNull = NULL);
 	void defineConstraint(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction,
-		Firebird::MetaName& constraintName, Constraint& constraint);
+		MetaName& constraintName, Constraint& constraint);
 	void defineCheckConstraint(DsqlCompilerScratch* dsqlScratch, Constraint& constraint,
 		BoolSourceClause* clause);
 	void defineCheckConstraintTrigger(DsqlCompilerScratch* dsqlScratch, Constraint& constraint,
@@ -1446,8 +1549,10 @@ protected:
 
 public:
 	NestConst<RelationSourceNode> dsqlNode;
-	Firebird::MetaName name;
+	MetaName name;
 	Firebird::Array<NestConst<Clause> > clauses;
+	Nullable<bool> ssDefiner;
+	Nullable<bool> replicationState;
 };
 
 
@@ -1464,7 +1569,7 @@ public:
 
 public:
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
-	virtual bool checkPermission(thread_db* tdbb, jrd_tra* transaction);
+	virtual void checkPermission(thread_db* tdbb, jrd_tra* transaction);
 	virtual void execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction);
 
 protected:
@@ -1474,11 +1579,13 @@ protected:
 	}
 
 private:
-	const Firebird::ObjectsArray<Firebird::MetaName>* findPkColumns();
+	const Firebird::ObjectsArray<MetaName>* findPkColumns();
 
 public:
 	const Firebird::string* externalFile;
-	rel_t relationType;
+	Nullable<rel_t> relationType;
+	bool preserveRowsOpt;
+	bool deleteRowsOpt;
 };
 
 
@@ -1492,7 +1599,7 @@ public:
 
 public:
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
-	virtual bool checkPermission(thread_db* tdbb, jrd_tra* transaction);
+	virtual void checkPermission(thread_db* tdbb, jrd_tra* transaction);
 	virtual void execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction);
 
 protected:
@@ -1510,7 +1617,7 @@ private:
 class DropRelationNode : public DdlNode
 {
 public:
-	DropRelationNode(MemoryPool& p, const Firebird::MetaName& aName, bool aView = false)
+	DropRelationNode(MemoryPool& p, const MetaName& aName, bool aView = false)
 		: DdlNode(p),
 		  name(p, aName),
 		  view(aView),
@@ -1519,11 +1626,11 @@ public:
 	}
 
 	static void deleteGlobalField(thread_db* tdbb, jrd_tra* transaction,
-		const Firebird::MetaName& globalName);
+		const MetaName& globalName);
 
 public:
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
-	virtual bool checkPermission(thread_db* tdbb, jrd_tra* transaction);
+	virtual void checkPermission(thread_db* tdbb, jrd_tra* transaction);
 	virtual void execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction);
 
 protected:
@@ -1533,7 +1640,7 @@ protected:
 	}
 
 public:
-	Firebird::MetaName name;
+	MetaName name;
 	bool view;
 	bool silent;
 };
@@ -1561,7 +1668,7 @@ public:
 public:
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
 	virtual DdlNode* dsqlPass(DsqlCompilerScratch* dsqlScratch);
-	virtual bool checkPermission(thread_db* tdbb, jrd_tra* transaction);
+	virtual void checkPermission(thread_db* tdbb, jrd_tra* transaction);
 	virtual void execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction);
 
 protected:
@@ -1613,20 +1720,20 @@ public:
 			expressionSource.clear();
 		}
 
-		Firebird::MetaName relation;
-		Firebird::ObjectsArray<Firebird::MetaName> columns;
+		MetaName relation;
+		Firebird::ObjectsArray<MetaName> columns;
 		Nullable<bool> unique;
 		Nullable<bool> descending;
 		Nullable<bool> inactive;
 		SSHORT type;
 		bid expressionBlr;
 		bid expressionSource;
-		Firebird::MetaName refRelation;
-		Firebird::ObjectsArray<Firebird::MetaName> refColumns;
+		MetaName refRelation;
+		Firebird::ObjectsArray<MetaName> refColumns;
 	};
 
 public:
-	CreateIndexNode(MemoryPool& p, const Firebird::MetaName& aName)
+	CreateIndexNode(MemoryPool& p, const MetaName& aName)
 		: DdlNode(p),
 		  name(p, aName),
 		  unique(false),
@@ -1638,12 +1745,12 @@ public:
 	}
 
 public:
-	static void store(thread_db* tdbb, jrd_tra* transaction, Firebird::MetaName& name,
-		const Definition& definition, Firebird::MetaName* referredIndexName = NULL);
+	static void store(thread_db* tdbb, jrd_tra* transaction, MetaName& name,
+		const Definition& definition, MetaName* referredIndexName = NULL);
 
 public:
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
-	virtual bool checkPermission(thread_db* tdbb, jrd_tra* transaction);
+	virtual void checkPermission(thread_db* tdbb, jrd_tra* transaction);
 	virtual void execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction);
 
 protected:
@@ -1653,7 +1760,7 @@ protected:
 	}
 
 public:
-	Firebird::MetaName name;
+	MetaName name;
 	bool unique;
 	bool descending;
 	NestConst<RelationSourceNode> relation;
@@ -1665,7 +1772,7 @@ public:
 class AlterIndexNode : public DdlNode
 {
 public:
-	AlterIndexNode(MemoryPool& p, const Firebird::MetaName& aName, bool aActive)
+	AlterIndexNode(MemoryPool& p, const MetaName& aName, bool aActive)
 		: DdlNode(p),
 		  name(p, aName),
 		  active(aActive)
@@ -1674,7 +1781,7 @@ public:
 
 public:
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
-	virtual bool checkPermission(thread_db* tdbb, jrd_tra* transaction);
+	virtual void checkPermission(thread_db* tdbb, jrd_tra* transaction);
 	virtual void execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction);
 
 protected:
@@ -1684,7 +1791,7 @@ protected:
 	}
 
 public:
-	Firebird::MetaName name;
+	MetaName name;
 	bool active;
 };
 
@@ -1692,7 +1799,7 @@ public:
 class SetStatisticsNode : public DdlNode
 {
 public:
-	SetStatisticsNode(MemoryPool& p, const Firebird::MetaName& aName)
+	SetStatisticsNode(MemoryPool& p, const MetaName& aName)
 		: DdlNode(p),
 		  name(p, aName)
 	{
@@ -1700,7 +1807,7 @@ public:
 
 public:
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
-	virtual bool checkPermission(thread_db* tdbb, jrd_tra* transaction);
+	virtual void checkPermission(thread_db* tdbb, jrd_tra* transaction);
 	virtual void execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction);
 
 protected:
@@ -1711,25 +1818,25 @@ protected:
 	}
 
 public:
-	Firebird::MetaName name;
+	MetaName name;
 };
 
 
 class DropIndexNode : public DdlNode
 {
 public:
-	DropIndexNode(MemoryPool& p, const Firebird::MetaName& aName)
+	DropIndexNode(MemoryPool& p, const MetaName& aName)
 		: DdlNode(p),
 		  name(p, aName)
 	{
 	}
 
 	static bool deleteSegmentRecords(thread_db* tdbb, jrd_tra* transaction,
-		const Firebird::MetaName& name);
+		const MetaName& name);
 
 public:
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
-	virtual bool checkPermission(thread_db* tdbb, jrd_tra* transaction);
+	virtual void checkPermission(thread_db* tdbb, jrd_tra* transaction);
 	virtual void execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction);
 
 protected:
@@ -1739,7 +1846,7 @@ protected:
 	}
 
 public:
-	Firebird::MetaName name;
+	MetaName name;
 };
 
 
@@ -1749,7 +1856,7 @@ public:
 	class NameNumber : public Printable
 	{
 	public:
-		NameNumber(MemoryPool& p, const Firebird::MetaName& aName)
+		NameNumber(MemoryPool& p, const MetaName& aName)
 			: name(p, aName),
 			  number(0)
 		{
@@ -1771,12 +1878,12 @@ public:
 		}
 
 	public:
-		Firebird::MetaName name;
+		MetaName name;
 		SSHORT number;
 	};
 
 public:
-	CreateFilterNode(MemoryPool& p, const Firebird::MetaName& aName)
+	CreateFilterNode(MemoryPool& p, const MetaName& aName)
 		: DdlNode(p),
 		  name(p, aName),
 		  inputFilter(NULL),
@@ -1788,7 +1895,7 @@ public:
 
 public:
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
-	virtual bool checkPermission(thread_db* tdbb, jrd_tra* transaction);
+	virtual void checkPermission(thread_db* tdbb, jrd_tra* transaction);
 	virtual void execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction);
 
 protected:
@@ -1798,7 +1905,7 @@ protected:
 	}
 
 public:
-	Firebird::MetaName name;
+	MetaName name;
 	NestConst<NameNumber> inputFilter;
 	NestConst<NameNumber> outputFilter;
 	Firebird::string entryPoint;
@@ -1809,7 +1916,7 @@ public:
 class DropFilterNode : public DdlNode
 {
 public:
-	DropFilterNode(MemoryPool& p, const Firebird::MetaName& aName)
+	DropFilterNode(MemoryPool& p, const MetaName& aName)
 		: DdlNode(p),
 		  name(p, aName)
 	{
@@ -1817,7 +1924,7 @@ public:
 
 public:
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
-	virtual bool checkPermission(thread_db* tdbb, jrd_tra* transaction);
+	virtual void checkPermission(thread_db* tdbb, jrd_tra* transaction);
 	virtual void execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction);
 
 protected:
@@ -1827,7 +1934,7 @@ protected:
 	}
 
 public:
-	Firebird::MetaName name;
+	MetaName name;
 };
 
 
@@ -1845,8 +1952,13 @@ public:
 
 public:
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
-	virtual bool checkPermission(thread_db* tdbb, jrd_tra* transaction);
+	virtual void checkPermission(thread_db* tdbb, jrd_tra* transaction);
 	virtual void execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction);
+
+	virtual bool mustBeReplicated() const
+	{
+		return false;
+	}
 
 protected:
 	virtual void putErrorPrefix(Firebird::Arg::StatusVector& statusVector)
@@ -1875,8 +1987,13 @@ public:
 
 public:
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
-	virtual bool checkPermission(thread_db* tdbb, jrd_tra* transaction);
+	virtual void checkPermission(thread_db* tdbb, jrd_tra* transaction);
 	virtual void execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction);
+
+	virtual bool mustBeReplicated() const
+	{
+		return false;
+	}
 
 protected:
 	virtual void putErrorPrefix(Firebird::Arg::StatusVector& statusVector)
@@ -1890,31 +2007,58 @@ public:
 };
 
 
-class CreateRoleNode : public DdlNode
+class PrivilegesNode : public DdlNode
 {
 public:
-	CreateRoleNode(MemoryPool& p, const Firebird::MetaName& aName)
-		: DdlNode(p),
-		  name(p, aName)
+	PrivilegesNode(MemoryPool& p)
+		: DdlNode(p)
+	{
+	}
+
+protected:
+	static USHORT convertPrivilegeFromString(thread_db* tdbb, jrd_tra* transaction,
+		MetaName privilege);
+};
+
+class CreateAlterRoleNode : public PrivilegesNode
+{
+public:
+	CreateAlterRoleNode(MemoryPool& p, const MetaName& aName)
+		: PrivilegesNode(p),
+		  name(p, aName),
+		  createFlag(false),
+		  sysPrivDrop(false),
+		  privileges(p)
 	{
 	}
 
 public:
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
-	virtual bool checkPermission(thread_db* tdbb, jrd_tra* transaction);
+	virtual void checkPermission(thread_db* tdbb, jrd_tra* transaction);
 	virtual void execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction);
 
 protected:
 	virtual void putErrorPrefix(Firebird::Arg::StatusVector& statusVector)
 	{
-		statusVector << Firebird::Arg::Gds(isc_dsql_create_role_failed) << name;
+		statusVector << Firebird::Arg::Gds(createFlag ? isc_dsql_create_role_failed :
+			isc_dsql_alter_role_failed) << name;
 	}
 
 private:
 	bool isItUserName(thread_db* tdbb, jrd_tra* transaction);
 
 public:
-	Firebird::MetaName name;
+	MetaName name;
+	bool createFlag, sysPrivDrop;
+
+	void addPrivilege(const MetaName* privName)
+	{
+		fb_assert(privName);
+		privileges.push(*privName);
+	}
+
+private:
+	Firebird::HalfStaticArray<MetaName, 4> privileges;
 };
 
 
@@ -1923,9 +2067,10 @@ class MappingNode : public DdlNode, private ExecInSecurityDb
 public:
 	enum OP {MAP_ADD, MAP_MOD, MAP_RPL, MAP_DROP};
 
-	MappingNode(MemoryPool& p, OP o, const Firebird::MetaName& nm)
+	MappingNode(MemoryPool& p, OP o, const MetaName& nm)
 		: DdlNode(p),
 		  name(p, nm),
+		  fromUtf8(p),
 		  plugin(NULL),
 		  db(NULL),
 		  fromType(NULL),
@@ -1942,7 +2087,7 @@ public:
 
 public:
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
-	virtual bool checkPermission(thread_db* tdbb, jrd_tra* transaction);
+	virtual void checkPermission(thread_db* tdbb, jrd_tra* transaction);
 	virtual void execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction);
 
 protected:
@@ -1955,15 +2100,16 @@ protected:
 	void runInSecurityDb(SecDbContext* secDbContext);
 
 private:
-	void addItem(Firebird::string& ddl, const char* text);
+	void addItem(Firebird::string& ddl, const char* text, char quote = '"');
 
 public:
-	Firebird::MetaName name;
-	Firebird::MetaName* plugin;
-	Firebird::MetaName* db;
-	Firebird::MetaName* fromType;
+	MetaName name;
+	Firebird::string fromUtf8;
+	MetaName* plugin;
+	MetaName* db;
+	MetaName* fromType;
 	IntlString* from;
-	Firebird::MetaName* to;
+	MetaName* to;
 	OP op;
 	char mode;	// * - any source, P - plugin, M - mapping, S - any serverwide plugin
 	bool global;
@@ -1974,7 +2120,7 @@ public:
 class DropRoleNode : public DdlNode
 {
 public:
-	DropRoleNode(MemoryPool& p, const Firebird::MetaName& aName)
+	DropRoleNode(MemoryPool& p, const MetaName& aName)
 		: DdlNode(p),
 		  name(p, aName)
 	{
@@ -1982,7 +2128,7 @@ public:
 
 public:
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
-	virtual bool checkPermission(thread_db* tdbb, jrd_tra* transaction);
+	virtual void checkPermission(thread_db* tdbb, jrd_tra* transaction);
 	virtual void execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction);
 
 protected:
@@ -1992,7 +2138,7 @@ protected:
 	}
 
 public:
-	Firebird::MetaName name;
+	MetaName name;
 };
 
 
@@ -2004,7 +2150,7 @@ public:
 	{ }
 
 protected:
-	Firebird::MetaName upper(const Firebird::MetaName& str);
+	MetaName upper(const MetaName& str);
 };
 
 
@@ -2013,7 +2159,7 @@ class CreateAlterUserNode : public UserNode
 public:
 	enum Mode {USER_ADD, USER_MOD, USER_RPL};
 
-	CreateAlterUserNode(MemoryPool& p, Mode md, const Firebird::MetaName& aName)
+	CreateAlterUserNode(MemoryPool& p, Mode md, const MetaName& aName)
 		: UserNode(p),
 		  properties(p),
 		  name(p, upper(aName)),
@@ -2028,8 +2174,13 @@ public:
 
 public:
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
-	virtual bool checkPermission(thread_db* tdbb, jrd_tra* transaction);
+	virtual void checkPermission(thread_db* tdbb, jrd_tra* transaction);
 	virtual void execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction);
+
+	virtual bool mustBeReplicated() const
+	{
+		return false;
+	}
 
 protected:
 	virtual void putErrorPrefix(Firebird::Arg::StatusVector& statusVector)
@@ -2039,31 +2190,30 @@ protected:
 	}
 
 public:
-	class Property : public PermanentStorage
+	class Property
 	{
 	public:
 		explicit Property(MemoryPool& p)
-			: PermanentStorage(p),
-			  value(p)
+			: value(p)
 		{ }
 
-		Firebird::MetaName property;
+		MetaName property;
 		Firebird::string value;
 	};
 
 	Firebird::ObjectsArray<Property> properties;
-	const Firebird::MetaName name;
+	const MetaName name;
 	Firebird::string* password;
 	Firebird::string* firstName;
 	Firebird::string* middleName;
 	Firebird::string* lastName;
-	Firebird::MetaName* plugin;
+	MetaName* plugin;
 	Firebird::string* comment;
 	Nullable<bool> adminRole;
 	Nullable<bool> active;
 	Mode mode;
 
-	void addProperty(Firebird::MetaName* pr, Firebird::string* val = NULL)
+	void addProperty(MetaName* pr, Firebird::string* val = NULL)
 	{
 		fb_assert(pr);
 
@@ -2080,10 +2230,11 @@ public:
 class DropUserNode : public UserNode
 {
 public:
-	DropUserNode(MemoryPool& p, const Firebird::MetaName& aName, const Firebird::MetaName* aPlugin = NULL)
+	DropUserNode(MemoryPool& p, const MetaName& aName, const MetaName* aPlugin = NULL)
 		: UserNode(p),
 		  name(p, upper(aName)),
-		  plugin(p)
+		  plugin(p),
+		  silent(false)
 	{
 		if (aPlugin)
 			plugin = *aPlugin;
@@ -2091,8 +2242,13 @@ public:
 
 public:
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
-	virtual bool checkPermission(thread_db* tdbb, jrd_tra* transaction);
+	virtual void checkPermission(thread_db* tdbb, jrd_tra* transaction);
 	virtual void execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction);
+
+	virtual bool mustBeReplicated() const
+	{
+		return false;
+	}
 
 protected:
 	virtual void putErrorPrefix(Firebird::Arg::StatusVector& statusVector)
@@ -2101,23 +2257,39 @@ protected:
 	}
 
 public:
-	const Firebird::MetaName name;
-	Firebird::MetaName plugin;
+	const MetaName name;
+	MetaName plugin;
+	bool silent;
 };
 
 
-typedef Firebird::Pair<Firebird::NonPooled<char, ValueListNode*> > PrivilegeClause;
-typedef Firebird::Pair<Firebird::NonPooled<SSHORT, Firebird::MetaName> > GranteeClause;
+template <>
+inline RecreateNode<CreateAlterUserNode, DropUserNode, isc_dsql_recreate_user_failed>::
+	RecreateNode(MemoryPool& p, CreateAlterUserNode* aCreateNode)
+		: DdlNode(p),
+		  createNode(aCreateNode),
+		  dropNode(p, createNode->name, createNode->plugin)
+	{
+		dropNode.silent = true;
+	}
 
-class GrantRevokeNode : public DdlNode, private ExecInSecurityDb
+typedef RecreateNode<CreateAlterUserNode, DropUserNode, isc_dsql_recreate_user_failed>
+	RecreateUserNode;
+
+
+typedef Firebird::Pair<Firebird::NonPooled<char, ValueListNode*> > PrivilegeClause;
+typedef Firebird::Pair<Firebird::NonPooled<SSHORT, MetaName> > GranteeClause;
+
+class GrantRevokeNode : public PrivilegesNode, private ExecInSecurityDb
 {
 public:
 	GrantRevokeNode(MemoryPool& p, bool aIsGrant)
-		: DdlNode(p),
+		: PrivilegesNode(p),
 		  createDbJobs(p),
 		  isGrant(aIsGrant),
 		  privileges(p),
 		  roles(p),
+		  defaultRoles(p),
 		  object(NULL),
 		  users(p),
 		  grantAdminOption(false),
@@ -2128,7 +2300,7 @@ public:
 
 public:
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
-	virtual bool checkPermission(thread_db* tdbb, jrd_tra* transaction);
+	virtual void checkPermission(thread_db* tdbb, jrd_tra* transaction);
 	virtual void execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction);
 
 protected:
@@ -2142,39 +2314,41 @@ protected:
 private:
 	void modifyPrivileges(thread_db* tdbb, jrd_tra* transaction, SSHORT option, const GranteeClause* user);
 	void grantRevoke(thread_db* tdbb, jrd_tra* transaction, const GranteeClause* object,
-		const GranteeClause* userNod, const char* privs, const Firebird::MetaName& field, int options);
-	static void checkGrantorCanGrant(thread_db* tdbb, jrd_tra* transaction, const char* grantor,
-		const char* privilege, const Firebird::MetaName& relationName,
-		const Firebird::MetaName& fieldName, bool topLevel);
+		const GranteeClause* userNod, const char* privs, MetaName field, int options);
+	static void checkGrantorCanGrantRelation(thread_db* tdbb, jrd_tra* transaction, const char* grantor,
+		const char* privilege, const MetaName& relationName,
+		const MetaName& fieldName, bool topLevel);
 	static void checkGrantorCanGrantRole(thread_db* tdbb, jrd_tra* transaction,
-			const Firebird::MetaName& grantor, const Firebird::MetaName& roleName);
+			const MetaName& grantor, const MetaName& roleName);
 	static void checkGrantorCanGrantDdl(thread_db* tdbb, jrd_tra* transaction,
-			const Firebird::MetaName& grantor, const char* privilege, const Firebird::MetaName& objName);
+			const MetaName& grantor, const char* privilege, const MetaName& objName);
+	static void checkGrantorCanGrantObject(thread_db* tdbb, jrd_tra* transaction, const char* grantor,
+		const char* privilege, const MetaName& objName, SSHORT objType);
 	static void storePrivilege(thread_db* tdbb, jrd_tra* transaction,
-		const Firebird::MetaName& object, const Firebird::MetaName& user,
-		const Firebird::MetaName& field, const TEXT* privilege, SSHORT userType,
-		SSHORT objType, int option, const Firebird::MetaName& grantor);
+		const MetaName& object, const MetaName& user,
+		const MetaName& field, const TEXT* privilege, SSHORT userType,
+		SSHORT objType, int option, const MetaName& grantor);
 	static void setFieldClassName(thread_db* tdbb, jrd_tra* transaction,
-		const Firebird::MetaName& relation, const Firebird::MetaName& field);
+		const MetaName& relation, const MetaName& field);
 
 	// Diagnostics print helper.
 	static const char* privilegeName(char symbol)
 	{
 		switch (UPPER7(symbol))
 		{
-			case 'A': return "All";
-			case 'I': return "Insert";
-			case 'U': return "Update";
-			case 'D': return "Delete";
-			case 'S': return "Select";
-			case 'X': return "Execute";
-			case 'G': return "Usage";
-			case 'M': return "Role";
-			case 'R': return "Reference";
+			case 'A': return "ALL";
+			case 'I': return "INSERT";
+			case 'U': return "UPDATE";
+			case 'D': return "DELETE";
+			case 'S': return "SELECT";
+			case 'X': return "EXECUTE";
+			case 'G': return "USAGE";
+			case 'M': return "ROLE";
+			case 'R': return "REFERENCE";
 			// ddl
-			case 'C': return "Create";
-			case 'L': return "Alter";
-			case 'O': return "Drop";
+			case 'C': return "CREATE";
+			case 'L': return "ALTER";
+			case 'O': return "DROP";
 		}
 
 		return "<Unknown>";
@@ -2182,14 +2356,14 @@ private:
 
 	struct CreateDbJob
 	{
-		CreateDbJob(SSHORT a_userType, const Firebird::MetaName& a_user)
+		CreateDbJob(SSHORT a_userType, const MetaName& a_user)
 			: allOnAll(false), grantErased(false), badGrantor(false),
 			  userType(a_userType), user(a_user)
 		{ }
 
 		bool allOnAll, grantErased, badGrantor;
 		SSHORT userType;
-		Firebird::MetaName user, revoker;
+		MetaName user, revoker;
 	};
 	Firebird::Array<CreateDbJob> createDbJobs;
 
@@ -2197,10 +2371,11 @@ public:
 	bool isGrant;
 	Firebird::Array<PrivilegeClause> privileges;
 	Firebird::Array<GranteeClause> roles;
+	Firebird::Array<bool> defaultRoles;
 	NestConst<GranteeClause> object;
 	Firebird::Array<GranteeClause> users;
 	bool grantAdminOption;
-	NestConst<Firebird::MetaName> grantor;
+	NestConst<MetaName> grantor;
 	// ddl rights
 	bool isDdl;
 };
@@ -2213,6 +2388,10 @@ public:
 	static const unsigned CLAUSE_END_BACKUP			= 0x02;
 	static const unsigned CLAUSE_DROP_DIFFERENCE	= 0x04;
 	static const unsigned CLAUSE_CRYPT				= 0x08;
+	static const unsigned CLAUSE_ENABLE_PUB			= 0x10;
+	static const unsigned CLAUSE_DISABLE_PUB		= 0x20;
+	static const unsigned CLAUSE_PUB_INCL_TABLE		= 0x40;
+	static const unsigned CLAUSE_PUB_EXCL_TABLE		= 0x80;
 
 	static const unsigned RDB_DATABASE_MASK =
 		CLAUSE_BEGIN_BACKUP | CLAUSE_END_BACKUP | CLAUSE_DROP_DIFFERENCE;
@@ -2229,7 +2408,8 @@ public:
 		  setDefaultCollation(p),
 		  files(p),
 		  cryptPlugin(p),
-		  keyName(p)
+		  keyName(p),
+		  pubTables(p)
 	{
 	}
 
@@ -2242,8 +2422,13 @@ public:
 	}
 
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
-	virtual bool checkPermission(thread_db* tdbb, jrd_tra* transaction);
+	virtual void checkPermission(thread_db* tdbb, jrd_tra* transaction);
 	virtual void execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, jrd_tra* transaction);
+
+	virtual bool mustBeReplicated() const
+	{
+		return false;
+	}
 
 protected:
 	virtual void putErrorPrefix(Firebird::Arg::StatusVector& statusVector)
@@ -2254,20 +2439,33 @@ protected:
 private:
 	static void changeBackupMode(thread_db* tdbb, jrd_tra* transaction, unsigned clause);
 	static void defineDifference(thread_db* tdbb, jrd_tra* transaction, const Firebird::PathName& file);
+	void checkClauses(thread_db* tdbb);
 
 public:
 	bool create;	// Is the node created with a CREATE DATABASE command?
 	SLONG createLength, linger;
 	unsigned clauses;
 	Firebird::string differenceFile;
-	Firebird::MetaName setDefaultCharSet;
-	Firebird::MetaName setDefaultCollation;
+	MetaName setDefaultCharSet;
+	MetaName setDefaultCollation;
 	Firebird::Array<NestConst<DbFileClause> > files;
-	Firebird::MetaName cryptPlugin;
-	Firebird::MetaName keyName;
+	MetaName cryptPlugin;
+	MetaName keyName;
+	Nullable<bool> ssDefiner;
+	Firebird::Array<MetaName> pubTables;
 };
 
 
 } // namespace
+
+template <>
+class NullableClear<Jrd::TriggerDefinition::SqlSecurity>	// TriggerDefinition::SqlSecurity especialization for NullableClear
+{
+public:
+	static void clear(Jrd::TriggerDefinition::SqlSecurity& v)
+	{
+		v = Jrd::TriggerDefinition::SS_INVOKER;
+	}
+};
 
 #endif // DSQL_DDL_NODES_H

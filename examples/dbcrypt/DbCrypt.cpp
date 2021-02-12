@@ -58,6 +58,8 @@ public:
 		pluginManager = NULL;
 	}
 
+	void threadDetach() {}
+
 private:
 	IPluginManager* pluginManager;
 };
@@ -81,6 +83,13 @@ public:
 	void decrypt(CheckStatusWrapper* status, unsigned int length, const void* from, void* to);
 	void setKey(CheckStatusWrapper* status, unsigned int length, IKeyHolderPlugin** sources,
 		const char* keyName);
+
+	// One is free to ignore passed info when not needed
+	void setInfo(CheckStatusWrapper* status, IDbCryptInfo* info)
+	{
+		// You may uncomment next line in a case of embedded connection
+		// fprintf(stderr, "DbInfo: name is %s\n", info->getDatabaseFullPath(status));
+	}
 
 	int release()
 	{
@@ -262,5 +271,5 @@ extern "C" void FB_DLL_EXPORT FB_PLUGIN_ENTRY_POINT(IMaster* master)
 	IPluginManager* pluginManager = master->getPluginManager();
 
 	module.registerMe(pluginManager);
-	pluginManager->registerPluginFactory(IPluginManager::TYPE_DB_CRYPT, "DbCrypt_example", &factory);
+	pluginManager->registerPluginFactory(IPluginManager::TYPE_DB_CRYPT, "fbSampleDbCrypt", &factory);
 }

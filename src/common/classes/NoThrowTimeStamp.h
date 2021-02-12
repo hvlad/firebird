@@ -27,7 +27,8 @@
 #ifndef CLASSES_NOTHROW_TIMESTAMP_H
 #define CLASSES_NOTHROW_TIMESTAMP_H
 
-#include "../common/dsc_pub.h"
+#include "firebird/impl/dsc_pub.h"
+#include "../common/gdsassert.h"
 
 // struct tm declaration
 #if defined(TIME_WITH_SYS_TIME)
@@ -58,6 +59,13 @@ class NoThrowTimeStamp
 public:
 	static const ISC_DATE MIN_DATE = -678575;	// 01.01.0001
 	static const ISC_DATE MAX_DATE = 2973483;	// 31.12.9999
+	static const ISC_DATE UNIX_DATE = 40587;	// 01.01.1970
+
+	static const SINT64 SECONDS_PER_DAY = 24 * 60 * 60;
+	static const SINT64 ISC_TICKS_PER_DAY = SECONDS_PER_DAY * ISC_TIME_SECONDS_PRECISION;
+
+	static const ISC_TIMESTAMP MIN_TIMESTAMP;
+	static const ISC_TIMESTAMP MAX_TIMESTAMP;
 
 private:
 	static const ISC_DATE BAD_DATE = MAX_SLONG;
@@ -157,11 +165,27 @@ public:
 	static void decode_time(ISC_TIME ntime, int* hours, int* minutes, int* seconds, int* fractions = NULL) throw();
 	static void decode_timestamp(const ISC_TIMESTAMP ntimestamp, struct tm* times, int* fractions = NULL) throw();
 
+	static void add10msec(ISC_TIMESTAMP* v, SINT64 msec, SINT64 multiplier);
 	static void round_time(ISC_TIME& ntime, const int precision);
 
 	static inline bool isLeapYear(const int year) throw()
 	{
 		return (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+	}
+
+	static SINT64 timeStampToTicks(ISC_TIMESTAMP ts)
+	{
+		const SINT64 ticks = (ts.timestamp_date - MIN_DATE) * ISC_TICKS_PER_DAY + ts.timestamp_time;
+		return ticks;
+	}
+
+	static ISC_TIMESTAMP ticksToTimeStamp(SINT64 ticks)
+	{
+		ISC_TIMESTAMP ts;
+		ts.timestamp_date = (ticks / ISC_TICKS_PER_DAY) + MIN_DATE;
+		ts.timestamp_time = ticks % ISC_TICKS_PER_DAY;
+
+		return ts;
 	}
 
 private:

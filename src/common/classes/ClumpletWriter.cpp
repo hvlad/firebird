@@ -30,10 +30,9 @@
 #include "firebird.h"
 
 #include "../common/classes/ClumpletWriter.h"
-#include "../common/classes/MetaName.h"
+#include "../common/classes/MetaString.h"
 #include "fb_exception.h"
-
-#include "../jrd/ibase.h"
+#include "ibase.h"
 
 namespace Firebird {
 
@@ -168,7 +167,7 @@ void ClumpletWriter::reset(UCHAR tag)
 			}
 		}
 
-		invalid_structure("Unknown tag value - missing in the list of possible");
+		invalid_structure("Unknown tag value - missing in the list of possible", tag);
 	}
 
 	dynamic_buffer.shrink(0);
@@ -246,17 +245,12 @@ void ClumpletWriter::insertTimeStamp(UCHAR tag, const ISC_TIMESTAMP value)
 	insertBytesLengthCheck(tag, bytes, sizeof(bytes));
 }
 
-void ClumpletWriter::insertString(UCHAR tag, const string& str)
-{
-	insertString(tag, str.c_str(), str.length());
-}
-
-void ClumpletWriter::insertString(UCHAR tag, const MetaName& str)
-{
-	insertString(tag, str.c_str(), str.length());
-}
-
 void ClumpletWriter::insertString(UCHAR tag, const char* str)
+{
+	insertString(tag, str, strlen(str));
+}
+
+void ClumpletWriter::insertString(UCHAR tag, char* str)
 {
 	insertString(tag, str, strlen(str));
 }
@@ -266,9 +260,9 @@ void ClumpletWriter::insertString(UCHAR tag, const char* str, FB_SIZE_T length)
 	insertBytesLengthCheck(tag, str, length);
 }
 
-void ClumpletWriter::insertPath(UCHAR tag, const PathName& str)
+void ClumpletWriter::insertData(UCHAR tag, const UCharBuffer& data)
 {
-	insertString(tag, str.c_str(), str.length());
+	insertBytesLengthCheck(tag, data.begin(), data.getCount());
 }
 
 void ClumpletWriter::insertBytes(UCHAR tag, const void* bytes, FB_SIZE_T length)
@@ -349,6 +343,8 @@ void ClumpletWriter::insertBytesLengthCheck(UCHAR tag, const void* bytes, const 
 				m.printf("attempt to store %d bytes in a clumplet, need 1", length);
 			}
 			break;
+		default:
+			invalid_structure("unknown clumplet type", t);
 		}
 
 		if (m.isEmpty())

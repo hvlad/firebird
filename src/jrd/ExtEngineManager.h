@@ -27,7 +27,7 @@
 #include "../common/classes/array.h"
 #include "../common/classes/fb_string.h"
 #include "../common/classes/GenericMap.h"
-#include "../common/classes/MetaName.h"
+#include "../jrd/MetaName.h"
 #include "../common/classes/NestConst.h"
 #include "../common/classes/auto.h"
 #include "../common/classes/rwlock.h"
@@ -40,6 +40,7 @@ namespace Jrd {
 
 class thread_db;
 class jrd_prc;
+class jrd_req;
 class jrd_tra;
 class Attachment;
 class CompilerScratch;
@@ -47,6 +48,8 @@ class Database;
 class Format;
 class Trigger;
 class Function;
+class DeclareVariableNode;
+class StmtNode;
 class ValueExprNode;
 struct impure_value;
 struct record_param;
@@ -121,14 +124,14 @@ private:
 		}
 
 	public:
-		Firebird::MetaName package;
-		Firebird::MetaName name;
+		MetaName package;
+		MetaName name;
 		Firebird::string entryPoint;
 		Firebird::string body;
 		Firebird::RefPtr<Firebird::IMessageMetadata> inputParameters;
 		Firebird::RefPtr<Firebird::IMessageMetadata> outputParameters;
 		Firebird::RefPtr<Firebird::IMessageMetadata> triggerFields;
-		Firebird::MetaName triggerTable;
+		MetaName triggerTable;
 		unsigned triggerType;
 
 	private:
@@ -166,11 +169,11 @@ private:
 	private:
 		Firebird::IExternalEngine* engine;
 		Attachment* internalAttachment;
-		jrd_tra* internalTransaction;
+		Firebird::ITransaction* internalTransaction;
 		Firebird::IAttachment* externalAttachment;
 		Firebird::ITransaction* externalTransaction;
 		Firebird::GenericMap<Firebird::NonPooled<int, void*> > miscInfo;
-		Firebird::MetaName clientCharSet;
+		MetaName clientCharSet;
 	};
 
 	struct EngineAttachment
@@ -272,17 +275,22 @@ public:
 	class Trigger
 	{
 	public:
-		Trigger(thread_db* tdbb, MemoryPool& pool, ExtEngineManager* aExtManager,
+		Trigger(thread_db* tdbb, MemoryPool& pool, CompilerScratch* csb, ExtEngineManager* aExtManager,
 			Firebird::IExternalEngine* aEngine, RoutineMetadata* aMetadata,
 			Firebird::IExternalTrigger* aTrigger, const Jrd::Trigger* aTrg);
 		~Trigger();
 
-		void execute(thread_db* tdbb, unsigned action,
+		void execute(thread_db* tdbb, jrd_req* request, unsigned action,
 			record_param* oldRpb, record_param* newRpb) const;
 
 	private:
-		void setValues(thread_db* tdbb, Firebird::Array<UCHAR>& msgBuffer, record_param* rpb) const;
+		void setupComputedFields(thread_db* tdbb, MemoryPool& pool, CompilerScratch* csb);
+		void setValues(thread_db* tdbb, jrd_req* request, Firebird::Array<UCHAR>& msgBuffer, record_param* rpb) const;
 
+	public:
+		Firebird::Array<NestConst<StmtNode>> computedStatements;
+
+	private:
 		ExtEngineManager* extManager;
 		Firebird::IExternalEngine* engine;
 		Firebird::AutoPtr<RoutineMetadata> metadata;
@@ -290,17 +298,13 @@ public:
 		Firebird::IExternalTrigger* trigger;
 		const Jrd::Trigger* trg;
 		Firebird::Array<USHORT> fieldsPos;
+		Firebird::Array<const DeclareVariableNode*> varDecls;
 		Database* database;
+		USHORT computedCount;
 	};
 
 public:
-	explicit ExtEngineManager(MemoryPool& p)
-		: PermanentStorage(p),
-		  engines(p),
-		  enginesAttachments(p)
-	{
-	}
-
+	explicit ExtEngineManager(MemoryPool& p);
 	~ExtEngineManager();
 
 public:
@@ -310,20 +314,20 @@ public:
 	void closeAttachment(thread_db* tdbb, Attachment* attachment);
 
 	void makeFunction(thread_db* tdbb, CompilerScratch* csb, Jrd::Function* udf,
-		const Firebird::MetaName& engine, const Firebird::string& entryPoint,
+		const MetaName& engine, const Firebird::string& entryPoint,
 		const Firebird::string& body);
 	void makeProcedure(thread_db* tdbb, CompilerScratch* csb, jrd_prc* prc,
-		const Firebird::MetaName& engine, const Firebird::string& entryPoint,
+		const MetaName& engine, const Firebird::string& entryPoint,
 		const Firebird::string& body);
 	void makeTrigger(thread_db* tdbb, CompilerScratch* csb, Jrd::Trigger* trg,
-		const Firebird::MetaName& engine, const Firebird::string& entryPoint,
+		const MetaName& engine, const Firebird::string& entryPoint,
 		const Firebird::string& body, unsigned type);
 
 private:
 	Firebird::IExternalEngine* getEngine(thread_db* tdbb,
-		const Firebird::MetaName& name);
+		const MetaName& name);
 	EngineAttachmentInfo* getEngineAttachment(thread_db* tdbb,
-		const Firebird::MetaName& name);
+		const MetaName& name);
 	EngineAttachmentInfo* getEngineAttachment(thread_db* tdbb,
 		Firebird::IExternalEngine* engine, bool closing = false);
 	void setupAdminCharSet(thread_db* tdbb, Firebird::IExternalEngine* engine,
@@ -331,7 +335,7 @@ private:
 
 private:
 	typedef Firebird::GenericMap<Firebird::Pair<
-		Firebird::Left<Firebird::MetaName, Firebird::IExternalEngine*> > > EnginesMap;
+		Firebird::Left<MetaName, Firebird::IExternalEngine*> > > EnginesMap;
 	typedef Firebird::GenericMap<Firebird::Pair<Firebird::NonPooled<
 		EngineAttachment, EngineAttachmentInfo*> >, EngineAttachment> EnginesAttachmentsMap;
 

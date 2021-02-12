@@ -36,12 +36,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include "../yvalve/gds_proto.h"
-#include "../jrd/ibase.h"
+#include "ibase.h"
 #include "../common/classes/ClumpletWriter.h"
 #include "../common/classes/timestamp.h"
 #include "../common/utils_proto.h"
 #include "../common/classes/MsgPrint.h"
+#include "../common/classes/GetPlugins.h"
 #include "../common/StatusArg.h"
+#include "../common/status.h"
 #include "../common/os/os_utils.h"
 #include "../jrd/license.h"
 
@@ -108,6 +110,32 @@ bool putStringArgument(char**& av, ClumpletWriter& spb, unsigned int tag)
 	return true;
 }
 
+// add callback to named KeyHolderPlugin
+IKeyHolderPlugin* keyHolder = NULL;
+
+bool putCallback(char**& av, ClumpletWriter&, unsigned int)
+{
+	if (! *av)
+		return false;
+
+	char* x = *av++;
+	GetPlugins<IKeyHolderPlugin> keyControl(IPluginManager::TYPE_KEY_HOLDER, x);
+	if (!keyControl.hasData())
+		(Firebird::Arg::Gds(isc_no_keyholder_plugin) << x).raise();
+	keyHolder = keyControl.plugin();
+	keyHolder->addRef();		// Leak memory, OK for utility
+
+	FbLocalStatus st;
+	ICryptKeyCallback* cb = keyHolder->chainHandle(&st);
+	check(&st);
+
+	ISC_STATUS_ARRAY status;
+	if (fb_database_crypt_callback(status, cb) != 0)
+		status_exception::raise(status);
+
+	return true;
+}
+
 // add string tag from file (fetch password)
 
 bool putFileArgument(char**& av, ClumpletWriter& spb, unsigned int tag)
@@ -142,7 +170,7 @@ bool putFileFromArgument(char**& av, ClumpletWriter& spb, unsigned int tag)
 	if (! *av)
 		return false;
 
-	FILE* const file = fopen(*av, "rb");
+	FILE* const file = os_utils::fopen(*av, "rb");
 	if (!file) {
 		(Arg::Gds(isc_fbsvcmgr_fp_open) << *av << Arg::OsError()).raise();
 	}
@@ -244,6 +272,19 @@ bool putShutdownMode(char**& av, ClumpletWriter& spb, unsigned int tag)
 	return putSpecTag(av, spb, tag, shutSwitch, isc_fbsvcmgr_bad_sm);
 }
 
+const SvcSwitches rmSwitch[] =
+{
+	{"prp_rm_none", 0, 0, isc_spb_prp_rm_none, 0},
+	{"prp_rm_readonly", 0, 0, isc_spb_prp_rm_readonly, 0},
+	{"prp_rm_readwrite", 0, 0, isc_spb_prp_rm_readwrite, 0},
+	{0, 0, 0, 0, 0}
+};
+
+bool putReplicaMode(char**& av, ClumpletWriter& spb, unsigned int tag)
+{
+	return putSpecTag(av, spb, tag, rmSwitch, isc_fbsvcmgr_bad_rm);
+}
+
 // add integer (int32) tag to spb
 
 bool putIntArgument(char**& av, ClumpletWriter& spb, unsigned int tag)
@@ -341,6 +382,7 @@ const SvcSwitches attSwitch[] =
 	{"fetch_password", putFileArgument, 0, isc_spb_password, 0},
 	{"trusted_auth", putSingleTag, 0, isc_spb_trusted_auth, 0},
 	{"expected_db", putStringArgument, 0, isc_spb_expected_db, 0},
+	{"key_holder", putCallback, 0, 0, 0},
 	{0, 0, 0, 0, 0}
 };
 
@@ -375,7 +417,12 @@ const SvcSwitches backupOptions[] =
 	{"bkp_no_triggers", putOption, 0, isc_spb_bkp_no_triggers, 0},
 	{"verbint", putIntArgument, 0, isc_spb_verbint, 0},
 	{"bkp_skip_data", putStringArgument, 0, isc_spb_bkp_skip_data, 0},
+	{"bkp_include_data", putStringArgument, 0, isc_spb_bkp_include_data, 0},
 	{"bkp_stat", putStringArgument, 0, isc_spb_bkp_stat, 0 },
+	{"bkp_keyholder", putStringArgument, 0, isc_spb_bkp_keyholder, 0 },
+	{"bkp_keyname", putStringArgument, 0, isc_spb_bkp_keyname, 0 },
+	{"bkp_crypt", putStringArgument, 0, isc_spb_bkp_crypt, 0 },
+	{"bkp_zip", putOption, 0, isc_spb_bkp_zip, 0 },
 	{0, 0, 0, 0, 0}
 };
 
@@ -400,7 +447,12 @@ const SvcSwitches restoreOptions[] =
 	{"res_metadata_only", putOption, 0, isc_spb_res_metadata_only, 0},
 	{"verbint", putIntArgument, 0, isc_spb_verbint, 0},
 	{"res_skip_data", putStringArgument, 0, isc_spb_res_skip_data, 0},
+	{"res_include_data", putStringArgument, 0, isc_spb_res_include_data, 0},
 	{"res_stat", putStringArgument, 0, isc_spb_res_stat, 0 },
+	{"res_keyholder", putStringArgument, 0, isc_spb_res_keyholder, 0 },
+	{"res_keyname", putStringArgument, 0, isc_spb_res_keyname, 0 },
+	{"res_crypt", putStringArgument, 0, isc_spb_res_crypt, 0 },
+	{"res_replica_mode", putReplicaMode, 0, isc_spb_res_replica_mode, 0},
 	{0, 0, 0, 0, 0}
 };
 
@@ -424,6 +476,7 @@ const SvcSwitches propertiesOptions[] =
 	{"prp_shutdown_mode", putShutdownMode, 0, isc_spb_prp_shutdown_mode, 0},
 	{"prp_online_mode", putShutdownMode, 0, isc_spb_prp_online_mode, 0},
 	{"prp_nolinger", putOption, 0, isc_spb_prp_nolinger, 0},
+	{"prp_replica_mode", putReplicaMode, 0, isc_spb_prp_replica_mode, 0},
 	{0, 0, 0, 0, 0}
 };
 
@@ -509,6 +562,14 @@ const SvcSwitches nrestOptions[] =
 	{"dbname", putStringArgument, 0, isc_spb_dbname, 0},
 	{"nbk_file", putStringArgument, 0, isc_spb_nbk_file, 0},
 	{"nbk_inplace", putOption, 0, isc_spb_nbk_inplace, 0},
+	{"nbk_sequence", putOption, 0, isc_spb_nbk_sequence, 0},
+	{0, 0, 0, 0, 0}
+};
+
+const SvcSwitches nfixOptions[] =
+{
+	{"dbname", putStringArgument, 0, isc_spb_dbname, 0},
+	{"nbk_sequence", putOption, 0, isc_spb_nbk_sequence, 0},
 	{0, 0, 0, 0, 0}
 };
 
@@ -552,6 +613,7 @@ const SvcSwitches actionSwitch[] =
 	{"action_modify_user", putSingleTag, addmodOptions, isc_action_svc_modify_user, 0},
 	{"action_nbak", putSingleTag, nbackOptions, isc_action_svc_nbak, isc_info_svc_line},
 	{"action_nrest", putSingleTag, nrestOptions, isc_action_svc_nrest, isc_info_svc_line},
+	{"action_nfix", putSingleTag, nfixOptions, isc_action_svc_nfix, isc_info_svc_line},
 	{"action_trace_start", putSingleTag, traceStartOptions, isc_action_svc_trace_start, isc_info_svc_to_eof},
 	{"action_trace_suspend", putSingleTag, traceChgStateOptions, isc_action_svc_trace_suspend, isc_info_svc_line},
 	{"action_trace_resume", putSingleTag, traceChgStateOptions, isc_action_svc_trace_resume, isc_info_svc_line},
@@ -565,10 +627,16 @@ const SvcSwitches actionSwitch[] =
 
 // print information, returned by isc_svc_query() call
 
+USHORT getShort(const char*& p)
+{
+	const USHORT num = (USHORT) isc_vax_integer(p, sizeof(USHORT));
+	p += sizeof(USHORT);
+	return num;
+}
+
 bool getLine(string& dest, const char*& p)
 {
-	const USHORT length = (USHORT) isc_vax_integer(p, sizeof(USHORT));
-	p += sizeof(USHORT);
+	const USHORT length = getShort(p);
 	dest.assign(p, length);
 	p += length;
 	return length > 0;
@@ -742,6 +810,8 @@ bool printInfo(const char* p, size_t pSize, UserPrint& up, ULONG& stdinRq)
 	bool ignoreTruncation = false;
 	stdinRq = 0;
 	const char* const end = p + pSize;
+	USHORT l;
+	const char* limboEnd;
 
 	while (p < end && *p != isc_info_end)
 	{
@@ -793,7 +863,12 @@ bool printInfo(const char* p, size_t pSize, UserPrint& up, ULONG& stdinRq)
 			break;
 
 		case isc_info_svc_limbo_trans:
-			while (*p != isc_info_flag_end)
+			l = getShort(p);
+			limboEnd = &p[l];
+			if (limboEnd > end)
+				limboEnd = end;
+
+			while (*p != isc_info_flag_end && p < limboEnd)
 			{
 				switch (*p++)
 				{
@@ -816,7 +891,7 @@ bool printInfo(const char* p, size_t pSize, UserPrint& up, ULONG& stdinRq)
 			            printMessage(41);
 						break;
 					default:
-						status_exception::raise(Arg::Gds(isc_fbsvcmgr_info_err) <<
+						status_exception::raise(Arg::Gds(isc_fbsvcmgr_limbo_state) <<
 												Arg::Num(static_cast<unsigned char>(p[-1])));
 					}
 					break;
@@ -839,7 +914,7 @@ bool printInfo(const char* p, size_t pSize, UserPrint& up, ULONG& stdinRq)
 			            printMessage(46);
 						break;
 					default:
-						status_exception::raise(Arg::Gds(isc_fbsvcmgr_info_err) <<
+						status_exception::raise(Arg::Gds(isc_fbsvcmgr_info_limbo) <<
 												Arg::Num(static_cast<unsigned char>(p[-1])));
 					}
 					break;
@@ -862,11 +937,12 @@ bool printInfo(const char* p, size_t pSize, UserPrint& up, ULONG& stdinRq)
 					printInt64(p, 37);
 					break;
 				default:
-					status_exception::raise(Arg::Gds(isc_fbsvcmgr_info_err) <<
+					status_exception::raise(Arg::Gds(isc_fbsvcmgr_info_limbo) <<
 											Arg::Num(static_cast<unsigned char>(p[-1])));
 				}
 			}
-			p++;
+			if (*p == isc_info_flag_end)
+				p++;
 			break;
 
 		case isc_info_svc_get_users:
@@ -896,11 +972,17 @@ bool printInfo(const char* p, size_t pSize, UserPrint& up, ULONG& stdinRq)
 			break;
 
 		case isc_info_svc_line:
-			ret = printLine(p);
+			if (printLine(p))
+			{
+				ret = true;
+			}
 			break;
 
 		case isc_info_svc_to_eof:
-			ret = printData(p);
+			if (printData(p))
+			{
+				ret = true;
+			}
 			ignoreTruncation = true;
 			break;
 
@@ -910,8 +992,7 @@ bool printInfo(const char* p, size_t pSize, UserPrint& up, ULONG& stdinRq)
 				printf("\n%s\n", getMessage(18).c_str());
 			}
 			fflush(stdout);
-			ret = true;
-			break;
+			return true;
 
 		case isc_info_svc_timeout:
 		case isc_info_data_not_ready:
@@ -942,23 +1023,28 @@ bool printInfo(const char* p, size_t pSize, UserPrint& up, ULONG& stdinRq)
 
 // print known switches help
 
+const char* const fileTest = "test.fbsvcmgr";
+
 struct TypeText
 {
 	PopulateFunction* populate;
 	const char* text;
+	const char* testArg;
 } typeText[] = {
-	{ putStringArgument, "string value" },
-	{ putFileArgument, "file name" },
-	{ putFileFromArgument, "file name" },
-	{ putAccessMode, "prp_am_readonly | prp_am_readwrite" },
-	{ putWriteMode, "prp_wm_async | prp_wm_sync" },
-	{ putReserveSpace, "prp_res_use_full | prp_res" },
-	{ putShutdownMode, "prp_sm_normal | prp_sm_multi | prp_sm_single | prp_sm_full" },
-	{ putIntArgument, "int32 value" },
-	{ putBigIntArgument, "int64 value" },
-	{ putOption, NULL },
-	{ putSingleTag, NULL },
-	{ NULL, NULL }
+	{ putStringArgument, "string value", "text" },
+	{ putFileArgument, "file name", fileTest },
+	{ putFileFromArgument, "file name", fileTest },
+	{ putAccessMode, "prp_am_readonly | prp_am_readwrite", "prp_am_readonly" },
+	{ putWriteMode, "prp_wm_async | prp_wm_sync", "prp_wm_sync" },
+	{ putReserveSpace, "prp_res_use_full | prp_res", "prp_res_use_full" },
+	{ putShutdownMode, "prp_sm_normal | prp_sm_multi | prp_sm_single | prp_sm_full", "prp_sm_single" },
+	{ putReplicaMode, "prp_rm_none | prp_rm_readonly | prp_rm_readwrite", "prp_rm_none" },
+	{ putIntArgument, "int32 value", "123" },
+	{ putBigIntArgument, "int64 value", "456" },
+	{ putOption, NULL, "" },
+	{ putSingleTag, NULL, "" },
+	{ putCallback, "key holder plugin name", NULL },
+	{ NULL, NULL , NULL }
 };
 
 void printHelp(unsigned int offset, const SvcSwitches* sw)
@@ -990,6 +1076,81 @@ void printHelp(unsigned int offset, const SvcSwitches* sw)
 	}
 }
 
+#ifdef DEV_BUILD
+void testSvc(isc_svc_handle* h, ClumpletWriter& spb, const SvcSwitches* sw)
+{
+	for (; sw->name; ++sw)
+	{
+		TypeText* tt = typeText;
+		for (; tt->populate; ++tt)
+		{
+			if (sw->populate == tt->populate)
+			{
+				if (!tt->testArg)
+					break;
+
+				// some tricks to emulate 'char* argv[]'
+				char x[100];
+				strcpy(x, tt->testArg);
+				char* y = x;
+				char** z = &y;
+
+				sw->populate(z, spb, sw->tag);
+				if (sw->options)
+					testSvc(NULL, spb, sw->options);
+
+				if (h)
+				{
+					ISC_STATUS_ARRAY status;
+					if (isc_service_start(status, h, 0,
+						static_cast<USHORT>(spb.getBufferLength()),
+						reinterpret_cast<const char*>(spb.getBuffer())))
+					{
+						ISC_STATUS_ARRAY local;
+						isc_service_detach(local, h);
+						Firebird::status_exception::raise(status);
+					}
+					spb.clear();
+				}
+
+				break;
+			}
+		}
+
+		fb_assert(tt->populate);
+	}
+}
+
+void testServices()
+{
+	FILE* f = fopen(fileTest, "w");
+	if (!f)
+		Firebird::system_call_failed::raise(fileTest);
+
+	fputs(fileTest, f);
+	fclose(f);
+
+	ISC_STATUS_ARRAY status;
+
+	ClumpletWriter spbAtt(ClumpletWriter::spbList, 1024 * 1024);
+	//spbAtt.insertString(isc_spb_sql_role_name, "@@@");
+	testSvc(NULL, spbAtt, attSwitch);
+
+	isc_svc_handle svc_handle = 0;
+	if (isc_service_attach(status, 0, "@@@", &svc_handle,
+				static_cast<USHORT>(spbAtt.getBufferLength()),
+				reinterpret_cast<const char*>(spbAtt.getBuffer())))
+	{
+		Firebird::status_exception::raise(status);
+	}
+
+	ClumpletWriter spbStart(ClumpletWriter::SpbStart,  1024 * 1024);
+	testSvc(&svc_handle, spbStart, actionSwitch);
+
+	isc_service_detach(status, &svc_handle);
+}
+#endif //DEV_BUILD
+
 // short usage from firebird.msg
 
 void usage(bool listSwitches)
@@ -1017,12 +1178,6 @@ void usage(bool listSwitches)
 }
 
 
-static void atexit_fb_shutdown()
-{
-	fb_shutdown(0, fb_shutrsn_app_stopped);
-}
-
-
 // simple main function
 
 int main(int ac, char** av)
@@ -1038,18 +1193,26 @@ int main(int ac, char** av)
 		return 1;
 	}
 
-	if (ac == 2 && (strcmp(av[1], "-z") == 0 || strcmp(av[1], "-Z") == 0))
-	{
-		printMessage(51, SafeArg() << FB_VERSION);
-		return 0;
-	}
-
-	os_utils::CtrlCHandler ctrlCHandler;
-	atexit(&atexit_fb_shutdown);
-
-	ISC_STATUS_ARRAY status;
-
 	try {
+#ifdef DEV_BUILD
+		if (ac == 2 && strcmp(av[1], "-@") == 0)
+		{
+			testServices();
+			return 0;
+		}
+#endif
+
+		if (ac == 2 && (strcmp(av[1], "-z") == 0 || strcmp(av[1], "-Z") == 0))
+		{
+			printMessage(51, SafeArg() << FB_VERSION);
+			return 0;
+		}
+
+		os_utils::CtrlCHandler ctrlCHandler;
+		fb_utils::FbShutdown appShutdown(fb_shutrsn_app_stopped);
+
+		ISC_STATUS_ARRAY status;
+
 		const int maxbuf = 16384;
 		av++;
 

@@ -28,6 +28,7 @@
 #include "fb_types.h"
 
 #include "../common/classes/array.h"
+#include "../common/SimilarToRegex.h"
 #include "../jrd/ods.h"
 #include "../jrd/cch.h"
 #include "../jrd/sbm.h"
@@ -119,8 +120,9 @@ private:
 		VAL_DATA_PAGE_SLOT_NOT_FOUND= 36,
 		VAL_DATA_PAGE_SLOT_BAD_VAL  = 37,
 		VAL_DATA_PAGE_HASNO_PP      = 38,
+		VAL_DATA_PAGE_SEC_PRI		= 39,
 
-		VAL_MAX_ERROR				= 39
+		VAL_MAX_ERROR				= 40
 	};
 
 	struct MSG_ENTRY
@@ -149,13 +151,13 @@ private:
 	ULONG vdr_err_counts[VAL_MAX_ERROR];
 
 	Firebird::UtilSvc* vdr_service;
-	PatternMatcher* vdr_tab_incl;
-	PatternMatcher* vdr_tab_excl;
-	PatternMatcher* vdr_idx_incl;
-	PatternMatcher* vdr_idx_excl;
+	Firebird::AutoPtr<Firebird::SimilarToRegex> vdr_tab_incl;
+	Firebird::AutoPtr<Firebird::SimilarToRegex> vdr_tab_excl;
+	Firebird::AutoPtr<Firebird::SimilarToRegex> vdr_idx_incl;
+	Firebird::AutoPtr<Firebird::SimilarToRegex> vdr_idx_excl;
 	int vdr_lock_tout;
-	void checkDPinPP(jrd_rel *relation, SLONG page_number);
-	void checkDPinPIP(jrd_rel *relation, SLONG page_number);
+	void checkDPinPP(jrd_rel *relation, ULONG page_number);
+	void checkDPinPIP(jrd_rel *relation, ULONG page_number);
 
 public:
 	explicit Validation(thread_db*, Firebird::UtilSvc* uSvc = NULL);

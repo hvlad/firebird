@@ -74,6 +74,10 @@
 #include "fb_macros.h"
 #include "fb_types.h"
 
+#if (__cplusplus >= 201103L)
+#define CPP_11
+#endif
+
 /*****************************************************
 * Linux platforms
 *****************************************************/
@@ -122,7 +126,7 @@
 #define FB_CPU CpuPowerPc
 #endif
 
-#ifdef i386
+#if defined(i386) || defined(__i386) || defined(__i386__)
 #define I386
 #define FB_CPU CpuIntel
 #endif /* i386 */
@@ -134,6 +138,10 @@
 #ifdef ARM64
 #define FB_CPU CpuArm64
 #endif /* ARM64 */
+
+#ifdef RISCV64
+#define FB_CPU CpuRiscV64
+#endif /* RISCV64 */
 
 #ifdef sparc
 #define FB_CPU CpuUltraSparc
@@ -194,6 +202,10 @@
 #ifdef PPC64
 #define FB_CPU CpuPowerPc64
 #endif /* PPC64 */
+
+#ifdef M68K
+#define FB_CPU CpuM68k
+#endif /* M68K */
 
 #endif /* LINUX */
 
@@ -543,11 +555,6 @@ extern "C" int remove(const char* path);
 #define INET_ERRNO	WSAGetLastError()
 #define H_ERRNO		WSAGetLastError()
 
-// For Visual Studio 2003 and earlier enable Windows 9X support
-#if defined _MSC_VER && (_MSC_VER < 1400)
-#define WIN9X_SUPPORT
-#endif
-
 #endif /* WIN_NT */
 
 
@@ -600,6 +607,13 @@ extern "C" int remove(const char* path);
 #define FB_EXPORTED
 #endif
 
+#ifdef HAS_NOEXCEPT
+#define NOEXCEPT noexcept
+#define NOEXCEPT_ARG(X) noexcept((X))
+#else
+#define NOEXCEPT
+#define NOEXCEPT_ARG(X)
+#endif
 
 /* alignment macros */
 
@@ -651,17 +665,6 @@ extern "C" int remove(const char* path);
 #endif
 
 /* data type definitions */
-
-#ifndef ISC_TIMESTAMP_DEFINED
-typedef SLONG ISC_DATE;
-typedef ULONG ISC_TIME;
-struct ISC_TIMESTAMP
-{
-	ISC_DATE timestamp_date;
-	ISC_TIME timestamp_time;
-};
-#define ISC_TIMESTAMP_DEFINED
-#endif	/* ISC_TIMESTAMP_DEFINED */
 
 #define GDS_DATE	ISC_DATE
 #define GDS_TIME	ISC_TIME
@@ -869,7 +872,11 @@ void GDS_breakpoint(int);
 
 /* The default lseek offset type.  Changed from nothing to (off_t) to correctly support 64 bit IO */
 #ifndef LSEEK_OFFSET_CAST
+#ifdef LSB_BUILD
+#define LSEEK_OFFSET_CAST (loff_t)
+#else
 #define LSEEK_OFFSET_CAST (off_t)
+#endif
 #endif
 
 #define STRINGIZE_AUX(x)	#x
@@ -882,6 +889,9 @@ void GDS_breakpoint(int);
 #endif
 
 // Check for "final" keyword support
+#ifdef CPP_11
+#define FB_FINAL final
+#else
 #ifdef __GNUC__
 #if ((__GNUC__ == 4 && __GNUC_MINOR__ >= 7) || (__GNUC__ >= 5))
 #define FB_FINAL __final
@@ -890,6 +900,7 @@ void GDS_breakpoint(int);
 // Please add support for other compilers here
 #ifndef FB_FINAL
 #define FB_FINAL
+#endif
 #endif
 
 #define FB_UNUSED(value) do { if (value) {} } while (false)

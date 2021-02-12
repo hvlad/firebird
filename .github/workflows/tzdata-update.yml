@@ -1,0 +1,38 @@
+name: tzdata-update
+
+on:
+  schedule:
+    - cron: '0 11 * * *'
+
+jobs:
+  tzdata-update:
+    if: github.repository == 'FirebirdSQL/firebird'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Checkout ICU
+        run: git clone --depth 1 https://github.com/unicode-org/icu-data.git -b master /tmp/icu-checkout
+
+      - name: Check and update
+        run: |
+          VERSION=`ls /tmp/icu-checkout/tzdata/icunew/ -r1a |head -1`
+          echo Last version: $VERSION
+
+          if [ "$VERSION" == "`cat extern/icu/tzdata/version.txt`" ]
+          then
+            exit
+          fi
+
+          echo $VERSION > extern/icu/tzdata/version.txt
+          extern/icu/tzdata/update.sh
+
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v3.5.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: Update tzdata.
+          title: Update tzdata.
+          assignees: asfernandes
+          branch: work/tzdata-update

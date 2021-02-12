@@ -27,7 +27,8 @@
 #include <string.h>
 #include <stdlib.h>
 #include "../common/dsc.h"
-#include "../jrd/ibase.h"
+#include "../common/TimeZoneUtil.h"
+#include "ibase.h"
 #include "../jrd/intl.h"
 #include "../yvalve/gds_proto.h"
 #include "../common/gdsassert.h"
@@ -64,32 +65,14 @@ static const USHORT _DSC_convert_to_text_length[DTYPE_TYPE_MAX] =
 	9,							// dtype_array      FFFF:FFFF
 	20,							// dtype_int64      -9223372036854775808
 	0,							// dtype_dbkey
-	5							// dtype_boolean
-};
-
-// blr to dsc type conversions
-static const USHORT DSC_blr_type_mapping[] =
-{
-	blr_null,
-	blr_text,
-	blr_cstring,
-	blr_varying,
-	blr_null,
-	blr_null,
-	blr_null,
-	blr_null,
-	blr_short,
-	blr_long,
-	blr_double,
-	blr_d_float,
-	blr_sql_date,
-	blr_sql_time,
-	blr_timestamp,
-	blr_blob,
-	blr_blob,
-	blr_int64,
-	blr_null,
-	blr_bool
+	5,							// dtype_boolean
+	23,							// dtype_dec64		1 + 1 + 1 + 1 + 16(34) + 3(4)
+	42,							// dtype_dec128		+-  .   e   +-  coeff  + exp
+	47,							// dtype_int128
+	14 + TimeZoneUtil::MAX_LEN,	// dtype_sql_time_tz      HH:MM:SS.MMMM +NN:NN
+	25 + TimeZoneUtil::MAX_LEN,	// dtype_timestamp_tz     YYYY-MM-DD HH:MM:SS.MMMM +NN:NN
+	14 + TimeZoneUtil::MAX_LEN,	// dtype_ex_time_tz       HH:MM:SS.MMMM +NN:NN
+	25 + TimeZoneUtil::MAX_LEN	// dtype_ex_timestamp_tz  YYYY-MM-DD HH:MM:SS.MMMM +NN:NN
 };
 
 // Unimplemented names are in lowercase & <brackets>
@@ -117,7 +100,12 @@ static const TEXT* const DSC_dtype_names[] =
 	"ARRAY",
 	"BIGINT",
 	"DB_KEY",
-	"BOOLEAN"
+	"BOOLEAN",
+	"DECFLOAT(16)",
+	"DECFLOAT(34)",
+	"INT128",
+	"TIME WITH TIMEZONE",
+	"TIMESTAMP WITH TIMEZONE"
 };
 
 
@@ -130,12 +118,14 @@ const BYTE DSC_add_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 {
 
 	/*
-	dtype_unknown	dtype_text	dtype_cstring	dtype_varying
-	4 (unused)	5 (unused)	dtype_packed	dtype_byte
-	dtype_short	dtype_long	dtype_quad	dtype_real
-	dtype_double	dtype_d_float	dtype_sql_date	dtype_sql_time
-	dtype_timestamp	dtype_blob	dtype_array	dtype_int64
-	dtype_dbkey, dtype_boolean
+	dtype_unknown		dtype_text			dtype_cstring		dtype_varying
+	4 (unused)			5 (unused)			dtype_packed		dtype_byte
+	dtype_short			dtype_long			dtype_quad			dtype_real
+	dtype_double		dtype_d_float		dtype_sql_date		dtype_sql_time
+	dtype_timestamp		dtype_blob			dtype_array			dtype_int64
+	dtype_dbkey			dtype_boolean		dtype_dec64			dtype_dec128
+	dtype_int128 		dtype_sql_time_tz	dtype_timestamp_tz	dtype_ex_time_tz
+	dtype_ex_timestamp_tz
 	*/
 
 	// dtype_unknown
@@ -144,7 +134,9 @@ const BYTE DSC_add_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 dtype_unknown, dtype_unknown, DTYPE_CANNOT, dtype_unknown,
 	 dtype_unknown, dtype_unknown, dtype_unknown, dtype_unknown,
 	 dtype_unknown, DTYPE_CANNOT, DTYPE_CANNOT, dtype_unknown,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_unknown, dtype_unknown,
+	 dtype_unknown, dtype_unknown, dtype_unknown, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_text
 	{dtype_unknown, dtype_double, dtype_double, dtype_double,
@@ -152,7 +144,9 @@ const BYTE DSC_add_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 dtype_double, dtype_double, DTYPE_CANNOT, dtype_double,
 	 dtype_double, dtype_d_float, DTYPE_CANNOT, DTYPE_CANNOT,
 	 dtype_timestamp, DTYPE_CANNOT, DTYPE_CANNOT, dtype_double,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec128, dtype_dec128,
+	 dtype_int128, DTYPE_CANNOT, dtype_timestamp_tz, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_cstring
 	{dtype_unknown, dtype_double, dtype_double, dtype_double,
@@ -160,7 +154,9 @@ const BYTE DSC_add_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 dtype_double, dtype_double, DTYPE_CANNOT, dtype_double,
 	 dtype_double, dtype_d_float, DTYPE_CANNOT, DTYPE_CANNOT,
 	 dtype_timestamp, DTYPE_CANNOT, DTYPE_CANNOT, dtype_double,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec128, dtype_dec128,
+	 dtype_int128, DTYPE_CANNOT, dtype_timestamp_tz, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_varying
 	{dtype_unknown, dtype_double, dtype_double, dtype_double,
@@ -168,7 +164,9 @@ const BYTE DSC_add_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 dtype_double, dtype_double, DTYPE_CANNOT, dtype_double,
 	 dtype_double, dtype_d_float, DTYPE_CANNOT, DTYPE_CANNOT,
 	 dtype_timestamp, DTYPE_CANNOT, DTYPE_CANNOT, dtype_double,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec128, dtype_dec128,
+	 dtype_int128, DTYPE_CANNOT, dtype_timestamp_tz, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// 4 (unused)
 	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
@@ -176,7 +174,9 @@ const BYTE DSC_add_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// 5 (unused)
 	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
@@ -184,7 +184,9 @@ const BYTE DSC_add_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_packed
 	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
@@ -192,7 +194,9 @@ const BYTE DSC_add_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_byte
 	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
@@ -200,7 +204,9 @@ const BYTE DSC_add_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_short
 	{dtype_unknown, dtype_double, dtype_double, dtype_double,
@@ -208,7 +214,9 @@ const BYTE DSC_add_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 dtype_int64, dtype_int64, DTYPE_CANNOT, dtype_double,
 	 dtype_double, dtype_d_float, dtype_sql_date, dtype_sql_time,
 	 dtype_timestamp, DTYPE_CANNOT, DTYPE_CANNOT, dtype_int64,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec64, dtype_dec128,
+	 dtype_int128, dtype_sql_time_tz, dtype_timestamp_tz, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_long
 	{dtype_unknown, dtype_double, dtype_double, dtype_double,
@@ -216,7 +224,9 @@ const BYTE DSC_add_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 dtype_int64, dtype_int64, DTYPE_CANNOT, dtype_double,
 	 dtype_double, dtype_d_float, dtype_sql_date, dtype_sql_time,
 	 dtype_timestamp, DTYPE_CANNOT, DTYPE_CANNOT, dtype_int64,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec64, dtype_dec128,
+	 dtype_int128, dtype_sql_time_tz, dtype_timestamp_tz, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_quad
 	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
@@ -224,7 +234,9 @@ const BYTE DSC_add_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_real
 	{dtype_unknown, dtype_double, dtype_double, dtype_double,
@@ -232,7 +244,9 @@ const BYTE DSC_add_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 dtype_double, dtype_double, DTYPE_CANNOT, dtype_double,
 	 dtype_double, dtype_d_float, dtype_sql_date, dtype_sql_time,
 	 dtype_timestamp, DTYPE_CANNOT, DTYPE_CANNOT, dtype_double,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec64, dtype_dec128,
+	 dtype_double, dtype_sql_time_tz, dtype_timestamp_tz, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_double
 	{dtype_unknown, dtype_double, dtype_double, dtype_double,
@@ -240,7 +254,9 @@ const BYTE DSC_add_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 dtype_double, dtype_double, DTYPE_CANNOT, dtype_double,
 	 dtype_double, dtype_d_float, dtype_sql_date, dtype_sql_time,
 	 dtype_timestamp, DTYPE_CANNOT, DTYPE_CANNOT, dtype_double,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec64, dtype_dec128,
+	 dtype_double, dtype_sql_time_tz, dtype_timestamp_tz, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_d_float -- VMS deprecated
 	{dtype_unknown, dtype_d_float, dtype_d_float, dtype_d_float,
@@ -248,7 +264,9 @@ const BYTE DSC_add_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 dtype_d_float, dtype_d_float, DTYPE_CANNOT, dtype_d_float,
 	 dtype_d_float, dtype_d_float, dtype_sql_date, dtype_sql_time,
 	 dtype_timestamp, DTYPE_CANNOT, DTYPE_CANNOT, dtype_d_float,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec64, dtype_dec128,
+	 dtype_d_float, dtype_sql_time_tz, dtype_timestamp_tz, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_sql_date
 	{dtype_unknown, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
@@ -256,7 +274,9 @@ const BYTE DSC_add_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 dtype_sql_date, dtype_sql_date, DTYPE_CANNOT, dtype_sql_date,
 	 dtype_sql_date, dtype_sql_date, DTYPE_CANNOT, dtype_timestamp,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, dtype_sql_date,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_sql_date, dtype_sql_date,
+	 dtype_sql_date, dtype_timestamp_tz, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_sql_time
 	{dtype_unknown, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
@@ -264,7 +284,9 @@ const BYTE DSC_add_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 dtype_sql_time, dtype_sql_time, DTYPE_CANNOT, dtype_sql_time,
 	 dtype_sql_time, dtype_sql_time, dtype_timestamp, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, dtype_sql_time,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_sql_time, dtype_sql_time,
+	 dtype_sql_time, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_timestamp
 	{dtype_unknown, dtype_timestamp, dtype_timestamp, dtype_timestamp,
@@ -272,7 +294,9 @@ const BYTE DSC_add_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 dtype_timestamp, dtype_timestamp, DTYPE_CANNOT, dtype_timestamp,
 	 dtype_timestamp, dtype_timestamp, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, dtype_timestamp,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_timestamp, dtype_timestamp,
+	 dtype_timestamp, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_blob
 	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
@@ -280,7 +304,9 @@ const BYTE DSC_add_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_array
 	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
@@ -288,7 +314,9 @@ const BYTE DSC_add_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_int64
 	{dtype_unknown, dtype_double, dtype_double, dtype_double,
@@ -296,7 +324,9 @@ const BYTE DSC_add_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 dtype_int64, dtype_int64, DTYPE_CANNOT, dtype_double,
 	 dtype_double, dtype_d_float, dtype_sql_date, dtype_sql_time,
 	 dtype_timestamp, DTYPE_CANNOT, DTYPE_CANNOT, dtype_int64,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec128, dtype_dec128,
+	 dtype_int128, dtype_sql_time_tz, dtype_timestamp_tz, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_dbkey
 	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
@@ -304,7 +334,9 @@ const BYTE DSC_add_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_boolean
 	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
@@ -312,8 +344,79 @@ const BYTE DSC_add_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
-	 DTYPE_CANNOT, DTYPE_CANNOT}
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
+	// dtype_dec64
+	{dtype_unknown, dtype_dec128, dtype_dec128, dtype_dec128,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 dtype_dec64, dtype_dec64, DTYPE_CANNOT, dtype_dec64,
+	 dtype_dec64, dtype_dec64, dtype_sql_date, dtype_sql_time,
+	 dtype_timestamp, DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec128,
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec64, dtype_dec128,
+	 dtype_dec128, dtype_sql_time_tz, dtype_timestamp_tz, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
+
+	// dtype_dec128
+	{dtype_unknown, dtype_dec128, dtype_dec128, dtype_dec128,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 dtype_dec128, dtype_dec128, DTYPE_CANNOT, dtype_dec128,
+	 dtype_dec128, dtype_dec128, dtype_sql_date, dtype_sql_time,
+	 dtype_timestamp, DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec128,
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec128, dtype_dec128,
+	 dtype_dec128, dtype_sql_time_tz, dtype_timestamp_tz, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
+
+	// dtype_int128
+	{dtype_unknown, dtype_int128, dtype_int128, dtype_int128,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 dtype_int128, dtype_int128, DTYPE_CANNOT, dtype_double,
+	 dtype_double, dtype_d_float, dtype_sql_date, dtype_sql_time,
+	 dtype_timestamp, DTYPE_CANNOT, DTYPE_CANNOT, dtype_int128,
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec128, dtype_dec128,
+	 dtype_int128, dtype_sql_time_tz, dtype_timestamp_tz, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
+
+	// dtype_sql_time_tz
+	{dtype_unknown, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 dtype_sql_time_tz, dtype_sql_time_tz, DTYPE_CANNOT, dtype_sql_time_tz,
+	 dtype_sql_time_tz, dtype_sql_time_tz, dtype_timestamp_tz, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, dtype_sql_time_tz,
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_sql_time_tz, dtype_sql_time_tz,
+	 dtype_sql_time_tz, DTYPE_CANNOT, dtype_timestamp_tz, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
+
+	// dtype_timestamp_tz
+	{dtype_unknown, dtype_timestamp_tz, dtype_timestamp_tz, dtype_timestamp_tz,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 dtype_timestamp_tz, dtype_timestamp_tz, DTYPE_CANNOT, dtype_timestamp_tz,
+	 dtype_timestamp_tz, dtype_timestamp_tz, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, dtype_timestamp_tz,
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_timestamp_tz, dtype_timestamp_tz,
+	 dtype_timestamp_tz, dtype_timestamp_tz, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
+
+	// dtype_ex_time_tz
+	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
+
+	// dtype_ex_timestamp_tz
+	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT}
 };
 
 /* The result of subtracting two datatypes in blr_version5 semantics
@@ -325,12 +428,14 @@ const BYTE DSC_sub_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 {
 
 	/*
-	dtype_unknown	dtype_text	dtype_cstring	dtype_varying
-	4 (unused)	5 (unused)	dtype_packed	dtype_byte
-	dtype_short	dtype_long	dtype_quad	dtype_real
-	dtype_double	dtype_d_float	dtype_sql_date	dtype_sql_time
-	dtype_timestamp	dtype_blob	dtype_array	dtype_int64
-	dtype_dbkey, dtype_boolean
+	dtype_unknown		dtype_text			dtype_cstring		dtype_varying
+	4 (unused)			5 (unused)			dtype_packed		dtype_byte
+	dtype_short			dtype_long			dtype_quad			dtype_real
+	dtype_double		dtype_d_float		dtype_sql_date		dtype_sql_time
+	dtype_timestamp		dtype_blob			dtype_array			dtype_int64
+	dtype_dbkey			dtype_boolean		dtype_dec64			dtype_dec128
+	dtype_int128 		dtype_sql_time_tz	dtype_timestamp_tz	dtype_ex_time_tz
+	dtype_ex_timestamp_tz
 	*/
 
 	// dtype_unknown
@@ -339,7 +444,9 @@ const BYTE DSC_sub_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 dtype_unknown, dtype_unknown, DTYPE_CANNOT, dtype_unknown,
 	 dtype_unknown, dtype_unknown, dtype_unknown, dtype_unknown,
 	 dtype_unknown, DTYPE_CANNOT, DTYPE_CANNOT, dtype_unknown,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_unknown, dtype_unknown,
+	 dtype_unknown, dtype_unknown, dtype_unknown, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_text
 	{dtype_unknown, dtype_double, dtype_double, dtype_double,
@@ -347,7 +454,9 @@ const BYTE DSC_sub_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 dtype_double, dtype_double, DTYPE_CANNOT, dtype_double,
 	 dtype_double, dtype_d_float, DTYPE_CANNOT, DTYPE_CANNOT,
 	 dtype_timestamp, DTYPE_CANNOT, DTYPE_CANNOT, dtype_double,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec128, dtype_dec128,
+	 dtype_int128, DTYPE_CANNOT, dtype_timestamp_tz, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_cstring
 	{dtype_unknown, dtype_double, dtype_double, dtype_double,
@@ -355,7 +464,9 @@ const BYTE DSC_sub_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 dtype_double, dtype_double, DTYPE_CANNOT, dtype_double,
 	 dtype_double, dtype_d_float, DTYPE_CANNOT, DTYPE_CANNOT,
 	 dtype_timestamp, DTYPE_CANNOT, DTYPE_CANNOT, dtype_double,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec128, dtype_dec128,
+	 dtype_int128, DTYPE_CANNOT, dtype_timestamp_tz, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_varying
 	{dtype_unknown, dtype_double, dtype_double, dtype_double,
@@ -363,7 +474,9 @@ const BYTE DSC_sub_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 dtype_double, dtype_double, DTYPE_CANNOT, dtype_double,
 	 dtype_double, dtype_d_float, DTYPE_CANNOT, DTYPE_CANNOT,
 	 dtype_timestamp, DTYPE_CANNOT, DTYPE_CANNOT, dtype_double,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec128, dtype_dec128,
+	 dtype_int128, DTYPE_CANNOT, dtype_timestamp_tz, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// 4 (unused)
 	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
@@ -371,7 +484,9 @@ const BYTE DSC_sub_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// 5 (unused)
 	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
@@ -379,7 +494,9 @@ const BYTE DSC_sub_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_packed
 	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
@@ -387,7 +504,9 @@ const BYTE DSC_sub_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_byte
 	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
@@ -395,7 +514,9 @@ const BYTE DSC_sub_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_short
 	{dtype_unknown, dtype_double, dtype_double, dtype_double,
@@ -403,7 +524,9 @@ const BYTE DSC_sub_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 dtype_int64, dtype_int64, DTYPE_CANNOT, dtype_double,
 	 dtype_double, dtype_d_float, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, dtype_int64,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec128, dtype_dec128,
+	 dtype_int128, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_long
 	{dtype_unknown, dtype_double, dtype_double, dtype_double,
@@ -411,7 +534,9 @@ const BYTE DSC_sub_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 dtype_int64, dtype_int64, DTYPE_CANNOT, dtype_double,
 	 dtype_double, dtype_d_float, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, dtype_int64,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec128, dtype_dec128,
+	 dtype_int128, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_quad
 	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
@@ -419,7 +544,9 @@ const BYTE DSC_sub_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_real
 	{dtype_unknown, dtype_double, dtype_double, dtype_double,
@@ -427,7 +554,9 @@ const BYTE DSC_sub_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 dtype_double, dtype_double, DTYPE_CANNOT, dtype_double,
 	 dtype_double, dtype_d_float, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, dtype_double,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec64, dtype_dec128,
+	 dtype_double, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_double
 	{dtype_unknown, dtype_double, dtype_double, dtype_double,
@@ -435,7 +564,9 @@ const BYTE DSC_sub_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 dtype_double, dtype_double, DTYPE_CANNOT, dtype_double,
 	 dtype_double, dtype_d_float, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, dtype_double,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec64, dtype_dec128,
+	 dtype_double, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_d_float -- VMS deprecated
 	{dtype_unknown, dtype_d_float, dtype_d_float, dtype_d_float,
@@ -443,7 +574,9 @@ const BYTE DSC_sub_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 dtype_d_float, dtype_d_float, DTYPE_CANNOT, dtype_d_float,
 	 dtype_d_float, dtype_d_float, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, dtype_d_float,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec64, dtype_dec128,
+	 dtype_d_float, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_sql_date
 	{dtype_unknown, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
@@ -451,7 +584,9 @@ const BYTE DSC_sub_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 dtype_sql_date, dtype_sql_date, DTYPE_CANNOT, dtype_sql_date,
 	 dtype_sql_date, dtype_sql_date, dtype_long, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, dtype_sql_date,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_sql_date, dtype_sql_date,
+	 dtype_sql_date, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_sql_time
 	{dtype_unknown, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
@@ -459,7 +594,9 @@ const BYTE DSC_sub_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 dtype_sql_time, dtype_sql_time, DTYPE_CANNOT, dtype_sql_time,
 	 dtype_sql_time, dtype_sql_time, DTYPE_CANNOT, dtype_long,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, dtype_sql_time,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_sql_time, dtype_sql_time,
+	 dtype_sql_time, dtype_long, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_timestamp
 	{dtype_unknown, dtype_timestamp, dtype_timestamp, dtype_timestamp,
@@ -467,7 +604,9 @@ const BYTE DSC_sub_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 dtype_timestamp, dtype_timestamp, DTYPE_CANNOT, dtype_timestamp,
 	 dtype_timestamp, dtype_timestamp, DTYPE_CANNOT, DTYPE_CANNOT,
 	 dtype_double, DTYPE_CANNOT, DTYPE_CANNOT, dtype_timestamp,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_timestamp, dtype_timestamp,
+	 dtype_timestamp, DTYPE_CANNOT, dtype_double, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_blob
 	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
@@ -475,7 +614,9 @@ const BYTE DSC_sub_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_array
 	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
@@ -483,7 +624,9 @@ const BYTE DSC_sub_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_int64
 	{dtype_unknown, dtype_double, dtype_double, dtype_double,
@@ -491,7 +634,9 @@ const BYTE DSC_sub_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 dtype_int64, dtype_int64, DTYPE_CANNOT, dtype_double,
 	 dtype_double, dtype_d_float, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, dtype_int64,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec64, dtype_dec128,
+	 dtype_int128, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_dbkey
 	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
@@ -499,7 +644,9 @@ const BYTE DSC_sub_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_boolean
 	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
@@ -507,7 +654,79 @@ const BYTE DSC_sub_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
-	 DTYPE_CANNOT, DTYPE_CANNOT}
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
+
+	// dtype_dec64
+	{dtype_unknown, dtype_dec128, dtype_dec128, dtype_dec128,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 dtype_dec64, dtype_dec64, DTYPE_CANNOT, dtype_dec64,
+	 dtype_dec64, dtype_dec64, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec128,
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec64, dtype_dec128,
+	 dtype_dec128, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
+
+	// dtype_dec128
+	{dtype_unknown, dtype_dec128, dtype_dec128, dtype_dec128,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 dtype_dec128, dtype_dec128, DTYPE_CANNOT, dtype_dec128,
+	 dtype_dec128, dtype_dec128, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec128,
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec128, dtype_dec128,
+	 dtype_dec128, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
+
+	// dtype_int128
+	{dtype_unknown, dtype_int128, dtype_int128, dtype_int128,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 dtype_int128, dtype_int128, DTYPE_CANNOT, dtype_double,
+	 dtype_double, dtype_d_float, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, dtype_int128,
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec128, dtype_dec128,
+	 dtype_int128, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
+
+	// dtype_sql_time_tz
+	{dtype_unknown, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 dtype_sql_time_tz, dtype_sql_time_tz, DTYPE_CANNOT, dtype_sql_time_tz,
+	 dtype_sql_time_tz, dtype_sql_time_tz, DTYPE_CANNOT, dtype_long,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, dtype_sql_time_tz,
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_sql_time_tz, dtype_sql_time_tz,
+	 dtype_sql_time_tz, dtype_long, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
+
+	// dtype_timestamp_tz
+	{dtype_unknown, dtype_timestamp_tz, dtype_timestamp_tz, dtype_timestamp_tz,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 dtype_timestamp_tz, dtype_timestamp_tz, DTYPE_CANNOT, dtype_timestamp_tz,
+	 dtype_timestamp_tz, dtype_timestamp_tz, DTYPE_CANNOT, DTYPE_CANNOT,
+	 dtype_double, DTYPE_CANNOT, DTYPE_CANNOT, dtype_timestamp_tz,
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_timestamp_tz, dtype_timestamp_tz,
+	 dtype_timestamp_tz, DTYPE_CANNOT, dtype_double, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
+
+	// dtype_ex_time_tz
+	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
+
+	// dtype_ex_timestamp_tz
+	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT}
 };
 
 
@@ -520,12 +739,14 @@ const BYTE DSC_multiply_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 {
 
 	/*
-	dtype_unknown	dtype_text	dtype_cstring	dtype_varying
-	4 (unused)	5 (unused)	dtype_packed	dtype_byte
-	dtype_short	dtype_long	dtype_quad	dtype_real
-	dtype_double	dtype_d_float	dtype_sql_date	dtype_sql_time
-	dtype_timestamp	dtype_blob	dtype_array	dtype_int64
-	dtype_dbkey, dtype_boolean
+	dtype_unknown		dtype_text			dtype_cstring		dtype_varying
+	4 (unused)			5 (unused)			dtype_packed		dtype_byte
+	dtype_short			dtype_long			dtype_quad			dtype_real
+	dtype_double		dtype_d_float		dtype_sql_date		dtype_sql_time
+	dtype_timestamp		dtype_blob			dtype_array			dtype_int64
+	dtype_dbkey			dtype_boolean		dtype_dec64			dtype_dec128
+	dtype_int128 		dtype_sql_time_tz	dtype_timestamp_tz	dtype_ex_time_tz
+	dtype_ex_timestamp_tz
 	*/
 
 	// dtype_unknown
@@ -534,7 +755,9 @@ const BYTE DSC_multiply_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 dtype_unknown, dtype_unknown, DTYPE_CANNOT, dtype_unknown,
 	 dtype_unknown, dtype_unknown, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, dtype_unknown,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_unknown, dtype_unknown,
+	 dtype_unknown, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_text
 	{dtype_unknown, dtype_double, dtype_double, dtype_double,
@@ -542,7 +765,9 @@ const BYTE DSC_multiply_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 dtype_double, dtype_double, DTYPE_CANNOT, dtype_double,
 	 dtype_double, dtype_d_float, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, dtype_double,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec128, dtype_dec128,
+	 dtype_int128, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_cstring
 	{dtype_unknown, dtype_double, dtype_double, dtype_double,
@@ -550,7 +775,9 @@ const BYTE DSC_multiply_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 dtype_double, dtype_double, DTYPE_CANNOT, dtype_double,
 	 dtype_double, dtype_d_float, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, dtype_double,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec128, dtype_dec128,
+	 dtype_int128, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_varying
 	{dtype_unknown, dtype_double, dtype_double, dtype_double,
@@ -558,7 +785,9 @@ const BYTE DSC_multiply_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 dtype_double, dtype_double, DTYPE_CANNOT, dtype_double,
 	 dtype_double, dtype_d_float, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, dtype_double,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec128, dtype_dec128,
+	 dtype_int128, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// 4 (unused)
 	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
@@ -566,7 +795,9 @@ const BYTE DSC_multiply_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// 5 (unused)
 	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
@@ -574,7 +805,9 @@ const BYTE DSC_multiply_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_packed
 	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
@@ -582,7 +815,9 @@ const BYTE DSC_multiply_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_byte
 	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
@@ -590,7 +825,9 @@ const BYTE DSC_multiply_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_short
 	{dtype_unknown, dtype_double, dtype_double, dtype_double,
@@ -598,7 +835,9 @@ const BYTE DSC_multiply_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 dtype_int64, dtype_int64, DTYPE_CANNOT, dtype_double,
 	 dtype_double, dtype_d_float, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, dtype_int64,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec128, dtype_dec128,
+	 dtype_int128, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_long
 	{dtype_unknown, dtype_double, dtype_double, dtype_double,
@@ -606,7 +845,9 @@ const BYTE DSC_multiply_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 dtype_int64, dtype_int64, DTYPE_CANNOT, dtype_double,
 	 dtype_double, dtype_d_float, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, dtype_int64,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec128, dtype_dec128,
+	 dtype_int128, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_quad
 	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
@@ -614,7 +855,9 @@ const BYTE DSC_multiply_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_real
 	{dtype_unknown, dtype_double, dtype_double, dtype_double,
@@ -622,7 +865,9 @@ const BYTE DSC_multiply_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 dtype_double, dtype_double, DTYPE_CANNOT, dtype_double,
 	 dtype_double, dtype_d_float, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, dtype_double,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec128, dtype_dec128,
+	 dtype_double, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_double
 	{dtype_unknown, dtype_double, dtype_double, dtype_double,
@@ -630,7 +875,9 @@ const BYTE DSC_multiply_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 dtype_double, dtype_double, DTYPE_CANNOT, dtype_double,
 	 dtype_double, dtype_d_float, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, dtype_double,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec128, dtype_dec128,
+	 dtype_double, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_d_float -- VMS deprecated
 	{dtype_unknown, dtype_d_float, dtype_d_float, dtype_d_float,
@@ -638,7 +885,9 @@ const BYTE DSC_multiply_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 dtype_d_float, dtype_d_float, DTYPE_CANNOT, dtype_d_float,
 	 dtype_d_float, dtype_d_float, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, dtype_d_float,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec128, dtype_dec128,
+	 dtype_d_float, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_sql_date
 	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
@@ -646,7 +895,9 @@ const BYTE DSC_multiply_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_sql_time
 	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
@@ -654,7 +905,9 @@ const BYTE DSC_multiply_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_timestamp
 	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
@@ -662,7 +915,9 @@ const BYTE DSC_multiply_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_blob
 	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
@@ -670,7 +925,9 @@ const BYTE DSC_multiply_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_array
 	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
@@ -678,15 +935,19 @@ const BYTE DSC_multiply_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_int64
 	{dtype_unknown, dtype_double, dtype_double, dtype_double,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 dtype_int64, dtype_int64, DTYPE_CANNOT, dtype_double,
 	 dtype_double, dtype_d_float, DTYPE_CANNOT, DTYPE_CANNOT,
-	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, dtype_int64,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, dtype_int128,
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec128, dtype_dec128,
+	 dtype_int128, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_dbkey
 	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
@@ -694,7 +955,9 @@ const BYTE DSC_multiply_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_boolean
 	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
@@ -702,8 +965,79 @@ const BYTE DSC_multiply_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
-	 DTYPE_CANNOT, DTYPE_CANNOT}
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
+	// dtype_dec64
+	{dtype_unknown, dtype_dec128, dtype_dec128, dtype_dec128,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 dtype_dec128, dtype_dec128, DTYPE_CANNOT, dtype_dec128,
+	 dtype_dec128, dtype_dec128, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec128,
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec128, dtype_dec128,
+	 dtype_dec128, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
+
+	// dtype_dec128
+	{dtype_unknown, dtype_dec128, dtype_dec128, dtype_dec128,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 dtype_dec128, dtype_dec128, DTYPE_CANNOT, dtype_dec128,
+	 dtype_dec128, dtype_dec128, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec128,
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec128, dtype_dec128,
+	 dtype_dec128, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
+
+	// dtype_int128
+	{dtype_unknown, dtype_int128, dtype_int128, dtype_int128,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 dtype_int128, dtype_int128, DTYPE_CANNOT, dtype_double,
+	 dtype_double, dtype_d_float, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, dtype_int128,
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec128, dtype_dec128,
+	 dtype_int128, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
+
+	// dtype_sql_time_tz
+	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
+
+	// dtype_timestamp_tz
+	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
+
+	// dtype_ex_time_tz
+	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
+
+	// dtype_ex_timestamp_tz
+	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT}
 };
 
 /* The result of multiplying two datatypes in blr_version4 semantics.
@@ -715,12 +1049,14 @@ const BYTE DSC_multiply_blr4_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 {
 
 	/*
-	dtype_unknown	dtype_text	dtype_cstring	dtype_varying
-	4 (unused)	5 (unused)	dtype_packed	dtype_byte
-	dtype_short	dtype_long	dtype_quad	dtype_real
-	dtype_double	dtype_d_float	dtype_sql_date	dtype_sql_time
-	dtype_timestamp	dtype_blob	dtype_array	dtype_int64
-	dtype_dbkey, dtype_boolean
+	dtype_unknown		dtype_text			dtype_cstring		dtype_varying
+	4 (unused)			5 (unused)			dtype_packed		dtype_byte
+	dtype_short			dtype_long			dtype_quad			dtype_real
+	dtype_double		dtype_d_float		dtype_sql_date		dtype_sql_time
+	dtype_timestamp		dtype_blob			dtype_array			dtype_int64
+	dtype_dbkey			dtype_boolean		dtype_dec64			dtype_dec128
+	dtype_int128 		dtype_sql_time_tz	dtype_timestamp_tz	dtype_ex_time_tz
+	dtype_ex_timestamp_tz
 	*/
 
 	// dtype_unknown
@@ -729,7 +1065,9 @@ const BYTE DSC_multiply_blr4_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 dtype_unknown, dtype_unknown, DTYPE_CANNOT, dtype_unknown,
 	 dtype_unknown, dtype_unknown, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, dtype_unknown,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_unknown, dtype_unknown,
+	 dtype_unknown, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_text
 	{dtype_unknown, dtype_double, dtype_double, dtype_double,
@@ -737,7 +1075,9 @@ const BYTE DSC_multiply_blr4_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 dtype_double, dtype_double, DTYPE_CANNOT, dtype_double,
 	 dtype_double, dtype_d_float, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, dtype_double,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec128, dtype_dec128,
+	 dtype_int128, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_cstring
 	{dtype_unknown, dtype_double, dtype_double, dtype_double,
@@ -745,7 +1085,9 @@ const BYTE DSC_multiply_blr4_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 dtype_double, dtype_double, DTYPE_CANNOT, dtype_double,
 	 dtype_double, dtype_d_float, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, dtype_double,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec128, dtype_dec128,
+	 dtype_int128, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_varying
 	{dtype_unknown, dtype_double, dtype_double, dtype_double,
@@ -753,7 +1095,9 @@ const BYTE DSC_multiply_blr4_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 dtype_double, dtype_double, DTYPE_CANNOT, dtype_double,
 	 dtype_double, dtype_d_float, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, dtype_double,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec128, dtype_dec128,
+	 dtype_int128, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// 4 (unused)
 	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
@@ -761,7 +1105,9 @@ const BYTE DSC_multiply_blr4_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// 5 (unused)
 	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
@@ -769,7 +1115,9 @@ const BYTE DSC_multiply_blr4_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_packed
 	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
@@ -777,7 +1125,9 @@ const BYTE DSC_multiply_blr4_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_byte
 	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
@@ -785,7 +1135,9 @@ const BYTE DSC_multiply_blr4_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_short
 	{dtype_unknown, dtype_double, dtype_double, dtype_double,
@@ -793,7 +1145,9 @@ const BYTE DSC_multiply_blr4_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 dtype_long, dtype_long, DTYPE_CANNOT, dtype_double,
 	 dtype_double, dtype_d_float, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, dtype_double,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec128, dtype_dec128,
+	 dtype_int128, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_long
 	{dtype_unknown, dtype_double, dtype_double, dtype_double,
@@ -801,7 +1155,9 @@ const BYTE DSC_multiply_blr4_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 dtype_long, dtype_long, DTYPE_CANNOT, dtype_double,
 	 dtype_double, dtype_d_float, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, dtype_double,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec128, dtype_dec128,
+	 dtype_int128, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_quad
 	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
@@ -809,7 +1165,9 @@ const BYTE DSC_multiply_blr4_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_real
 	{dtype_unknown, dtype_double, dtype_double, dtype_double,
@@ -817,7 +1175,9 @@ const BYTE DSC_multiply_blr4_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 dtype_double, dtype_double, DTYPE_CANNOT, dtype_double,
 	 dtype_double, dtype_d_float, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, dtype_double,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_double, dtype_double,
+	 dtype_double, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_double
 	{dtype_unknown, dtype_double, dtype_double, dtype_double,
@@ -825,7 +1185,9 @@ const BYTE DSC_multiply_blr4_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 dtype_double, dtype_double, DTYPE_CANNOT, dtype_double,
 	 dtype_double, dtype_d_float, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, dtype_double,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_double, dtype_double,
+	 dtype_double, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_d_float -- VMS deprecated
 	{dtype_unknown, dtype_d_float, dtype_d_float, dtype_d_float,
@@ -833,7 +1195,9 @@ const BYTE DSC_multiply_blr4_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 dtype_d_float, dtype_d_float, DTYPE_CANNOT, dtype_d_float,
 	 dtype_d_float, dtype_d_float, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, dtype_d_float,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_d_float, dtype_d_float,
+	 dtype_d_float, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_sql_date
 	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
@@ -841,7 +1205,9 @@ const BYTE DSC_multiply_blr4_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_sql_time
 	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
@@ -849,7 +1215,9 @@ const BYTE DSC_multiply_blr4_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_timestamp
 	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
@@ -857,7 +1225,9 @@ const BYTE DSC_multiply_blr4_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_blob
 	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
@@ -865,7 +1235,9 @@ const BYTE DSC_multiply_blr4_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_array
 	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
@@ -873,7 +1245,9 @@ const BYTE DSC_multiply_blr4_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_int64
 	{dtype_unknown, dtype_double, dtype_double, dtype_double,
@@ -881,7 +1255,9 @@ const BYTE DSC_multiply_blr4_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 dtype_double, dtype_double, DTYPE_CANNOT, dtype_double,
 	 dtype_double, dtype_d_float, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, dtype_double,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec128, dtype_dec128,
+	 dtype_int128, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_dbkey
 	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
@@ -889,7 +1265,9 @@ const BYTE DSC_multiply_blr4_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
-	 DTYPE_CANNOT, DTYPE_CANNOT},
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
 	// dtype_boolean
 	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
@@ -897,8 +1275,79 @@ const BYTE DSC_multiply_blr4_result[DTYPE_TYPE_MAX][DTYPE_TYPE_MAX] =
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
 	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
-	 DTYPE_CANNOT, DTYPE_CANNOT}
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
 
+	// dtype_dec64
+	{dtype_unknown, dtype_dec128, dtype_dec128, dtype_dec128,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 dtype_dec128, dtype_dec128, DTYPE_CANNOT, dtype_double,
+	 dtype_double, dtype_d_float, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec128,
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec128, dtype_dec128,
+	 dtype_dec128, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
+
+	// dtype_dec128
+	{dtype_unknown, dtype_dec128, dtype_dec128, dtype_dec128,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 dtype_dec128, dtype_dec128, DTYPE_CANNOT, dtype_double,
+	 dtype_double, dtype_d_float, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec128,
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec128, dtype_dec128,
+	 dtype_dec128, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
+
+	// dtype_int128
+	{dtype_unknown, dtype_int128, dtype_int128, dtype_int128,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 dtype_int128, dtype_int128, DTYPE_CANNOT, dtype_double,
+	 dtype_double, dtype_d_float, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, dtype_int128,
+	 DTYPE_CANNOT, DTYPE_CANNOT, dtype_dec128, dtype_dec128,
+	 dtype_int128, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
+
+	// dtype_sql_time_tz
+	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
+
+	// dtype_timestamp_tz
+	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
+
+	// dtype_ex_time_tz
+	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT},
+
+	// dtype_ex_timestamp_tz
+	{DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT, DTYPE_CANNOT,
+	 DTYPE_CANNOT}
 };
 
 #ifdef DEV_BUILD
@@ -1003,6 +1452,21 @@ bool DSC_make_descriptor(DSC* desc,
 		desc->dsc_dtype = dtype_double;
 		break;
 
+	case blr_dec64:
+		desc->dsc_length = sizeof(Decimal64);
+		desc->dsc_dtype = dtype_dec64;
+		break;
+
+	case blr_dec128:
+		desc->dsc_length = sizeof(Decimal128);
+		desc->dsc_dtype = dtype_dec128;
+		break;
+
+	case blr_int128:
+		desc->dsc_length = sizeof(Int128);
+		desc->dsc_dtype = dtype_int128;
+		break;
+
 	case blr_timestamp:
 		desc->dsc_length = 2 * sizeof(SLONG);
 		desc->dsc_dtype = dtype_timestamp;
@@ -1016,6 +1480,26 @@ bool DSC_make_descriptor(DSC* desc,
 	case blr_sql_time:
 		desc->dsc_length = sizeof(ULONG);
 		desc->dsc_dtype = dtype_sql_time;
+		break;
+
+	case blr_timestamp_tz:
+		desc->dsc_length = sizeof(ISC_TIMESTAMP_TZ);
+		desc->dsc_dtype = dtype_timestamp_tz;
+		break;
+
+	case blr_sql_time_tz:
+		desc->dsc_length = sizeof(ISC_TIME_TZ);
+		desc->dsc_dtype = dtype_sql_time_tz;
+		break;
+
+	case blr_ex_timestamp_tz:
+		desc->dsc_length = sizeof(ISC_TIMESTAMP_TZ_EX);
+		desc->dsc_dtype = dtype_ex_timestamp_tz;
+		break;
+
+	case blr_ex_time_tz:
+		desc->dsc_length = sizeof(ISC_TIME_TZ_EX);
+		desc->dsc_dtype = dtype_ex_time_tz;
 		break;
 
 	case blr_blob:
@@ -1164,6 +1648,20 @@ const char* dsc::typeToText() const
 		return "dbkey";
 	case dtype_boolean:
 		return "boolean";
+	case dtype_dec64:
+		return "decfloat(16)";
+	case dtype_dec128:
+		return "decfloat(34)";
+	case dtype_int128:
+		return "int128";
+	case dtype_sql_time_tz:
+		return "time with timezone";
+	case dtype_timestamp_tz:
+		return "timestamp with timezone";
+	case dtype_ex_time_tz:
+		return "extended time with timezone";
+	case dtype_ex_timestamp_tz:
+		return "extended timestamp with timezone";
 	default:
 		return "out of range";
 	}
@@ -1252,6 +1750,39 @@ void dsc::getSqlInfo(SLONG* sqlLength, SLONG* sqlSubType, SLONG* sqlScale, SLONG
 			*sqlType = SQL_BOOLEAN;
 			break;
 
+		case dtype_dec64:
+			*sqlType = SQL_DEC16;
+			*sqlScale = 0;
+			break;
+
+		case dtype_dec128:
+			*sqlType = SQL_DEC34;
+			*sqlScale = 0;
+			break;
+
+		case dtype_int128:
+			*sqlType = SQL_INT128;
+			*sqlScale = dsc_scale;
+			if (dsc_sub_type)
+				*sqlSubType = dsc_sub_type;
+			break;
+
+		case dtype_timestamp_tz:
+			*sqlType = SQL_TIMESTAMP_TZ;
+			break;
+
+		case dtype_sql_time_tz:
+			*sqlType = SQL_TIME_TZ;
+			break;
+
+		case dtype_ex_timestamp_tz:
+			*sqlType = SQL_TIMESTAMP_TZ_EX;
+			break;
+
+		case dtype_ex_time_tz:
+			*sqlType = SQL_TIME_TZ_EX;
+			break;
+
 		default:
 			status_exception::raise(
 				Arg::Gds(isc_sqlerr) << Arg::Num(-804) <<
@@ -1294,13 +1825,16 @@ static bool validate_dsc_tables()
  *	is called as part of a DEV_BUILD assertion check
  *	only once per server.
  *
- * WARNING: the fprintf's are commented out because trying to print
+ * WARNING: the fprintf's are ifdef'd because trying to print
  *          to stderr when the server is running detached will trash
  *          server memory.  If you uncomment the printf's and build a
  *          kit, make sure that you run that server with the -d flag
  *          so it won't detach from its controlling terminal.
  *
  **************************************/
+
+#define DSC_DIAG(a)
+
 	for (BYTE op1 = dtype_unknown; op1 < DTYPE_TYPE_MAX; op1++)
 	{
 		for (BYTE op2 = dtype_unknown; op2 < DTYPE_TYPE_MAX; op2++)
@@ -1309,59 +1843,48 @@ static bool validate_dsc_tables()
 			if ((DSC_add_result[op1][op2] >= DTYPE_TYPE_MAX) &&
 				(DSC_add_result[op1][op2] != DTYPE_CANNOT))
 			{
-				/*
-				fprintf (stderr, "DSC_add_result [%d][%d] is %d, invalid.\n",
-					op1, op2, DSC_add_result [op1][op2]);
-				*/
+				DSC_DIAG(fprintf (stderr, "DSC_add_result [%d][%d] is %d, invalid.\n",
+					op1, op2, DSC_add_result [op1][op2]));
 				return false;
 			}
 
 			// Addition operator must be communitive
 			if (DSC_add_result[op1][op2] != DSC_add_result[op2][op1])
 			{
-				/*
-				fprintf (stderr,
+				DSC_DIAG(fprintf (stderr,
 					"Not commutative: DSC_add_result[%d][%d] = %d, ... [%d][%d] = %d\n",
 					op1, op2, DSC_add_result [op1][op2],
-					op2, op1, DSC_add_result [op2][op1] );
-				*/
+					op2, op1, DSC_add_result [op2][op1] ));
 				return false;
 			}
 
 			// Difficult to validate Subtraction
-
 			if ((DSC_sub_result[op1][op2] >= DTYPE_TYPE_MAX) &&
 				(DSC_sub_result[op1][op2] != DTYPE_CANNOT))
 			{
-				/*
-				fprintf (stderr, "DSC_sub_result [%d][%d] is %d, invalid.\n",
-					op1, op2, DSC_sub_result [op1][op2]);
-				*/
+				DSC_DIAG(fprintf (stderr, "DSC_sub_result [%d][%d] is %d, invalid.\n",
+					op1, op2, DSC_sub_result [op1][op2]));
 				return false;
 			}
 
 			// Multiplication operator must be commutative
 			if (DSC_multiply_result[op1][op2] != DSC_multiply_result[op2][op1])
 			{
-				/*
-				fprintf (stderr,
+				DSC_DIAG(fprintf (stderr,
 					"Not commutative: DSC_multiply_result [%d][%d] = %d,\n\t... [%d][%d] = %d\n",
 					op1, op2, DSC_multiply_result [op1][op2],
-					op2, op1, DSC_multiply_result [op2][op1]);
-				*/
+					op2, op1, DSC_multiply_result [op2][op1]));
 				return false;
 			}
 
 			// Multiplication operator must be communitive
 			if (DSC_multiply_blr4_result[op1][op2] != DSC_multiply_blr4_result[op2][op1])
 			{
-				/*
-				fprintf (stderr,
+				DSC_DIAG(fprintf (stderr,
 					"Not commutative: DSC_multiply_blr4_result [%d][%d] = %d\n\
 					\t... [%d][%d] = %d\n",
 					op1, op2, DSC_multiply_blr4_result [op1][op2],
-					op2, op1, DSC_multiply_blr4_result [op2][op1] );
-				*/
+					op2, op1, DSC_multiply_blr4_result [op2][op1] ));
 				return false;
 			}
 		}

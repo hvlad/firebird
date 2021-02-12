@@ -50,23 +50,29 @@
 //const int BLOB_max_predefined_subtype = 9;
 //
 
-// Column Limits
+// Column Limits (in bytes)
 
-const ULONG MAX_COLUMN_SIZE = 32767;	// Bytes
-const ULONG MAX_STR_SIZE = 65535;		// Bytes
+const ULONG MAX_COLUMN_SIZE = 32767;
+const ULONG MAX_VARY_COLUMN_SIZE = MAX_COLUMN_SIZE - sizeof(USHORT);
+
+const ULONG MAX_STR_SIZE = 65535;
+
+const int TEMP_STR_LENGTH = 128;
 
 // Metadata constants
 
-const unsigned METADATA_IDENTIFIER_CHAR_LEN	= 31;
-const unsigned METADATA_BYTES_PER_CHAR		= 1;	// UNICODE_FSS_HACK
+// When changing these constants, change MaxIdentifierByteLength and MaxIdentifierCharLength in
+// firebird.conf too.
+const unsigned METADATA_IDENTIFIER_CHAR_LEN	= 63;
+const unsigned METADATA_BYTES_PER_CHAR		= 4;
 
 // Misc constant values
 
-// Characters; beware that USER_NAME_LEN = 133 in gsec.h
 const unsigned int USERNAME_LENGTH	= METADATA_IDENTIFIER_CHAR_LEN * METADATA_BYTES_PER_CHAR;
 
 const FB_SIZE_T MAX_SQL_IDENTIFIER_LEN = METADATA_IDENTIFIER_CHAR_LEN * METADATA_BYTES_PER_CHAR;
 const FB_SIZE_T MAX_SQL_IDENTIFIER_SIZE = MAX_SQL_IDENTIFIER_LEN + 1;
+const FB_SIZE_T MAX_CONFIG_NAME_LEN = 63;
 
 const ULONG MAX_SQL_LENGTH = 10 * 1024 * 1024; // 10 MB - just a safety check
 
@@ -86,7 +92,7 @@ const char* const NULL_ROLE = "NONE";
 // User name assigned to any user granted USR_locksmith rights.
 // If this name is changed, modify also the trigger in
 // jrd/grant.gdl (which turns into jrd/trig.h.
-const char* const SYSDBA_USER_NAME = "SYSDBA";
+const char* const DBA_USER_NAME		= "SYSDBA";
 
 const char* const PRIMARY_KEY		= "PRIMARY KEY";
 const char* const FOREIGN_KEY		= "FOREIGN KEY";
@@ -135,10 +141,15 @@ const int SQL_FLD_SECCLASS_PREFIX_LEN		= 9;
 const char* const GEN_SECCLASS_PREFIX		= "GEN$";
 const int GEN_SECCLASS_PREFIX_LEN			= 4;
 
+const char* const PROCEDURES_GENERATOR = "RDB$PROCEDURES";
+const char* const FUNCTIONS_GENERATOR = "RDB$FUNCTIONS";
+
 // Automatically created check constraints for unnamed PRIMARY and UNIQUE declarations.
 const char* const IMPLICIT_INTEGRITY_PREFIX = "INTEG_";
 const int IMPLICIT_INTEGRITY_PREFIX_LEN = 6;
 
+// Default publication name
+const char* const DEFAULT_PUBLICATION = "RDB$DEFAULT";
 
 //*****************************************
 // System flag meaning - mainly Firebird.
@@ -180,10 +191,8 @@ const int PRETTY_BUFFER_SIZE = 1024;
 
 const int MAX_INDEX_SEGMENTS = 16;
 
-// Maximum index key length
-// AB: If the maximum key-size will change, don't forget dyn.h and dba.epp
-// which cannot use these defines.
-const ULONG MAX_KEY			= 4096;		// Maximum page size possible divide by 4 (16384 / 4)
+// Maximum index key length (must be in sync with MAX_PAGE_SIZE in ods.h)
+const ULONG MAX_KEY			= 8192;		// Maximum page size possible divide by 4 (MAX_PAGE_SIZE / 4)
 
 const USHORT SQL_MATCH_1_CHAR		= '_';	// Not translatable
 const USHORT SQL_MATCH_ANY_CHARS	= '%';	// Not translatable
@@ -203,8 +212,6 @@ const size_t DEFAULT_TIMESTAMP_PRECISION	= 3;
 const size_t MAX_ARRAY_DIMENSIONS = 16;
 
 const size_t MAX_SORT_ITEMS = 255; // ORDER BY f1,...,f255
-
-const int MAX_TABLE_VERSIONS = 255; // maybe this should be in ods.h.
 
 const size_t MAX_DB_PER_TRANS = 256; // A multi-db txn can span up to 256 dbs
 
@@ -266,7 +273,8 @@ enum tra_iso_mode_t {
 	iso_mode_consistency = 0,
 	iso_mode_concurrency = 1,
 	iso_mode_rc_version = 2,
-	iso_mode_rc_no_version = 3
+	iso_mode_rc_no_version = 3,
+	iso_mode_rc_read_consistency = 4
 };
 
 // statistics groups
@@ -288,7 +296,16 @@ enum InfoType
 	INFO_TYPE_ROWS_AFFECTED = 5,
 	INFO_TYPE_TRIGGER_ACTION = 6,
 	INFO_TYPE_SQLSTATE = 7,
+	INFO_TYPE_EXCEPTION = 8,
+	INFO_TYPE_ERROR_MSG = 9,
+	INFO_TYPE_SESSION_RESETTING = 10,
 	MAX_INFO_TYPE
+};
+
+enum ReplicaMode {
+	REPLICA_NONE = 0,
+	REPLICA_READ_ONLY = 1,
+	REPLICA_READ_WRITE = 2
 };
 
 enum TriggerType {
@@ -448,6 +465,21 @@ const TraNumber MAX_TRA_NUMBER = 0x0000FFFFFFFFFFFF;	// ~2.8 * 10^14
 // CVC: I think we need to have a special, higher value for streams.
 const int OPT_STATIC_ITEMS = 64;
 
-#define CURRENT_ENGINE "Engine12"
+#define CURRENT_ENGINE "Engine13"
+#define EMBEDDED_PROVIDERS "Providers=" CURRENT_ENGINE
+
+// Features set for current version of engine provider
+#define ENGINE_FEATURES {fb_feature_multi_statements, \
+						 fb_feature_multi_transactions, \
+						 fb_feature_session_reset, \
+						 fb_feature_read_consistency, \
+						 fb_feature_statement_timeout, \
+						 fb_feature_statement_long_life}
+
+const int WITH_GRANT_OPTION = 1;
+const int WITH_ADMIN_OPTION = 2;
+
+// Max length of the string returned by ERROR_TEXT context variable
+const USHORT MAX_ERROR_MSG_LENGTH = 1024 * METADATA_BYTES_PER_CHAR; // 1024 UTF-8 characters
 
 #endif // JRD_CONSTANTS_H

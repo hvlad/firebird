@@ -33,7 +33,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdarg.h>
-#include "../jrd/ibase.h"
+#include "ibase.h"
 #include "../gpre/gpre.h"
 #include "../gpre/pat.h"
 #include "../gpre/msc_proto.h"
@@ -138,11 +138,7 @@ static const char* const NULL_STRING	= "(char*) 0";
 static const char* const NULL_STATUS	= "NULL";
 static const char* const NULL_SQLDA		= "NULL";
 
-#ifdef DARWIN
-static const char* const GDS_INCLUDE	= "<Firebird/ibase.h>";
-#else
 static const char* const GDS_INCLUDE	= "<ibase.h>";
-#endif
 
 static const char* const DCL_LONG	= "ISC_LONG";
 static const char* const DCL_QUAD	= "ISC_QUAD";
@@ -243,6 +239,9 @@ void C_CXX_action(const act* action, int column)
 	case ACT_update:
 	case ACT_statistics:
 		begin(column);
+
+	default:
+		break;
 	}
 
 	switch (action->act_type)
@@ -658,7 +657,7 @@ static void asgn_to( const act* action, ref* reference, int column)
 
 			// Pick up NULL value if one is there
 
-			if (reference = reference->ref_null)
+			if ((reference = reference->ref_null))
 			{
 				align(column);
 				fprintf(gpreGlob.out_file, "%s = %s;", reference->ref_value,
@@ -687,7 +686,7 @@ static void asgn_to( const act* action, ref* reference, int column)
 
 	// Pick up NULL value if one is there
 
-	if (reference = reference->ref_null)
+	if ((reference = reference->ref_null))
 	{
 		align(column);
 		fprintf(gpreGlob.out_file, "%s = %s;", reference->ref_value, gen_name(s, reference, true));
@@ -1049,7 +1048,7 @@ static void gen_blob_open( const act* action, USHORT column)
 		fprintf(gpreGlob.out_file, "%s = %s;", s, reference->ref_value);
 	}
 
-	if (args.pat_value1 = blob->blb_bpb_length)
+	if ((args.pat_value1 = blob->blb_bpb_length))
 		PATTERN_expand(column, pattern1, &args);
 	else
 		PATTERN_expand(column, pattern2, &args);
@@ -1212,9 +1211,16 @@ static void gen_compile( const act* action, int column)
 
 	PATTERN_expand((USHORT) column, pattern2, &args);
 
+	column += INDENT;
+	begin(column);
+
 	args.pat_condition = !(request->req_flags & REQ_exp_hand);
 	args.pat_value1 = request->req_length;
-	PATTERN_expand((USHORT) (column + INDENT), pattern1, &args);
+	PATTERN_expand((USHORT) column, pattern1, &args);
+
+	set_sqlcode(action, column);
+	endp(column);
+	column -= INDENT;
 
 	// If blobs are present, zero out all of the blob handles.  After this
 	// point, the handles are the user's responsibility
@@ -1901,7 +1907,13 @@ static void gen_emodify( const act* action, int column)
 		align(column);
 		gen_name(s1, source, true);
 		gen_name(s2, reference, true);
-		if (field->fld_dtype > dtype_cstring || (field->fld_sub_type == 1 && field->fld_length == 1))
+		if (field->fld_dtype == dtype_varying && field->fld_sub_type == dsc_text_type_fixed)
+		{
+			const int length = field->fld_length + sizeof(USHORT);
+			fprintf(gpreGlob.out_file, "memcpy (&%s, &%s, %d);", s2, s1, length);
+		}
+		else if (field->fld_dtype > dtype_cstring ||
+			(field->fld_sub_type == dsc_text_type_fixed && field->fld_length == 1))
 		{
 			fprintf(gpreGlob.out_file, "%s = %s;", s2, s1);
 		}
@@ -2588,10 +2600,10 @@ static void gen_procedure( const act* action, int column)
 	const TEXT* pattern;
 	if (in_port && in_port->por_length)
 		pattern =
-			"isc_transact_request (%V1, %RF%DH%RE, %RF%RT%RE, sizeof(%RI), %RI, (short) %PL, (char*) %RF%PI%RE, (short) %QL, (char*) %RF%QI%RE);";
+			"isc_transact_request (%V1, %RF%DH%RE, %RF%RT%RE, (unsigned short) sizeof(%RI), (char*) %RI, (unsigned short) %PL, (char*) %RF%PI%RE, (unsigned short) %QL, (char*) %RF%QI%RE);";
 	else
 		pattern =
-			"isc_transact_request (%V1, %RF%DH%RE, %RF%RT%RE, sizeof(%RI), %RI, 0, 0, (short) %QL, (char*) %RF%QI%RE);";
+			"isc_transact_request (%V1, %RF%DH%RE, %RF%RT%RE, (unsigned short) sizeof(%RI), (char*) %RI, 0, 0, (unsigned short) %QL, (char*) %RF%QI%RE);";
 
 	// Get database attach and transaction started
 
@@ -2820,63 +2832,62 @@ static void gen_request(const gpre_req* request)
 		printa(0, "static %sshort\n   isc_%dl = %d;",
 			   (request->req_flags & REQ_extend_dpb) ? "" : CONST_STR,
 			   request->req_ident, request->req_length);
-		printa(0, "static %sunsigned char\n   isc_%d [] = {", CONST_STR, request->req_ident);
 
 		const TEXT* string_type = "blr";
-		if (gpreGlob.sw_raw)
-		{
-			gen_raw(request->req_blr, request->req_length);
+		bool is_blr = true;
 
-			switch (request->req_type)
-			{
+		switch (request->req_type)
+		{
 			case REQ_create_database:
 			case REQ_ready:
 				string_type = "dpb";
+				is_blr = false;
 				break;
 
 			case REQ_ddl:
 				string_type = "dyn";
-				break;
-			case REQ_slice:
-				string_type = "sdl";
+				is_blr = false;
 				break;
 
-			default:
-				string_type = "blr";
-			}
+			case REQ_slice:
+				string_type = "sdl";
+				is_blr = false;
+				break;
+		}
+
+		if (is_blr)
+			printa(0, "static %sunsigned char\n   isc_%d [] = {", CONST_STR, request->req_ident);
+		else
+			printa(0, "static %schar\n   isc_%d [] = {", CONST_STR, request->req_ident);
+
+		if (gpreGlob.sw_raw)
+		{
+			gen_raw(request->req_blr, request->req_length);
 		}
 		else
 			switch (request->req_type)
 			{
 			case REQ_create_database:
 			case REQ_ready:
-				string_type = "dpb";
 				if (PRETTY_print_cdb(request->req_blr, gen_blr, 0, 0))
-				{
 					CPR_error("internal error during parameter generation");
-				}
 				break;
 
 			case REQ_ddl:
-				string_type = "dyn";
 				if (PRETTY_print_dyn(request->req_blr, gen_blr, 0, 0))
-				{
 					CPR_error("internal error during dynamic DDL generation");
-				}
 				break;
+
 			case REQ_slice:
-				string_type = "sdl";
 				if (PRETTY_print_sdl(request->req_blr, gen_blr, 0, 0))
-				{
 					CPR_error("internal error during SDL generation");
-				}
 				break;
 
 			default:
-				string_type = "blr";
 				if (fb_print_blr(request->req_blr, request->req_length, gen_blr, 0, 0))
 					CPR_error("internal error during BLR generation");
 			}
+
 		printa(INDENT, "};\t/* end of %s string for request isc_%d */\n",
 			   string_type, request->req_ident);
 	}
@@ -3717,6 +3728,10 @@ static void make_port(const gpre_port* port, int column)
 			dtype = DCL_LONG;
 			break;
 
+		case dtype_varying:
+			fprintf(gpreGlob.out_file, "    struct { ISC_USHORT length; ISC_UCHAR data[%d]; } isc_%d;\t/* %s */", field->fld_length, reference->ref_ident, name);
+			continue;
+
 		case dtype_cstring:
 		case dtype_text:
 			dtype = "char ";
@@ -3827,7 +3842,7 @@ static void make_ready(const gpre_dbb* db,
 
 	// generate the attach database itself
 
-	const TEXT* dpb_size_ptr = "0";
+	const TEXT* dpb_size_ptr = "(short) 0";
 	const TEXT* dpb_ptr = "(char*) 0";
 
 	align(column);

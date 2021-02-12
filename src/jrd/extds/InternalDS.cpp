@@ -30,7 +30,7 @@
 #include "../tra.h"
 #include "../common/dsc.h"
 #include "../../dsql/dsql.h"
-#include "../../dsql/sqlda_pub.h"
+#include "../firebird/impl/sqlda_pub.h"
 
 #include "../blb_proto.h"
 #include "../evl_proto.h"
@@ -64,26 +64,36 @@ static GlobalPtr<RegisterInternalProvider> reg;
 
 // InternalProvider
 
-void InternalProvider::jrdAttachmentEnd(thread_db* tdbb, Jrd::Attachment* att)
+void InternalProvider::jrdAttachmentEnd(thread_db* tdbb, Attachment* att, bool forced)
 {
-	/***
-	hvlad: this inactive code could be useful in the future, for example when EDS
-	connection pool will be implemented - it allows to remove closed connections
-	from the pool.
+	Provider::jrdAttachmentEnd(tdbb, att, forced);
 
-	if (m_connections.getCount() == 0)
+	Connection* conn = att->att_ext_parent;
+	if (!conn)
 		return;
 
-	Connection** ptr = m_connections.end();
-	Connection** begin = m_connections.begin();
+	{	// scope
+		Database* dbb = tdbb->getDatabase();
+		MutexLockGuard guard(m_mutex, FB_FUNCTION);
 
-	for (ptr--; ptr >= begin; ptr--)
-	{
-		InternalConnection* conn = (InternalConnection*) *ptr;
-		if (conn->getJrdAtt() == att->getInterface())
-			releaseConnection(tdbb, *conn, false);
+		AttToConnMap::Accessor acc(&m_connections);
+		if (acc.locate(AttToConn(conn->getBoundAtt(), conn)))
+		{
+			InternalConnection* intConn = (InternalConnection*) acc.current().m_conn;
+			if (!intConn->getJrdAtt() || intConn->getJrdAtt()->getHandle() != att)
+			{
+				fb_assert(intConn->getJrdAtt() == NULL);
+				return;
+			}
+
+			fb_assert(intConn == conn);
+		}
+		else
+			return;
 	}
-	***/
+
+	if (conn)
+		releaseConnection(tdbb, *conn, false);
 }
 
 void InternalProvider::getRemoteError(const FbStatusVector* status, string& err) const
@@ -118,7 +128,7 @@ InternalConnection::~InternalConnection()
 }
 
 // Status helper
-class IntStatus : public Jrd::FbLocalStatus
+class IntStatus : public Firebird::FbLocalStatus
 {
 public:
 	explicit IntStatus(FbStatusVector *p)
@@ -135,21 +145,17 @@ private:
 	FbStatusVector *v;
 };
 
-void InternalConnection::attach(thread_db* tdbb, const PathName& dbName,
-		const string& user, const string& pwd,
-		const string& role)
+void InternalConnection::attach(thread_db* tdbb)
 {
 	fb_assert(!m_attachment);
 	Database* dbb = tdbb->getDatabase();
-	fb_assert(dbName.isEmpty() || dbName == dbb->dbb_database_name.c_str());
+	Attachment* attachment = tdbb->getAttachment();
+	fb_assert(m_dbName.isEmpty() || m_dbName == dbb->dbb_database_name.c_str());
 
 	// Don't wrap raised errors. This is needed for backward compatibility.
 	setWrapErrors(false);
 
-	Jrd::Attachment* attachment = tdbb->getAttachment();
-	if ((user.isEmpty() || user == attachment->att_user->usr_user_name) &&
-		pwd.isEmpty() &&
-		(role.isEmpty() || role == attachment->att_user->usr_sql_role_name))
+	if (m_dpb.isEmpty())
 	{
 		m_isCurrent = true;
 		m_attachment = attachment->getInterface();
@@ -158,27 +164,34 @@ void InternalConnection::attach(thread_db* tdbb, const PathName& dbName,
 	{
 		m_isCurrent = false;
 		m_dbName = dbb->dbb_database_name.c_str();
-		generateDPB(tdbb, m_dpb, user, pwd, role);
 
 		// Avoid change of m_dpb by validatePassword() below
-		ClumpletWriter newDpb(m_dpb);
+		ClumpletWriter newDpb(ClumpletReader::dpbList, MAX_DPB_SIZE, m_dpb.begin(), m_dpb.getCount());
 		validatePassword(tdbb, m_dbName, newDpb);
+		newDpb.insertInt(isc_dpb_ext_call_depth, attachment->att_ext_call_depth + 1);
 
 		FbLocalStatus status;
 		{
 			EngineCallbackGuard guard(tdbb, *this, FB_FUNCTION);
-			RefPtr<JProvider> jInstance(JProvider::getInstance());
-			jInstance->setDbCryptCallback(&status, tdbb->getAttachment()->att_crypt_callback);
-			m_attachment.assignRefNoIncr(jInstance->attachDatabase(&status, m_dbName.c_str(),
+			m_provider.reset(attachment->getProvider());
+			m_provider->addRef();
+			m_attachment.assignRefNoIncr(m_provider->attachDatabase(&status, m_dbName.c_str(),
 				newDpb.getBufferLength(), newDpb.getBuffer()));
 		}
 
 		if (status->getState() & IStatus::STATE_ERRORS)
 			raise(&status, tdbb, "JProvider::attach");
+
+		m_attachment->getHandle()->att_ext_parent = this;
 	}
 
-	m_sqlDialect = (m_attachment->getHandle()->att_database->dbb_flags & DBB_DB_SQL_dialect_3) ?
+	m_sqlDialect = (attachment->att_database->dbb_flags & DBB_DB_SQL_dialect_3) ?
 					SQL_DIALECT_V6 : SQL_DIALECT_V5;
+
+	memset(m_features, false, sizeof(m_features));
+	static const info_features features[] = ENGINE_FEATURES;
+	for (int i = 0; i < FB_NELEM(features); i++)
+		setFeature(features[i]);
 }
 
 void InternalConnection::doDetach(thread_db* tdbb)
@@ -203,7 +216,7 @@ void InternalConnection::doDetach(thread_db* tdbb)
 			att->detach(&status);
 		}
 
-		if (status->getErrors()[1] == isc_att_shutdown)
+		if (status->getErrors()[1] == isc_att_shutdown || status->getErrors()[1] == isc_shutdown)
 		{
 			status->init();
 		}
@@ -218,7 +231,7 @@ void InternalConnection::doDetach(thread_db* tdbb)
 	fb_assert(!m_attachment);
 }
 
-bool InternalConnection::cancelExecution()
+bool InternalConnection::cancelExecution(bool /*forced*/)
 {
 	if (!m_attachment->getHandle())
 		return false;
@@ -232,6 +245,22 @@ bool InternalConnection::cancelExecution()
 	return !(status->getState() & IStatus::STATE_ERRORS);
 }
 
+bool InternalConnection::resetSession(thread_db* tdbb)
+{
+	fb_assert(!m_isCurrent);
+
+	if (m_isCurrent)
+		return true;
+
+	FbLocalStatus status;
+	{
+		EngineCallbackGuard guard(tdbb, *this, FB_FUNCTION);
+		m_attachment->execute(&status, NULL, 0, "ALTER SESSION RESET",
+			m_sqlDialect, NULL, NULL, NULL, NULL);
+	}
+	return !(status->getState() & IStatus::STATE_ERRORS);
+}
+
 // this internal connection instance is available for the current execution context if it
 // a) is current connection and current thread's attachment is equal to
 //	  this attachment, or
@@ -242,19 +271,46 @@ bool InternalConnection::isAvailable(thread_db* tdbb, TraScope /*traScope*/) con
 		(m_isCurrent && (tdbb->getAttachment() == m_attachment->getHandle()));
 }
 
-bool InternalConnection::isSameDatabase(thread_db* tdbb, const PathName& dbName,
-		const string& user, const string& pwd,
-		const string& role) const
+bool InternalConnection::validate(thread_db* tdbb)
+{
+	if (m_isCurrent)
+		return true;
+
+	if (!m_attachment)
+		return false;
+
+	EngineCallbackGuard guard(tdbb, *this, FB_FUNCTION);
+	FbLocalStatus status;
+	m_attachment->ping(&status);
+	return status.isSuccess();
+}
+
+bool InternalConnection::isSameDatabase(const PathName& dbName, ClumpletReader& dpb) const
 {
 	if (m_isCurrent)
 	{
-		const UserId* attUser = m_attachment->getHandle()->att_user;
-		return ((user.isEmpty() || user == attUser->usr_user_name) &&
-				pwd.isEmpty() &&
-				(role.isEmpty() || role == attUser->usr_sql_role_name));
+		const Attachment* att = m_attachment->getHandle();
+		const MetaString& attUser = att->att_user->getUserName();
+		const MetaString& attRole = att->att_user->getSqlRole();
+
+		MetaString str;
+
+		if (dpb.find(isc_dpb_user_name))
+		{
+			dpb.getString(str);
+			if (str != attUser)
+				return false;
+		}
+
+		if (dpb.find(isc_dpb_sql_role_name))
+		{
+			dpb.getString(str);
+			if (str != attRole)
+				return false;
+		}
 	}
 
-	return Connection::isSameDatabase(tdbb, dbName, user, pwd, role);
+	return Connection::isSameDatabase(dbName, dpb);
 }
 
 Transaction* InternalConnection::doCreateTransaction()
@@ -283,7 +339,7 @@ void InternalTransaction::doStart(FbStatusVector* status, thread_db* tdbb, Clump
 	fb_assert(localTran);
 
 	if (m_scope == traCommon && m_IntConnection.isCurrent())
-		m_transaction = localTran->getInterface();
+		m_transaction = localTran->getInterface(true);
 	else
 	{
 		JAttachment* att = m_IntConnection.getJrdAtt();
@@ -332,6 +388,12 @@ void InternalTransaction::doRollback(FbStatusVector* status, thread_db* tdbb, bo
 {
 	fb_assert(m_transaction);
 
+	if (m_connection.isBroken())
+	{
+		m_transaction = NULL;
+		return;
+	}
+
 	if (m_scope == traCommon && m_IntConnection.isCurrent())
 	{
 		if (!retain) {
@@ -349,7 +411,7 @@ void InternalTransaction::doRollback(FbStatusVector* status, thread_db* tdbb, bo
 			m_transaction->rollback(&s);
 	}
 
-	if (status->getErrors()[1] == isc_att_shutdown && !retain)
+	if ((status->getErrors()[1] == isc_att_shutdown || status->getErrors()[1] == isc_shutdown) && !retain)
 	{
 		m_transaction = NULL;
 		status->init();
@@ -390,47 +452,51 @@ void InternalStatement::doPrepare(thread_db* tdbb, const string& sql)
 		fb_assert(!m_allocated);
 	}
 
+	CallerName save_caller_name(tran->getHandle()->tra_caller_name);
+
+	if (m_callerPrivileges)
+	{
+		jrd_req* request = tdbb->getRequest();
+		JrdStatement* statement = request ? request->getStatement() : NULL;
+		CallerName callerName;
+		const Routine* routine;
+
+		if (statement && statement->parentStatement)
+			statement = statement->parentStatement;
+
+		if (statement && statement->triggerInvoker)
+			tran->getHandle()->tra_caller_name = CallerName(obj_trigger,
+															statement->triggerName,
+															statement->triggerInvoker->getUserName());
+		else if (statement && (routine = statement->getRoutine()) &&
+			routine->getName().identifier.hasData())
+		{
+			const MetaString& userName = routine->invoker ? routine->invoker->getUserName() : "";
+			if (routine->getName().package.isEmpty())
+			{
+				tran->getHandle()->tra_caller_name = CallerName(routine->getObjectType(),
+					routine->getName().identifier, userName);
+			}
+			else
+			{
+				tran->getHandle()->tra_caller_name = CallerName(obj_package_header,
+					routine->getName().package, userName);
+			}
+		}
+		else
+			tran->getHandle()->tra_caller_name = CallerName();
+	}
+
 	{
 		EngineCallbackGuard guard(tdbb, *this, FB_FUNCTION);
 
-		CallerName save_caller_name(tran->getHandle()->tra_caller_name);
-
-		if (m_callerPrivileges)
-		{
-			jrd_req* request = tdbb->getRequest();
-			JrdStatement* statement = request ? request->getStatement() : NULL;
-			CallerName callerName;
-			const Routine* routine;
-
-			if (statement && statement->parentStatement)
-				statement = statement->parentStatement;
-
-			if (statement && statement->triggerName.hasData())
-				tran->getHandle()->tra_caller_name = CallerName(obj_trigger, statement->triggerName);
-			else if (statement && (routine = statement->getRoutine()) &&
-				routine->getName().identifier.hasData())
-			{
-				if (routine->getName().package.isEmpty())
-				{
-					tran->getHandle()->tra_caller_name = CallerName(routine->getObjectType(),
-						routine->getName().identifier);
-				}
-				else
-				{
-					tran->getHandle()->tra_caller_name = CallerName(obj_package_header,
-						routine->getName().package);
-				}
-			}
-			else
-				tran->getHandle()->tra_caller_name = CallerName();
-		}
-
 		m_request.assignRefNoIncr(att->prepare(&status, tran, sql.length(), sql.c_str(),
 			m_connection.getSqlDialect(), 0));
-		m_allocated = (m_request != NULL);
-
-		tran->getHandle()->tra_caller_name = save_caller_name;
 	}
+	m_allocated = (m_request != NULL);
+
+	if (tran->getHandle())
+		tran->getHandle()->tra_caller_name = save_caller_name;
 
 	if (status->getState() & IStatus::STATE_ERRORS)
 		raise(&status, tdbb, "JAttachment::prepare", &sql);
@@ -501,6 +567,21 @@ void InternalStatement::doPrepare(thread_db* tdbb, const string& sql)
 	case DsqlCompiledStatement::TYPE_EXEC_BLOCK:
 		break;
 	}
+}
+
+
+void InternalStatement::doSetTimeout(thread_db* tdbb, unsigned int timeout)
+{
+	FbLocalStatus status;
+
+	{
+		EngineCallbackGuard guard(tdbb, *this, FB_FUNCTION);
+
+		m_request->setTimeout(&status, timeout);
+	}
+
+	if (status->getState() & IStatus::STATE_ERRORS)
+		raise(&status, tdbb, "JStatement::setTimeout");
 }
 
 

@@ -40,7 +40,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 
-#include "../jrd/ibase.h"
+#include "ibase.h"
 #include "../jrd/license.h"
 #include "../alice/alice.h"
 #include "../alice/exe_proto.h"
@@ -226,13 +226,13 @@ int alice(Firebird::UtilSvc* uSvc)
 		{
 			ALICE_upper_case(*argv, string, sizeof(string));
 			bool found = true;
-			if (strcmp(string, "NORMAL") == 0)
+			if (strcmp(string, ALICE_SW_SHUT_NORMAL) == 0)
 				tdgbl->ALICE_data.ua_shutdown_mode = SHUT_NORMAL;
-			else if (strcmp(string, "MULTI") == 0)
+			else if (strcmp(string, ALICE_SW_SHUT_MULTI) == 0)
 				tdgbl->ALICE_data.ua_shutdown_mode = SHUT_MULTI;
-			else if (strcmp(string, "SINGLE") == 0)
+			else if (strcmp(string, ALICE_SW_SHUT_SINGLE) == 0)
 				tdgbl->ALICE_data.ua_shutdown_mode = SHUT_SINGLE;
-			else if (strcmp(string, "FULL") == 0)
+			else if (strcmp(string, ALICE_SW_SHUT_FULL) == 0)
 				tdgbl->ALICE_data.ua_shutdown_mode = SHUT_FULL;
 			else
 				found = false;
@@ -448,6 +448,22 @@ int alice(Firebird::UtilSvc* uSvc)
 			}
 		}
 
+		if (table->in_sw_value & sw_replica)
+		{
+			if (--argc <= 0)
+				ALICE_error(135);	// msg 135: replica mode (none / read_only / read_write) required
+
+			ALICE_upper_case(*argv++, string, sizeof(string));
+
+			if (!strcmp(string, ALICE_SW_MODE_NONE))
+				tdgbl->ALICE_data.ua_replica_mode = REPL_NONE;
+			else if (!strcmp(string, ALICE_SW_MODE_RO))
+				tdgbl->ALICE_data.ua_replica_mode = REPL_READ_ONLY;
+			else if (!strcmp(string, ALICE_SW_MODE_RW))
+				tdgbl->ALICE_data.ua_replica_mode = REPL_READ_WRITE;
+			else
+				ALICE_error(135);	// msg 135: replica mode (none / read_only / read_write) required
+		}
 	}
 
 	// put this here since to put it above overly complicates the parsing.
@@ -575,7 +591,8 @@ int alice(Firebird::UtilSvc* uSvc)
 	}
 #endif
 
-	if ((exit_code != FINI_OK) && uSvc->isService())
+	if ((exit_code != FINI_OK) && uSvc->isService() &&
+		(tdgbl->status[0] == 1) && (tdgbl->status[1] != 0))
 	{
 		uSvc->initStatus();
 		uSvc->setServiceStatus(tdgbl->status);
@@ -608,8 +625,15 @@ void ALICE_upper_case(const TEXT* in, TEXT* out, const size_t buf_size)
 
 void ALICE_print(USHORT	number, const SafeArg& arg)
 {
-	TEXT buffer[256];
+	AliceGlobals* tdgbl = AliceGlobals::getSpecific();
+	if (tdgbl->uSvc->isService())
+	{
+		tdgbl->uSvc->setServiceStatus(ALICE_MSG_FAC, number, arg);
+		tdgbl->uSvc->started();
+		return;
+	}
 
+	TEXT buffer[256];
 	fb_msg_format(0, ALICE_MSG_FAC, number, sizeof(buffer), buffer, arg);
 	alice_output(false, "%s\n", buffer);
 }

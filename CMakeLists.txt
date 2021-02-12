@@ -184,7 +184,7 @@ if (WIN32)
         set(disable_msvc_warnings "/wd4996")
         set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /MP ${disable_msvc_warnings}")
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /MP ${disable_msvc_warnings}")
-        
+
         if (MSVC_STATIC_RUNTIME)
             set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} /MTd")
             set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} /MT")
@@ -206,13 +206,14 @@ if (MINGW)
     set(CMAKE_STATIC_LIBRARY_PREFIX)
 
     add_definitions(-D_WIN32_WINNT=0x0600)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -msse4 -std=c++11")
 endif()
 
 if (UNIX)
     set(OS_DIR posix)
 
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fPIC")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC -msse4 -std=c++11")
 
     if (NOT CMAKE_CROSSCOMPILING)
         set(LIB_readline readline)
@@ -260,6 +261,13 @@ if (WIN32)
         execute_process(COMMAND ${ICU_EXTRACT})
     endif()
 
+	# determine icu version
+	foreach(v RANGE 63 83)
+		if (EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/extern/icu/icudt${v}l.dat)
+			set(ICU_VERSION ${v} CACHE STRING "ICU version")
+		endif()
+	endforeach()
+
     # zlib
     if (NOT ZLIB_EXTRACT)
         message(STATUS "Extracting pre-built zlib")
@@ -269,7 +277,7 @@ if (WIN32)
     endif()
 endif()
 
-if (UNIX)    
+if (UNIX)
     file(GLOB vers_src "${CMAKE_SOURCE_DIR}/builds/posix/*.vers")
     foreach(f ${vers_src})
         get_filename_component(name ${f} NAME)
@@ -322,6 +330,8 @@ endif() # if (NOT CMAKE_CROSSCOMPILING)
 crosscompile_prebuild_steps()
 
 include_directories("extern/libtommath")
+include_directories("extern/libtomcrypt/src/headers")
+include_directories("extern/decNumber")
 include_directories("extern/icu/include")
 include_directories("extern/zlib")
 
@@ -338,6 +348,33 @@ file(GLOB libtommath_src "extern/libtommath/*.c" "extern/libtommath/*.h")
 
 add_library             (libtommath ${libtommath_src})
 project_group           (libtommath Extern)
+
+
+########################################
+# LIBRARY libtomcrypt
+########################################
+
+file(GLOB_RECURSE libtomcrypt_src "extern/libtomcrypt/src/*")
+list(FILTER libtomcrypt_src EXCLUDE REGEX ".*aes_tab.c")
+list(FILTER libtomcrypt_src EXCLUDE REGEX ".*whirltab.c")
+list(FILTER libtomcrypt_src EXCLUDE REGEX ".*sober128tab.c")
+
+add_library                 (libtomcrypt ${libtomcrypt_src})
+target_compile_definitions  (libtomcrypt PRIVATE LTC_NO_ROLC LTC_SOURCE)
+project_group               (libtomcrypt Extern)
+
+
+########################################
+# LIBRARY decNumber
+########################################
+
+file(GLOB_RECURSE decNumber_src "extern/decNumber/*.c" "extern/decNumber/*.h")
+list(FILTER decNumber_src EXCLUDE REGEX ".*decBasic.c")
+list(FILTER decNumber_src EXCLUDE REGEX ".*decCommon.c")
+
+add_library                 (decNumber ${decNumber_src})
+project_group               (decNumber Extern)
+
 
 ########################################
 # EXECUTABLE btyacc

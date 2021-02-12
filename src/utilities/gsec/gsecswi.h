@@ -24,7 +24,6 @@
 #ifndef GSEC_GSECSWI_H
 #define GSEC_GSECSWI_H
 
-//#include "../common/common.h"
 #include "../jrd/constants.h"
 
 /* Switch handling constants.  Note that the first IN_SW_DATA_ITEMS
@@ -63,45 +62,45 @@ const int IN_SW_GSEC_DIS_ADM			= 26;	// display user(s) with admin info
 
 static const struct Switches::in_sw_tab_t gsec_in_sw_table [] =
 {
-    {IN_SW_GSEC_ADD,				0,						"ADD",		0, 0, 0, false,	0,	1, NULL},	// add user
-    {IN_SW_GSEC_UID,				isc_spb_sec_userid,		"UID",		0, 0, 0, false,	0,	1, NULL},	// user's ID
-    {IN_SW_GSEC_GID,				isc_spb_sec_groupid,	"GID",		0, 0, 0, false,	0,	2, NULL},	// user's group ID
-    {IN_SW_GSEC_SYSUSER,			0,						"SYSUSER",	0, 0, 0, false,	0,	1, NULL},	// sys_user's name
-    {IN_SW_GSEC_GROUP,				isc_spb_sec_groupname,	"GROUP",	0, 0, 0, false,	0,	2, NULL},	// user's group name
-    {IN_SW_GSEC_PASSWORD,			isc_spb_sec_password,	"PW",		0, 0, 0, false,	0,	2, NULL},	// user's password
-    {IN_SW_GSEC_FNAME,				isc_spb_sec_firstname,	"FNAME",	0, 0, 0, false,	0,	1, NULL},	// user's first name
-    {IN_SW_GSEC_MNAME,				isc_spb_sec_middlename,	"MNAME",	0, 0, 0, false,	0,	2, NULL},	// user's middle name/initial
-    {IN_SW_GSEC_LNAME,				isc_spb_sec_lastname,	"LNAME",	0, 0, 0, false,	0,	1, NULL},	// user's last name
-    {IN_SW_GSEC_DEL,				0,						"DELETE",	0, 0, 0, false,	0,	2, NULL},	// delete user
-	{IN_SW_GSEC_DIS,				0,					"OLD_DISPLAY",	0, 0, 0, false, 0, 11, NULL},   // Display user(s) without admin info
-    {IN_SW_GSEC_DIS_ADM,			0,						"DISPLAY",	0, 0, 0, false,	0,	2, NULL},	// display user(s) with admin info
-    {IN_SW_GSEC_MOD,				0,						"MODIFY",	0, 0, 0, false,	0,	2, NULL},	// modify user
-    {IN_SW_GSEC_QUIT,				0,						"QUIT",		0, 0, 0, false,	0,	1, NULL},	// exit command line interface
-    {IN_SW_GSEC_HELP,				0,						"HELP",		0, 0, 0, false,	0,	1, NULL},	// print help
-    {IN_SW_GSEC_Z,					0,						"Z",		0, 0, 0, false,	0,	1, NULL},	// version
-    {IN_SW_GSEC_DATABASE,			isc_spb_dbname,			"DATABASE",	0, 0, 0, false,	0,	2, NULL},	// specify database to use
-    {IN_SW_GSEC_DBA_USER_NAME,		0,						"USER",		0, 0, 0, false,	0,	1, NULL},	// Database Admin. User name
-    {IN_SW_GSEC_DBA_PASSWORD, 		0,						"PASSWORD",	0, 0, 0, false,	0,	2, NULL},	// Database Admin. Password
-    {IN_SW_GSEC_FETCH_PASSWORD,		0,				"FETCH_PASSWORD",	0, 0, 0, false, 0,	2, NULL},	// Fetch Database Admin. Password
-    {IN_SW_GSEC_SQL_ROLE_NAME,		isc_spb_sql_role_name,	"ROLE",		0, 0, 0, false,	0,	2, NULL},	// SQL Role to assume
+    {IN_SW_GSEC_ADD,				0,						"ADD",		0, 0, 0, false,	false, 0,	1, NULL},	// add user
+    {IN_SW_GSEC_UID,				isc_spb_sec_userid,		"UID",		0, 0, 0, false,	false,	0,	1, NULL},	// user's ID
+    {IN_SW_GSEC_GID,				isc_spb_sec_groupid,	"GID",		0, 0, 0, false,	false,	0,	2, NULL},	// user's group ID
+    {IN_SW_GSEC_SYSUSER,			0,						"SYSUSER",	0, 0, 0, false,	false,	0,	1, NULL},	// sys_user's name
+    {IN_SW_GSEC_GROUP,				isc_spb_sec_groupname,	"GROUP",	0, 0, 0, false,	false,	0,	2, NULL},	// user's group name
+    {IN_SW_GSEC_PASSWORD,			isc_spb_sec_password,	"PW",		0, 0, 0, false,	false,	0,	2, NULL},	// user's password
+    {IN_SW_GSEC_FNAME,				isc_spb_sec_firstname,	"FNAME",	0, 0, 0, false,	false,	0,	1, NULL},	// user's first name
+    {IN_SW_GSEC_MNAME,				isc_spb_sec_middlename,	"MNAME",	0, 0, 0, false,	false,	0,	2, NULL},	// user's middle name/initial
+    {IN_SW_GSEC_LNAME,				isc_spb_sec_lastname,	"LNAME",	0, 0, 0, false,	false,	0,	1, NULL},	// user's last name
+    {IN_SW_GSEC_DEL,				0,						"DELETE",	0, 0, 0, false,	false,	0,	2, NULL},	// delete user
+	{IN_SW_GSEC_DIS,				0,					"OLD_DISPLAY",	0, 0, 0, false,	false, 0, 11, NULL},   // Display user(s) without admin info
+    {IN_SW_GSEC_DIS_ADM,			0,						"DISPLAY",	0, 0, 0, false,	false,	0,	2, NULL},	// display user(s) with admin info
+    {IN_SW_GSEC_MOD,				0,						"MODIFY",	0, 0, 0, false,	false,	0,	2, NULL},	// modify user
+    {IN_SW_GSEC_QUIT,				0,						"QUIT",		0, 0, 0, false,	false,	0,	1, NULL},	// exit command line interface
+    {IN_SW_GSEC_HELP,				0,						"HELP",		0, 0, 0, false,	false,	0,	1, NULL},	// print help
+    {IN_SW_GSEC_Z,					0,						"Z",		0, 0, 0, false,	false,	0,	1, NULL},	// version
+    {IN_SW_GSEC_DATABASE,			isc_spb_dbname,			"DATABASE",	0, 0, 0, false,	false,	0,	2, NULL},	// specify database to use
+    {IN_SW_GSEC_DBA_USER_NAME,		0,						"USER",		0, 0, 0, false,	false,	0,	1, NULL},	// Database Admin. User name
+    {IN_SW_GSEC_DBA_PASSWORD, 		0,						"PASSWORD",	0, 0, 0, false,	false,	0,	2, NULL},	// Database Admin. Password
+    {IN_SW_GSEC_FETCH_PASSWORD,		0,				"FETCH_PASSWORD",	0, 0, 0, false,	false, 0,	2, NULL},	// Fetch Database Admin. Password
+    {IN_SW_GSEC_SQL_ROLE_NAME,		isc_spb_sql_role_name,	"ROLE",		0, 0, 0, false,	false,	0,	2, NULL},	// SQL Role to assume
 #ifdef TRUSTED_AUTH
-	{IN_SW_GSEC_TRUSTED_AUTH,		0,						"TRUSTED",	0, 0, 0, false,	0,	1, NULL},	// Database Admin. Trusted User name
+	{IN_SW_GSEC_TRUSTED_AUTH,		0,						"TRUSTED",	0, 0, 0, false,	false,	0,	1, NULL},	// Database Admin. Trusted User name
 #endif
-	{IN_SW_GSEC_MAPPING,			0,						"MAPPING",	0, 0, 0, false, 0,	2, NULL},	// Change mapping of domain admins to sysdba in sec. DB
-	{IN_SW_GSEC_ADMIN,				isc_spb_sec_admin,		"ADMIN",	0, 0, 0, false, 0,  3, NULL},   // Grant/revoke RDB$ADMIN in security database
-    {IN_SW_GSEC_0,					0,						NULL,		0, 0, 0, false,	0,	0, NULL}	// End of List
+	{IN_SW_GSEC_MAPPING,			0,						"MAPPING",	0, 0, 0, false,	false, 0,	2, NULL},	// Change mapping of domain admins to sysdba in sec. DB
+	{IN_SW_GSEC_ADMIN,				isc_spb_sec_admin,		"ADMIN",	0, 0, 0, false,	false, 0,  3, NULL},   // Grant/revoke RDB$ADMIN in security database
+    {IN_SW_GSEC_0,					0,						NULL,		0, 0, 0, false,	false,	0,	0, NULL}	// End of List
 };
 
 // Used in svc.cpp only
 static const struct Switches::in_sw_tab_t gsec_action_in_sw_table [] =
 {
-    {IN_SW_GSEC_ADD,		isc_action_svc_add_user,		"ADD",		0, 0, 0, false,	0,	1, NULL},	// add user
-    {IN_SW_GSEC_DEL,		isc_action_svc_delete_user,		"DELETE",	0, 0, 0, false,	0,	2, NULL},	// delete user
-    {IN_SW_GSEC_MOD,		isc_action_svc_modify_user,		"MODIFY",	0, 0, 0, false,	0,	2, NULL},	// modify user
-    {IN_SW_GSEC_DIS,		isc_action_svc_display_user, "OLD_DISPLAY",	0, 0, 0, false,	0, 11, NULL},	// display user(s) without admin
-    {IN_SW_GSEC_MAPPING,	isc_action_svc_set_mapping,		"MAP SET",	0, 0, 0, false,	0,	2, NULL},	// map admins
-    {IN_SW_GSEC_MAPPING,	isc_action_svc_drop_mapping,	"MAP DROP",	0, 0, 0, false,	0,	2, NULL},	// map admins
-    {IN_SW_GSEC_DIS_ADM,	isc_action_svc_display_user_adm,"DISPLAY",	0, 0, 0, false,	0,	2, NULL},	// display user(s) with admin
-    {IN_SW_GSEC_0,			0,								NULL,		0, 0, 0, false,	0,	0, NULL}	// End of List
+    {IN_SW_GSEC_ADD,		isc_action_svc_add_user,		"ADD",		0, 0, 0, false,	false,	0,	1, NULL},	// add user
+    {IN_SW_GSEC_DEL,		isc_action_svc_delete_user,		"DELETE",	0, 0, 0, false,	false,	0,	2, NULL},	// delete user
+    {IN_SW_GSEC_MOD,		isc_action_svc_modify_user,		"MODIFY",	0, 0, 0, false,	false,	0,	2, NULL},	// modify user
+    {IN_SW_GSEC_DIS,		isc_action_svc_display_user, "OLD_DISPLAY",	0, 0, 0, false,	false,	0, 11, NULL},	// display user(s) without admin
+    {IN_SW_GSEC_MAPPING,	isc_action_svc_set_mapping,		"MAP SET",	0, 0, 0, false,	false,	0,	2, NULL},	// map admins
+    {IN_SW_GSEC_MAPPING,	isc_action_svc_drop_mapping,	"MAP DROP",	0, 0, 0, false,	false,	0,	2, NULL},	// map admins
+    {IN_SW_GSEC_DIS_ADM,	isc_action_svc_display_user_adm,"DISPLAY",	0, 0, 0, false,	false,	0,	2, NULL},	// display user(s) with admin
+    {IN_SW_GSEC_0,			0,								NULL,		0, 0, 0, false,	false,	0,	0, NULL}	// End of List
 };
 #endif // GSEC_GSECSWI_H

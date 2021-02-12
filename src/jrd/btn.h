@@ -276,15 +276,6 @@ struct IndexJumpNode
 	UCHAR* writeJumpNode(UCHAR* pagePointer);
 };
 
-struct dynKey
-{
-	USHORT keyLength;
-	UCHAR* keyData;
-};
-
-typedef Firebird::HalfStaticArray<dynKey*, 32> keyList;
-typedef Firebird::HalfStaticArray<IndexJumpNode, 32> jumpNodeList;
-
 } // namespace Jrd
 
 #endif // JRD_BTN_H

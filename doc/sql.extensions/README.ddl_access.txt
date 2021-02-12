@@ -25,9 +25,6 @@ Makes it possible to grant and revoke privileges on DDL operations.
 
 DDL operations for managing triggers and indices re-use table privileges.
 
-If ANY keyword is used a user will be able to perform operation on any object. Otherwise only on object which he owns.
-If ANY keyword was used due GRANT operation it also must be used in according REVOKE operation.
-
 Sample:
 
 GRANT CREATE TABLE TO Joe;

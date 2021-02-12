@@ -1,3 +1,6 @@
+[![Build Status](https://travis-ci.org/FirebirdSQL/firebird.svg?branch=master)](https://travis-ci.org/FirebirdSQL/firebird)
+[![Build Status](https://ci.appveyor.com/api/projects/status/github/FirebirdSQL/firebird?branch=master&svg=true)](https://ci.appveyor.com/project/FirebirdSQL/firebird)
+
 # Firebird README
 
 Firebird is a relational database offering many ANSI SQL standard features that runs on Linux, Windows, MacOS and a variety of Unix platforms. Firebird offers excellent concurrency, high performance, and powerful language support for stored procedures and triggers. It has been used in production systems, under a variety of names, since 1981.
@@ -8,7 +11,6 @@ The Firebird Project is a commercially independent project of C/C++ programmers,
 
 * http://www.firebirdsql.org/
 * http://www.firebirdsql.org/en/historical-reference/
-* http://www.firebirdsql.org/en/licensing/
 * http://www.firebirdsql.org/en/features/
 
 ## Documentation
@@ -27,6 +29,9 @@ The source code is released under variants of the Mozilla Public Licence 1.1 (MP
 
 The source code can be found at:  
 https://github.com/FirebirdSQL/firebird
+
+Build instructions are here:
+http://www.firebirdsql.org/en/building-the-code/
 
 Bugs and feature requests should be submitted at:  
 http://tracker.firebirdsql.org/

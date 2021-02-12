@@ -42,6 +42,7 @@
 #include "gen/iberror.h"
 #include "../jrd/intl.h"
 #include "../common/gdsassert.h"
+#include "../common/TimeZoneUtil.h"
 #include "../jrd/cvt_proto.h"
 #include "../common/dsc_proto.h"
 #include "../jrd/err_proto.h"
@@ -136,7 +137,7 @@ double CVT_date_to_double(const dsc* desc)
 			temp_desc.dsc_length = sizeof(temp);
 			date = temp;
 			temp_desc.dsc_address = (UCHAR*) date;
-			CVT_move(desc, &temp_desc);
+			CVT_move(desc, &temp_desc, 0);
 		}
 	}
 
@@ -173,7 +174,14 @@ void CVT_double_to_date(double real, SLONG fixed[2])
 }
 
 
-UCHAR CVT_get_numeric(const UCHAR* string, const USHORT length, SSHORT* scale, double* ptr)
+static void error_swallow(const Arg::StatusVector& v)
+{
+	thread_db* tdbb = JRD_get_thread_data();
+	v.copyTo(tdbb->tdbb_status_vector);
+}
+
+
+UCHAR CVT_get_numeric(const UCHAR* string, const USHORT length, SSHORT* scale, void* ptr)
 {
 /**************************************
  *
@@ -207,7 +215,7 @@ UCHAR CVT_get_numeric(const UCHAR* string, const USHORT length, SSHORT* scale, d
 
 	SINT64 value = 0;
 	SSHORT local_scale = 0, sign = 0;
-	bool digit_seen = false, fraction = false;
+	bool digit_seen = false, fraction = false, over = false;
 
 	const UCHAR* p = string;
 	const UCHAR* const end = p + length;
@@ -222,19 +230,20 @@ UCHAR CVT_get_numeric(const UCHAR* string, const USHORT length, SSHORT* scale, d
 			// tricky: the value doesn't always become negative after an
 			// overflow!
 
-			if (value >= NUMERIC_LIMIT)
+			if (!over)
 			{
-				// possibility of an overflow
-				if (value > NUMERIC_LIMIT)
-					break;
+				if (value >= NUMERIC_LIMIT)
+				{
+					// possibility of an overflow
+					if ((value > NUMERIC_LIMIT) || (*p > '8' && sign == -1) || (*p > '7' && sign != -1))
+						over = true;
+				}
 
-				if ((*p > '8' && sign == -1) || (*p > '7' && sign != -1))
-					break;
+				// Force the subtraction to be performed before the addition,
+				// thus preventing a possible signed arithmetic overflow.
+				value = value * 10 + (*p - '0');
 			}
 
-			// Force the subtraction to be performed before the addition,
-			// thus preventing a possible signed arithmetic overflow.
-			value = value * 10 + (*p - '0');
 			if (fraction)
 				--local_scale;
 		}
@@ -258,15 +267,36 @@ UCHAR CVT_get_numeric(const UCHAR* string, const USHORT length, SSHORT* scale, d
 	if (!digit_seen)
 		CVT_conversion_error(&desc, ERR_post);
 
-	if ((p < end) ||			// there is an exponent
-		((value < 0) && (sign != -1))) // MAX_SINT64+1 wrapped around
-	{
-		// convert to double
-		*ptr = CVT_get_double(&desc, ERR_post);
-		return dtype_double;
-	}
+	if ((local_scale > MAX_SCHAR) || (local_scale < MIN_SCHAR))
+		over = true;
 
 	*scale = local_scale;
+
+	if ((!over) && ((p < end) ||		// there is an exponent
+		((value < 0) && (sign != -1)))) // MAX_SINT64+1 wrapped around
+	{
+		// convert to double
+		*(double*) ptr = CVT_get_double(&desc, 0, ERR_post, &over);
+		if (!over)
+			return dtype_double;
+	}
+
+	if (over)
+	{
+		thread_db* tdbb = JRD_get_thread_data();
+
+		tdbb->tdbb_status_vector->init();
+		*scale = CVT_decompose(reinterpret_cast<const char*>(string), length, (Int128*) ptr, error_swallow);
+		if (*scale >= MIN_SCHAR && *scale <= MAX_SCHAR &&
+			(!(tdbb->tdbb_status_vector->getState() & IStatus::STATE_ERRORS)))
+		{
+			return dtype_int128;
+		}
+		tdbb->tdbb_status_vector->init();
+
+		*(Decimal128*) ptr = CVT_get_dec128(&desc, tdbb->getAttachment()->att_dec_status, ERR_post);
+		return dtype_dec128;
+	}
 
 	// The literal has already been converted to a 64-bit integer: return
 	// a long if the value fits into a long, else return an int64.
@@ -313,7 +343,7 @@ GDS_DATE CVT_get_sql_date(const dsc* desc)
 	memset(&temp_desc, 0, sizeof(temp_desc));
 	temp_desc.dsc_dtype = dtype_sql_date;
 	temp_desc.dsc_address = (UCHAR *) &value;
-	CVT_move(desc, &temp_desc);
+	CVT_move(desc, &temp_desc, 0);
 	return value;
 }
 
@@ -338,7 +368,32 @@ GDS_TIME CVT_get_sql_time(const dsc* desc)
 	memset(&temp_desc, 0, sizeof(temp_desc));
 	temp_desc.dsc_dtype = dtype_sql_time;
 	temp_desc.dsc_address = (UCHAR *) &value;
-	CVT_move(desc, &temp_desc);
+	CVT_move(desc, &temp_desc, 0);
+	return value;
+}
+
+
+ISC_TIME_TZ CVT_get_sql_time_tz(const dsc* desc)
+{
+/**************************************
+ *
+ *      C V T _ g e t _ s q l _ t i m e _ t z
+ *
+ **************************************
+ *
+ * Functional description
+ *      Convert something arbitrary to a SQL time with time zone value
+ *
+ **************************************/
+	if (desc->dsc_dtype == dtype_sql_time_tz)
+		return *((ISC_TIME_TZ*) desc->dsc_address);
+
+	DSC temp_desc;
+	ISC_TIME_TZ value;
+	memset(&temp_desc, 0, sizeof(temp_desc));
+	temp_desc.dsc_dtype = dtype_sql_time_tz;
+	temp_desc.dsc_address = (UCHAR*) &value;
+	CVT_move(desc, &temp_desc, 0);
 	return value;
 }
 
@@ -363,7 +418,32 @@ GDS_TIMESTAMP CVT_get_timestamp(const dsc* desc)
 	memset(&temp_desc, 0, sizeof(temp_desc));
 	temp_desc.dsc_dtype = dtype_timestamp;
 	temp_desc.dsc_address = (UCHAR *) &value;
-	CVT_move(desc, &temp_desc);
+	CVT_move(desc, &temp_desc, 0);
+	return value;
+}
+
+
+ISC_TIMESTAMP_TZ CVT_get_timestamp_tz(const dsc* desc)
+{
+/**************************************
+ *
+ *      C V T _ g e t _ t i m e s t a m p _ t z
+ *
+ **************************************
+ *
+ * Functional description
+ *      Convert something arbitrary to a SQL timestamp with time zone
+ *
+ **************************************/
+	if (desc->dsc_dtype == dtype_timestamp_tz)
+		return *((ISC_TIMESTAMP_TZ*) desc->dsc_address);
+
+	DSC temp_desc;
+	ISC_TIMESTAMP_TZ value;
+	memset(&temp_desc, 0, sizeof(temp_desc));
+	temp_desc.dsc_dtype = dtype_timestamp_tz;
+	temp_desc.dsc_address = (UCHAR*) &value;
+	CVT_move(desc, &temp_desc, 0);
 	return value;
 }
 
@@ -394,7 +474,7 @@ bool EngineCallbacks::transliterate(const dsc* from, dsc* to, CHARSET_ID& charse
 		(charset2 != ttype_binary) &&
 		(charset1 != ttype_dynamic) && (charset2 != ttype_dynamic))
 	{
-		INTL_convert_string(to, from, err);
+		INTL_convert_string(to, from, this);
 		return true;
 	}
 
@@ -416,25 +496,69 @@ void EngineCallbacks::validateData(CharSet* toCharSet, SLONG length, const UCHAR
 }
 
 
-void EngineCallbacks::validateLength(CharSet* toCharSet, SLONG toLength, const UCHAR* start,
-	const USHORT to_size)
+ULONG EngineCallbacks::validateLength(CharSet* charSet, CHARSET_ID charSetId, ULONG length, const UCHAR* start,
+	const USHORT size)
 {
-	if (toCharSet)
+	fb_assert(charSet);
+
+	if (charSet && (charSet->isMultiByte() || length > size))
 	{
-		Jrd::thread_db* tdbb = NULL;
-		SET_TDBB(tdbb);
+		const ULONG srcCharLength = charSet->length(length, start, true);
+		const ULONG destCharLength = (ULONG) size / charSet->maxBytesPerChar();
 
-		const ULONG src_len = toCharSet->length(toLength, start, false);
-		const ULONG dest_len  = (ULONG) to_size / toCharSet->maxBytesPerChar();
-
-		if (toCharSet->isMultiByte() &&
-			!(toCharSet->getFlags() & CHARSET_LEGACY_SEMANTICS) &&
-			src_len > dest_len)
+		if (srcCharLength > destCharLength)
 		{
-			err(Arg::Gds(isc_arith_except) << Arg::Gds(isc_string_truncation) <<
-				Arg::Gds(isc_trunc_limits) << Arg::Num(dest_len) << Arg::Num(src_len));
+			const ULONG spaceByteLength = charSet->getSpaceLength();
+			const ULONG trimmedByteLength = charSet->removeTrailingSpaces(length, start);
+			const ULONG trimmedCharLength = srcCharLength - (length - trimmedByteLength) / spaceByteLength;
+
+			if (trimmedCharLength <= destCharLength)
+				return trimmedByteLength + (destCharLength - trimmedCharLength) * spaceByteLength;
+			else
+			{
+				err(Arg::Gds(isc_arith_except) << Arg::Gds(isc_string_truncation) <<
+					Arg::Gds(isc_trunc_limits) << Arg::Num(destCharLength) << Arg::Num(srcCharLength));
+			}
 		}
 	}
+
+	return length;
+}
+
+
+ULONG TruncateCallbacks::validateLength(CharSet* charSet, CHARSET_ID charSetId, ULONG length, const UCHAR* start,
+	const USHORT size)
+{
+	fb_assert(charSet);
+
+	if (charSet && (charSet->isMultiByte() || length > size))
+	{
+		const ULONG srcCharLength = charSet->length(length, start, true);
+		const ULONG destCharLength = (ULONG) size / charSet->maxBytesPerChar();
+
+		if (srcCharLength > destCharLength)
+		{
+			const ULONG spaceByteLength = charSet->getSpaceLength();
+			const ULONG trimmedByteLength = charSet->removeTrailingSpaces(length, start);
+			const ULONG trimmedCharLength = srcCharLength - (length - trimmedByteLength) / spaceByteLength;
+
+			if (trimmedCharLength <= destCharLength)
+				return trimmedByteLength + (destCharLength - trimmedCharLength) * spaceByteLength;
+			else if (charSet->isMultiByte())
+			{
+				HalfStaticArray<UCHAR, BUFFER_SMALL, USHORT> buffer(size);
+				length = charSet->substring(
+					length, start, buffer.getCapacity(), buffer.begin(),
+					0, destCharLength);
+			}
+			else
+				length = size;
+
+			ERR_post_warning(Arg::Warning(isc_truncate_warn) << Arg::Warning(truncateReason));
+		}
+	}
+
+	return length;
 }
 
 
@@ -447,17 +571,43 @@ CHARSET_ID EngineCallbacks::getChid(const dsc* to)
 }
 
 
-SLONG EngineCallbacks::getCurDate()
+SLONG EngineCallbacks::getLocalDate()
 {
 	thread_db* tdbb = JRD_get_thread_data();
 
 	if (tdbb && (tdbb->getType() == ThreadData::tddDBB) && tdbb->getRequest())
 	{
-		fb_assert(!tdbb->getRequest()->req_timestamp.isEmpty());
-		return tdbb->getRequest()->req_timestamp.value().timestamp_date;
+		fb_assert(!tdbb->getRequest()->req_gmt_timestamp.isEmpty());
+		return tdbb->getRequest()->getLocalTimeStamp().value().timestamp_date;
 	}
 
-	return Firebird::TimeStamp::getCurrentTimeStamp().value().timestamp_date;
+	return TimeZoneUtil::timeStampTzToTimeStamp(
+		TimeZoneUtil::getCurrentSystemTimeStamp(), getSessionTimeZone()).timestamp_date;
+}
+
+
+ISC_TIMESTAMP EngineCallbacks::getCurrentGmtTimeStamp()
+{
+	thread_db* tdbb = JRD_get_thread_data();
+
+	if (tdbb && (tdbb->getType() == ThreadData::tddDBB) && tdbb->getRequest())
+	{
+		fb_assert(!tdbb->getRequest()->req_gmt_timestamp.isEmpty());
+		return tdbb->getRequest()->req_gmt_timestamp.value();
+	}
+
+	return TimeZoneUtil::timeStampTzToTimeStamp(TimeZoneUtil::getCurrentSystemTimeStamp(), TimeZoneUtil::GMT_ZONE);
+}
+
+
+USHORT EngineCallbacks::getSessionTimeZone()
+{
+	thread_db* tdbb = JRD_get_thread_data();
+
+	if (tdbb && (tdbb->getType() == ThreadData::tddDBB) && tdbb->getAttachment())
+		return tdbb->getAttachment()->att_current_timezone;
+
+	return TimeZoneUtil::GMT_ZONE;
 }
 
 

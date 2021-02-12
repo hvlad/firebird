@@ -21,16 +21,16 @@
  */
 
 #include "firebird.h"
-#include "consts_pub.h"
+#include "firebird/impl/consts_pub.h"
 #include "iberror.h"
 #include "../yvalve/PluginManager.h"
 #include "../yvalve/MasterImplementation.h"
 
-#include "../dsql/sqlda_pub.h"
+#include "firebird/impl/sqlda_pub.h"
 #include "../yvalve/why_proto.h"
 
 #include "../common/os/path_utils.h"
-#include "../jrd/err_proto.h"
+#include "../common/StatusArg.h"
 #include "../common/isc_proto.h"
 #include "../common/classes/fb_string.h"
 #include "../common/classes/init.h"
@@ -95,7 +95,7 @@ namespace
 	};
 	InitInstance<StaticConfHolder> pluginsConf;
 
-	RefPtr<ConfigFile> findConfig(const char* param, const char* pluginName)
+	RefPtr<ConfigFile> findInPluginsConf(const char* param, const char* pluginName)
 	{
 		ConfigFile* f = pluginsConf().get();
 		if (f)
@@ -140,17 +140,6 @@ namespace
 		}
 
 		IConfig* getSubConfig(CheckStatusWrapper* status);
-
-		int release()
-		{
-			if (--refCounter == 0)
-			{
-				delete this;
-				return 0;
-			}
-
-			return 1;
-		}
 
 	private:
 		RefPtr<IReferenceCounted> cf;
@@ -220,17 +209,6 @@ namespace
 			return NULL;
 		}
 
-		int release()
-		{
-			if (--refCounter == 0)
-			{
-				delete this;
-				return 0;
-			}
-
-			return 1;
-		}
-
 	private:
 		RefPtr<ConfigFile> confFile;
 
@@ -266,16 +244,26 @@ namespace
 		return NULL;
 	}
 
-	IConfig* findDefConfig(ConfigFile* defaultConfig, const PathName& confName)
+	IConfig* findPluginConfig(ConfigFile* pluginLoaderConfig, const PathName& confName)
 	{
 		LocalStatus ls;
 		CheckStatusWrapper s(&ls);
-		if (defaultConfig)
+
+		if (pluginLoaderConfig)
 		{
-			const ConfigFile::Parameter* p = defaultConfig->findParameter("Config");
-			IConfig* rc = FB_NEW ConfigAccess(p ? findConfig("Config", p->value.c_str()) : RefPtr<ConfigFile>(NULL));
-			rc->addRef();
-			return rc;
+			const ConfigFile::Parameter* p = pluginLoaderConfig->findParameter("Config");
+
+			if (p)
+			{
+				RefPtr<ConfigFile> configSection(findInPluginsConf("Config", p->value.c_str()));
+
+				if (configSection.hasData())
+				{
+					IConfig* rc = FB_NEW ConfigAccess(configSection);
+					rc->addRef();
+					return rc;
+				}
+			}
 		}
 
 		IConfig* rc = PluginManagerInterfacePtr()->getConfig(&s, confName.nullStr());
@@ -379,6 +367,14 @@ namespace
 			}
 		}
 
+		void threadDetach()
+		{
+			if (cleanup)
+				cleanup->threadDetach();
+			if (next)
+				next->threadDetach();
+		}
+
 	private:
 		~PluginModule()
 		{
@@ -442,13 +438,13 @@ namespace
 		ConfiguredPlugin(RefPtr<PluginModule> pmodule, unsigned int preg,
 						 RefPtr<ConfigFile> pconfig, const PathName& pconfName,
 						 const PathName& pplugName)
-			: module(pmodule), regPlugin(preg), defaultConfig(pconfig),
+			: module(pmodule), regPlugin(preg), pluginLoaderConfig(pconfig),
 			  confName(getPool(), pconfName), plugName(getPool(), pplugName),
 			  delay(DEFAULT_DELAY)
 		{
-			if (defaultConfig.hasData())
+			if (pluginLoaderConfig.hasData())
 			{
-				const ConfigFile::Parameter* p = defaultConfig->findParameter("ConfigFile");
+				const ConfigFile::Parameter* p = pluginLoaderConfig->findParameter("ConfigFile");
 				if (p && p->value.hasData())
 				{
 					confName = p->value.ToPathName();
@@ -472,7 +468,7 @@ namespace
 
 		IConfig* getDefaultConfig()
 		{
-			return findDefConfig(defaultConfig, confName);
+			return findPluginConfig(pluginLoaderConfig, confName);
 		}
 
 		const PluginModule* getPluggedModule() const throw()
@@ -481,8 +477,6 @@ namespace
 		}
 
 		IPluginBase* factory(IFirebirdConf *iFirebirdConf);
-
-		~ConfiguredPlugin();
 
 		const char* getPlugName()
 		{
@@ -507,11 +501,13 @@ namespace
 		{ }
 
 		int release();
-
 	private:
+		~ConfiguredPlugin() {}
+		void destroy();
+
 		RefPtr<PluginModule> module;
 		unsigned int regPlugin;
-		RefPtr<ConfigFile> defaultConfig;
+		RefPtr<ConfigFile> pluginLoaderConfig;
 		PathName confName;
 		PathName plugName;
 
@@ -553,7 +549,7 @@ namespace
 			{
 				if (!firebirdConf.hasData())
 				{
-					RefPtr<Config> specificConf(Config::getDefaultConfig());
+					RefPtr<const Config> specificConf(Config::getDefaultConfig());
 					firebirdConf = FB_NEW FirebirdConf(specificConf);
 				}
 
@@ -570,17 +566,6 @@ namespace
 		void setReleaseDelay(CheckStatusWrapper*, ISC_UINT64 microSeconds)
 		{
 			configuredPlugin->setReleaseDelay(microSeconds);
-		}
-
-		int release()
-		{
-			if (--refCounter == 0)
-			{
-				delete this;
-				return 0;
-			}
-
-			return 1;
 		}
 
 	private:
@@ -670,8 +655,15 @@ namespace
 
 	GlobalPtr<PluginsMap> plugins;
 
-	ConfiguredPlugin::~ConfiguredPlugin()
+	void ConfiguredPlugin::destroy()
 	{
+		// plugins->mutex must be entered by current thread
+
+#ifdef DEV_BUILD
+		if (!plugins->mutex.tryEnter(FB_FUNCTION))
+			fb_assert(false);
+		plugins->mutex.leave();
+#endif
 		if (!destroyingPluginsMap)
 		{
 			plugins->remove(MapKey(module->getPlugin(regPlugin).type, plugName));
@@ -691,6 +683,33 @@ namespace
 #endif
 	}
 
+	int ConfiguredPlugin::release()
+	{
+		int x = --refCounter;
+
+#ifdef DEBUG_PLUGINS
+		fprintf(stderr, "ConfiguredPlugin::release %s %d\n", plugName.c_str(), x);
+#endif
+
+		if (x == 0)
+		{
+			{ // plugins->mutex scope
+				MutexLockGuard g(plugins->mutex, FB_FUNCTION);
+				if (refCounter != 0)
+					return 1;
+
+				destroy();
+			}
+
+			// Must run out of mutex scope to avoid deadlock with PluginManager::threadDetach()
+			// called when module is unloaded by dtor
+			delete this;
+			return 0;
+		}
+
+		return 1;
+	}
+
 	PluginModule* modules = NULL;
 
 	PluginModule* current = NULL;
@@ -704,25 +723,6 @@ namespace
 			next->prev = &next;
 		}
 		*prev = this;
-	}
-
-	int ConfiguredPlugin::release()
-	{
-		MutexLockGuard g(plugins->mutex, FB_FUNCTION);
-
-		int x = --refCounter;
-
-#ifdef DEBUG_PLUGINS
-		fprintf(stderr, "ConfiguredPlugin::release %s %d\n", plugName.c_str(), x);
-#endif
-
-		if (x == 0)
-		{
-			delete this;
-			return 0;
-		}
-
-		return 1;
 	}
 
 	struct PluginLoadInfo
@@ -739,7 +739,7 @@ namespace
 			required = false;
 
 			// and try to load them from conf file
-			conf = findConfig("Plugin", pluginName);
+			conf = findInPluginsConf("Plugin", pluginName);
 
 			if (conf.hasData())
 			{
@@ -814,17 +814,6 @@ namespace
 			check(&statusWrapper);
 		}
 
-		int release()
-		{
-			if (--refCounter == 0)
-			{
-				delete this;
-				return 0;
-			}
-
-			return 1;
-		}
-
 	private:
 		unsigned int interfaceType;
 		PathName namesList;
@@ -860,6 +849,10 @@ namespace
 				currentPlugin = NULL;
 			}
 
+			// Avoid concurrent load of the same module
+			static Static<Mutex> loadModuleMutex;
+			MutexLockGuard lmGuard(*(&loadModuleMutex), FB_FUNCTION);
+
 			MutexLockGuard g(plugins->mutex, FB_FUNCTION);
 
 			while (currentName.getWord(namesList, " \t,;"))
@@ -879,6 +872,7 @@ namespace
 				RefPtr<PluginModule> m(modules->findModule(info.curModule));
 				if (!m.hasData() && !flShutdown)
 				{
+					MutexUnlockGuard cout(plugins->mutex, FB_FUNCTION);
 					m = loadModule(info);
 				}
 				if (!m.hasData())
@@ -908,24 +902,30 @@ namespace
 	RefPtr<PluginModule> PluginSet::loadModule(const PluginLoadInfo& info)
 	{
 		PathName fixedModuleName(info.curModule);
+		ISC_STATUS_ARRAY statusArray;
 
-		ModuleLoader::Module* module = ModuleLoader::loadModule(fixedModuleName);
+		ModuleLoader::Module* module = nullptr;
+		int step = 0;
+		bool bad = false;
 
-		if (!module && !ModuleLoader::isLoadableModule(fixedModuleName))
+		do
 		{
-			ModuleLoader::doctorModuleExtension(fixedModuleName);
-			module = ModuleLoader::loadModule(fixedModuleName);
-		}
+			module = ModuleLoader::loadModule(statusArray, fixedModuleName);
+		} while (module == nullptr && // break on success
+				 !(bad = ModuleLoader::isLoadableModule(fixedModuleName)) && // Break if module is found but is bad
+				 ModuleLoader::doctorModuleExtension(fixedModuleName, step)); // Break if no further modifications of name is available
 
 		if (!module)
 		{
-			if (ModuleLoader::isLoadableModule(fixedModuleName))
+			if (bad)
 			{
-				loadError(Arg::Gds(isc_pman_module_bad) << fixedModuleName);
+				loadError(Arg::Gds(isc_pman_module_bad) << fixedModuleName <<
+					Arg::StatusVector(statusArray));
 			}
 			if (info.required)
 			{
-				loadError(Arg::Gds(isc_pman_module_notfound) << fixedModuleName);
+				loadError(Arg::Gds(isc_pman_module_notfound) << fixedModuleName <<
+					Arg::StatusVector(statusArray));
 			}
 
 			return RefPtr<PluginModule>(NULL);
@@ -934,7 +934,8 @@ namespace
 		RefPtr<PluginModule> rc(FB_NEW PluginModule(module, info.curModule));
 		typedef void PluginEntrypoint(IMaster* masterInterface);
 		PluginEntrypoint* startModule;
-		if (module->findSymbol(STRINGIZE(FB_PLUGIN_ENTRY_POINT), startModule))
+		ISC_STATUS_ARRAY stArray;
+		if (module->findSymbol(stArray, STRINGIZE(FB_PLUGIN_ENTRY_POINT), startModule))
 		{
 			current = rc;
 			startModule(masterInterface);
@@ -942,7 +943,7 @@ namespace
 			return rc;
 		}
 
-		loadError(Arg::Gds(isc_pman_entrypoint_notfound) << fixedModuleName);
+		loadError(Arg::Gds(isc_pman_entrypoint_notfound) << fixedModuleName << Arg::StatusVector(stArray));
 		return RefPtr<PluginModule>(NULL);	// compiler warning silencer
 	}
 
@@ -1019,7 +1020,7 @@ void PluginManager::registerPluginFactory(unsigned int interfaceType, const char
 		changeExtension(plugConfigFile, "conf");
 
 		ConfiguredPlugin* p = FB_NEW ConfiguredPlugin(RefPtr<PluginModule>(builtin), r,
-									findConfig("Plugin", defaultName), plugConfigFile, defaultName);
+			findInPluginsConf("Plugin", defaultName), plugConfigFile, defaultName);
 		p->addRef();  // Will never be unloaded
 		plugins->put(MapKey(interfaceType, defaultName), p);
 	}
@@ -1057,7 +1058,7 @@ void PluginManager::unregisterModule(IPluginModule* cleanup)
 		Firebird::dDllUnloadTID = GetCurrentThreadId();
 #endif
 
-	fb_shutdown(5000, fb_shutrsn_exit_called);
+	fb_shutdown(10000, fb_shutrsn_exit_called);
 }
 
 IPluginSet* PluginManager::getPlugins(CheckStatusWrapper* status, unsigned int interfaceType,
@@ -1067,8 +1068,6 @@ IPluginSet* PluginManager::getPlugins(CheckStatusWrapper* status, unsigned int i
 	{
 		static InitMutex<BuiltinRegister> registerBuiltinPlugins("RegisterBuiltinPlugins");
 		registerBuiltinPlugins.init();
-
-		MutexLockGuard g(plugins->mutex, FB_FUNCTION);
 
 		IPluginSet* rc = FB_NEW PluginSet(interfaceType, namesList, firebirdConf);
 		rc->addRef();
@@ -1084,8 +1083,6 @@ IPluginSet* PluginManager::getPlugins(CheckStatusWrapper* status, unsigned int i
 
 void PluginManager::releasePlugin(IPluginBase* plugin)
 {
-	MutexLockGuard g(plugins->mutex, FB_FUNCTION);
-
 	IReferenceCounted* parent = plugin->getOwner();
 
 	if (plugin->release() == 0)
@@ -1094,6 +1091,8 @@ void PluginManager::releasePlugin(IPluginBase* plugin)
 		if (parent)
 		{
 			parent->release();
+
+			MutexLockGuard g(plugins->mutex, FB_FUNCTION);
 			if (plugins->wakeIt)
 			{
 				plugins->wakeIt->release();
@@ -1109,7 +1108,8 @@ IConfig* PluginManager::getConfig(CheckStatusWrapper* status, const char* filena
 	try
 	{
 		IConfig* rc = FB_NEW ConfigAccess(RefPtr<ConfigFile>(
-			FB_NEW_POOL(*getDefaultMemoryPool()) ConfigFile(*getDefaultMemoryPool(), filename)));
+			FB_NEW_POOL(*getDefaultMemoryPool()) ConfigFile(*getDefaultMemoryPool(),
+				filename, ConfigFile::HAS_SUB_CONF)));
 		rc->addRef();
 		return rc;
 	}
@@ -1158,21 +1158,31 @@ void PluginManager::waitForType(unsigned int typeThatMustGoAway)
 	}
 }
 
+void PluginManager::threadDetach()
+{
+	MutexLockGuard g(plugins->mutex, FB_FUNCTION);
+	if (modules)
+		modules->threadDetach();
+}
+
+
 }	// namespace Firebird
 
 namespace {
 
-class DirCache
+class DataCache
 {
 public:
-	explicit DirCache(MemoryPool &p)
-		: cache(p)
+	explicit DataCache(MemoryPool &p)
+		: cache(p), db(p)
 	{
 		cache.resize(IConfigManager::DIR_COUNT);
 		for (unsigned i = 0; i < IConfigManager::DIR_COUNT; ++i)
 		{
 			cache[i] = fb_utils::getPrefix(i, "");
 		}
+
+		db = fb_utils::getPrefix(IConfigManager::DIR_SECDB, "security4.fdb");
 	}
 
 	const char* getDir(unsigned code)
@@ -1181,11 +1191,17 @@ public:
 		return cache[code].c_str();
 	}
 
+	const char* getDb()
+	{
+		return db.c_str();
+	}
+
 private:
 	ObjectsArray<PathName> cache;
+	PathName db;
 };
 
-InitInstance<DirCache> dirCache;
+InitInstance<DataCache> dataCache;
 
 }	// anonymous namespace
 
@@ -1207,7 +1223,7 @@ public:
 	{
 		try
 		{
-			return dirCache().getDir(code);
+			return dataCache().getDir(code);
 		}
 		catch (const Exception&)
 		{
@@ -1221,7 +1237,7 @@ public:
 		{
 			// setup loadinfo
 			PluginLoadInfo info(pluginName);
-			return findDefConfig(info.conf, info.plugConfigFile);
+			return findPluginConfig(info.conf, info.plugConfigFile);
 		}
 		catch (const Exception&)
 		{
@@ -1246,7 +1262,7 @@ public:
 		try
 		{
 			PathName dummy;
-			Firebird::RefPtr<Config> config;
+			Firebird::RefPtr<const Firebird::Config> config;
 			expandDatabaseName(dbName, dummy, &config);
 
 			IFirebirdConf* firebirdConf = FB_NEW FirebirdConf(config);
@@ -1268,6 +1284,12 @@ public:
 	{
 		return rootDetector().getRootDirectory();
 	}
+
+	const char* getDefaultSecurityDb()
+	{
+		return dataCache().getDb();
+	}
+
 };
 
 static ConfigManager configManager;

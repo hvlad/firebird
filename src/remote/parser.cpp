@@ -25,16 +25,18 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
-#include "../jrd/ibase.h"
+#include "ibase.h"
 #include "../remote/remote.h"
 #include "../jrd/align.h"
 #include "../common/gdsassert.h"
 #include "../remote/parse_proto.h"
+#include "../common/DecFloat.h"
 
 #if !defined(DEV_BUILD) || (defined(DEV_BUILD) && defined(WIN_NT))
 #include "../yvalve/gds_proto.h"	// gds__log()
 #endif
 
+using namespace Firebird;
 
 static rem_fmt* parse_format(const UCHAR*& blr, size_t& blr_length);
 
@@ -156,7 +158,7 @@ static rem_fmt* parse_format(const UCHAR*& blr, size_t& blr_length)
 	USHORT count = *blr++;
 	count += (*blr++) << 8;
 
-	Firebird::AutoPtr<rem_fmt> format(FB_NEW rem_fmt(count));
+	AutoPtr<rem_fmt> format(FB_NEW rem_fmt(count));
 
 	ULONG net_length = 0;
 	ULONG offset = 0;
@@ -176,7 +178,6 @@ static rem_fmt* parse_format(const UCHAR*& blr, size_t& blr_length)
 			desc->dsc_dtype = dtype_text;
 			desc->dsc_length = *blr++;
 			desc->dsc_length += (*blr++) << 8;
-			align = type_alignments[dtype_text];
 			break;
 
 		case blr_varying:
@@ -186,7 +187,6 @@ static rem_fmt* parse_format(const UCHAR*& blr, size_t& blr_length)
 			desc->dsc_dtype = dtype_varying;
 			desc->dsc_length = *blr++ + sizeof(SSHORT);
 			desc->dsc_length += (*blr++) << 8;
-			align = type_alignments[dtype_varying];
 			break;
 
 		case blr_cstring:
@@ -196,7 +196,6 @@ static rem_fmt* parse_format(const UCHAR*& blr, size_t& blr_length)
 			desc->dsc_dtype = dtype_cstring;
 			desc->dsc_length = *blr++;
 			desc->dsc_length += (*blr++) << 8;
-			align = type_alignments[dtype_cstring];
 			break;
 
 			// Parse the tagged blr types correctly
@@ -210,7 +209,6 @@ static rem_fmt* parse_format(const UCHAR*& blr, size_t& blr_length)
 			desc->dsc_scale += (*blr++) << 8;
 			desc->dsc_length = *blr++;
 			desc->dsc_length += (*blr++) << 8;
-			align = type_alignments[dtype_text];
 			break;
 
 		case blr_varying2:
@@ -222,7 +220,6 @@ static rem_fmt* parse_format(const UCHAR*& blr, size_t& blr_length)
 			desc->dsc_scale += (*blr++) << 8;
 			desc->dsc_length = *blr++ + sizeof(SSHORT);
 			desc->dsc_length += (*blr++) << 8;
-			align = type_alignments[dtype_varying];
 			break;
 
 		case blr_cstring2:
@@ -234,7 +231,6 @@ static rem_fmt* parse_format(const UCHAR*& blr, size_t& blr_length)
 			desc->dsc_scale += (*blr++) << 8;
 			desc->dsc_length = *blr++;
 			desc->dsc_length += (*blr++) << 8;
-			align = type_alignments[dtype_cstring];
 			break;
 
 		case blr_short:
@@ -243,7 +239,6 @@ static rem_fmt* parse_format(const UCHAR*& blr, size_t& blr_length)
 			desc->dsc_dtype = dtype_short;
 			desc->dsc_length = sizeof(SSHORT);
 			desc->dsc_scale = *blr++;
-			align = type_alignments[dtype_short];
 			break;
 
 		case blr_long:
@@ -252,7 +247,6 @@ static rem_fmt* parse_format(const UCHAR*& blr, size_t& blr_length)
 			desc->dsc_dtype = dtype_long;
 			desc->dsc_length = sizeof(SLONG);
 			desc->dsc_scale = *blr++;
-			align = type_alignments[dtype_long];
 			break;
 
 		case blr_int64:
@@ -261,7 +255,6 @@ static rem_fmt* parse_format(const UCHAR*& blr, size_t& blr_length)
 			desc->dsc_dtype = dtype_int64;
 			desc->dsc_length = sizeof(SINT64);
 			desc->dsc_scale = *blr++;
-			align = type_alignments[dtype_int64];
 			break;
 
 		case blr_quad:
@@ -270,20 +263,33 @@ static rem_fmt* parse_format(const UCHAR*& blr, size_t& blr_length)
 			desc->dsc_dtype = dtype_quad;
 			desc->dsc_length = sizeof(SLONG) * 2;
 			desc->dsc_scale = *blr++;
-			align = type_alignments[dtype_quad];
 			break;
 
 		case blr_float:
 			desc->dsc_dtype = dtype_real;
 			desc->dsc_length = sizeof(float);
-			align = type_alignments[dtype_real];
 			break;
 
 		case blr_double:
 		case blr_d_float:
 			desc->dsc_dtype = dtype_double;
 			desc->dsc_length = sizeof(double);
-			align = type_alignments[dtype_double];
+			break;
+
+		case blr_dec64:
+			desc->dsc_dtype = dtype_dec64;
+			desc->dsc_length = sizeof(Decimal64);
+			break;
+
+		case blr_dec128:
+			desc->dsc_dtype = dtype_dec128;
+			desc->dsc_length = sizeof(Decimal128);
+			break;
+
+		case blr_int128:
+			desc->dsc_dtype = dtype_int128;
+			desc->dsc_length = sizeof(Int128);
+			desc->dsc_scale = *blr++;
 			break;
 
 		// this case cannot occur as switch paramater is char and blr_blob
@@ -292,7 +298,6 @@ static rem_fmt* parse_format(const UCHAR*& blr, size_t& blr_length)
 	    //case blr_blob:
 		//	desc->dsc_dtype = dtype_blob;
 		//	desc->dsc_length = sizeof (SLONG) * 2;
-		//	align = type_alignments [dtype_blob];
 		//	break;
 
 		case blr_blob2:
@@ -308,39 +313,54 @@ static rem_fmt* parse_format(const UCHAR*& blr, size_t& blr_length)
 				USHORT textType = *blr++;
 				textType += (*blr++) << 8;
 				desc->setTextType(textType);
-
-				align = type_alignments[dtype_blob];
 			}
 			break;
 
 		case blr_timestamp:
 			desc->dsc_dtype = dtype_timestamp;
 			desc->dsc_length = sizeof(SLONG) * 2;
-			align = type_alignments[dtype_timestamp];
+			break;
+
+		case blr_timestamp_tz:
+			desc->dsc_dtype = dtype_timestamp_tz;
+			desc->dsc_length = sizeof(ISC_TIMESTAMP_TZ);
+			break;
+
+		case blr_ex_timestamp_tz:
+			desc->dsc_dtype = dtype_ex_timestamp_tz;
+			desc->dsc_length = sizeof(ISC_TIMESTAMP_TZ_EX);
 			break;
 
 		case blr_sql_date:
 			desc->dsc_dtype = dtype_sql_date;
 			desc->dsc_length = sizeof(SLONG);
-			align = type_alignments[dtype_sql_date];
 			break;
 
 		case blr_sql_time:
 			desc->dsc_dtype = dtype_sql_time;
 			desc->dsc_length = sizeof(ULONG);
-			align = type_alignments[dtype_sql_time];
+			break;
+
+		case blr_sql_time_tz:
+			desc->dsc_dtype = dtype_sql_time_tz;
+			desc->dsc_length = sizeof(ISC_TIME_TZ);
+			break;
+
+		case blr_ex_time_tz:
+			desc->dsc_dtype = dtype_ex_time_tz;
+			desc->dsc_length = sizeof(ISC_TIME_TZ_EX);
 			break;
 
 		case blr_bool:
 			desc->dsc_dtype = dtype_boolean;
 			desc->dsc_length = sizeof(UCHAR);
-			align = type_alignments[dtype_boolean];
 			break;
 
 		default:
 			fb_assert(false);
 			return NULL;
 		}
+		align = type_alignments[desc->dsc_dtype];
 
 		if (desc->dsc_dtype == dtype_varying)
 			net_length += 4 + ((desc->dsc_length - 2 + 3) & ~3);

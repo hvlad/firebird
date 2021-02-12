@@ -22,6 +22,7 @@
 #include "firebird.h"
 #include "../jrd/Routine.h"
 #include "../jrd/JrdStatement.h"
+#include "../jrd/Function.h"
 #include "../jrd/jrd.h"
 #include "../jrd/exe.h"
 #include "../common/StatusHolder.h"
@@ -35,7 +36,7 @@ namespace Jrd {
 
 
 // Create a MsgMetadata from a parameters array.
-MsgMetadata* Routine::createMetadata(const Array<NestConst<Parameter> >& parameters)
+MsgMetadata* Routine::createMetadata(const Array<NestConst<Parameter> >& parameters, bool isExtern)
 {
 	RefPtr<MsgMetadata> metadata(FB_NEW MsgMetadata);
 
@@ -43,7 +44,10 @@ MsgMetadata* Routine::createMetadata(const Array<NestConst<Parameter> >& paramet
 		 i != parameters.end();
 		 ++i)
 	{
-		metadata->addItem((*i)->prm_name, (*i)->prm_nullable, (*i)->prm_desc);
+		dsc d((*i)->prm_desc);
+		if (isExtern && d.dsc_dtype == dtype_int128)
+			d.dsc_dtype = dtype_dec128;
+		metadata->addItem((*i)->prm_name, (*i)->prm_nullable, d);
 	}
 
 	metadata->makeOffsets();
@@ -107,10 +111,52 @@ Format* Routine::createFormat(MemoryPool& pool, IMessageMetadata* params, bool a
 	return format;
 }
 
-// Parse routine BLR.
-void Routine::parseBlr(thread_db* tdbb, CompilerScratch* csb, bid* blob_id)
+void Routine::setStatement(JrdStatement* value) 
+{ 
+	statement = value;
+
+	if (statement)
+	{
+		switch (getObjectType())
+		{
+		case obj_procedure:
+			statement->procedure = static_cast<jrd_prc*>(this);
+			break;
+
+		case obj_udf:
+			statement->function = static_cast<Function*>(this);
+			break;
+
+		default:
+			fb_assert(false);
+			break;
+		}
+	}
+}
+
+void Routine::checkReload(thread_db* tdbb)
+{
+	if (!(flags & FLAG_RELOAD))
+		return;
+
+	if (!reload(tdbb))
+	{
+		string err;
+		err.printf("Recompile of %s \"%s\" failed", 
+					getObjectType() == obj_udf ? "FUNCTION" : "PROCEDURE",
+					getName().toString().c_str());
+
+		(Arg::Gds(isc_random) << Arg::Str(err)).raise();
+	}
+}
+
+// Parse routine BLR and debug info.
+void Routine::parseBlr(thread_db* tdbb, CompilerScratch* csb, bid* blob_id, bid* blobDbg)
 {
 	Jrd::Attachment* attachment = tdbb->getAttachment();
+
+	if (blobDbg)
+		DBG_parse_debug_info(tdbb, blobDbg, *csb->csb_dbg_info);
 
 	UCharBuffer tmp;
 
@@ -125,9 +171,14 @@ void Routine::parseBlr(thread_db* tdbb, CompilerScratch* csb, bid* blob_id)
 
 	parseMessages(tdbb, csb, BlrReader(tmp.begin(), (unsigned) tmp.getCount()));
 
+	flags &= ~Routine::FLAG_RELOAD;
+
 	JrdStatement* statement = getStatement();
 	PAR_blr(tdbb, NULL, tmp.begin(), (ULONG) tmp.getCount(), NULL, &csb, &statement, false, 0);
 	setStatement(statement);
+
+	if (csb->csb_g_flags & csb_reload)
+		flags |= FLAG_RELOAD;
 
 	if (!blob_id)
 		setImplemented(false);
@@ -319,6 +370,7 @@ void Routine::remove(thread_db* tdbb)
 		setSecurityName("");
 		setId(0);
 		setDefaultCount(0);
+		releaseExternal();
 	}
 }
 

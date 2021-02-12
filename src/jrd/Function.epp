@@ -204,7 +204,7 @@ Function* Function::loadMetadata(thread_db* tdbb, USHORT id, bool noscan, USHORT
 		Lock* const lock = FB_NEW_RPT(*attachment->att_pool, 0)
 			Lock(tdbb, sizeof(SLONG), LCK_fun_exist, function, blockingAst);
 		function->existenceLock = lock;
-		lock->lck_key.lck_long = function->getId();
+		lock->setKey(function->getId());
 	}
 
 	LCK_lock(tdbb, function->existenceLock, LCK_SR, LCK_WAIT);
@@ -219,6 +219,9 @@ Function* Function::loadMetadata(thread_db* tdbb, USHORT id, bool noscan, USHORT
 		{
 			function->setName(QualifiedName(X.RDB$FUNCTION_NAME,
 				(X.RDB$PACKAGE_NAME.NULL ? NULL : X.RDB$PACKAGE_NAME)));
+
+			function->owner = X.RDB$OWNER_NAME;
+			Nullable<bool> ssDefiner;
 
 			if (!X.RDB$SECURITY_CLASS.NULL)
 			{
@@ -237,8 +240,23 @@ Function* Function::loadMetadata(thread_db* tdbb, USHORT id, bool noscan, USHORT
 						function->setSecurityName(PKG.RDB$SECURITY_CLASS);
 					}
 
+					// SQL SECURITY of function must be the same if it's defined in package
+					if (!PKG.RDB$SQL_SECURITY.NULL)
+						ssDefiner = (bool) PKG.RDB$SQL_SECURITY;
+
 				END_FOR
 			}
+
+			if (!ssDefiner.specified)
+			{
+				if (!X.RDB$SQL_SECURITY.NULL)
+					ssDefiner = (bool) X.RDB$SQL_SECURITY;
+				else
+					ssDefiner = MET_get_ss_definer(tdbb);
+			}
+
+			if (ssDefiner.orElse(false))
+				function->invoker = attachment->getUserId(function->owner);
 
 			size_t count = 0;
 			ULONG length = 0;
@@ -375,7 +393,7 @@ Function* Function::loadMetadata(thread_db* tdbb, USHORT id, bool noscan, USHORT
 			if (!X.RDB$MODULE_NAME.NULL && !X.RDB$ENTRYPOINT.NULL)
 			{
 				function->fun_entrypoint =
-					Module::lookup(X.RDB$MODULE_NAME, X.RDB$ENTRYPOINT, dbb->dbb_modules);
+					Module::lookup(X.RDB$MODULE_NAME, X.RDB$ENTRYPOINT, dbb);
 
 				// Could not find a function with given MODULE, ENTRYPOINT.
 				// Try the list of internally implemented functions.
@@ -395,7 +413,7 @@ Function* Function::loadMetadata(thread_db* tdbb, USHORT id, bool noscan, USHORT
 
 				try
 				{
-					AutoPtr<CompilerScratch> csb(CompilerScratch::newCsb(*csb_pool, 5));
+					AutoPtr<CompilerScratch> csb(FB_NEW_POOL(*csb_pool) CompilerScratch(*csb_pool));
 
 					if (!X.RDB$ENGINE_NAME.NULL)
 					{
@@ -411,7 +429,7 @@ Function* Function::loadMetadata(thread_db* tdbb, USHORT id, bool noscan, USHORT
 						else
 							body.getBuffer(1)[0] = 0;
 
-						dbb->dbb_extManager.makeFunction(tdbb, csb, function, X.RDB$ENGINE_NAME,
+						dbb->dbb_extManager->makeFunction(tdbb, csb, function, X.RDB$ENGINE_NAME,
 							(X.RDB$ENTRYPOINT.NULL ? "" : X.RDB$ENTRYPOINT), (char*) body.begin());
 
 						if (!function->fun_external)
@@ -419,12 +437,10 @@ Function* Function::loadMetadata(thread_db* tdbb, USHORT id, bool noscan, USHORT
 					}
 					else if (!X.RDB$FUNCTION_BLR.NULL)
 					{
-						if (!X.RDB$DEBUG_INFO.NULL)
-							DBG_parse_debug_info(tdbb, &X.RDB$DEBUG_INFO, *csb->csb_dbg_info);
-
 						try
 						{
-							function->parseBlr(tdbb, csb, &X.RDB$FUNCTION_BLR);
+							function->parseBlr(tdbb, csb, &X.RDB$FUNCTION_BLR,
+								X.RDB$DEBUG_INFO.NULL ? NULL : &X.RDB$DEBUG_INFO);
 						}
 						catch (const Exception& ex)
 						{
@@ -442,14 +458,14 @@ Function* Function::loadMetadata(thread_db* tdbb, USHORT id, bool noscan, USHORT
 					throw;
 				}
 
-				function->getStatement()->function = function;
+				fb_assert(function->getStatement()->function == function);
 			}
 			else
 			{
-				RefPtr<MsgMetadata> inputMetadata(REF_NO_INCR, createMetadata(function->getInputFields()));
+				RefPtr<MsgMetadata> inputMetadata(REF_NO_INCR, createMetadata(function->getInputFields(), false));
 				function->setInputFormat(createFormat(function->getPool(), inputMetadata, false));
 
-				RefPtr<MsgMetadata> outputMetadata(REF_NO_INCR, createMetadata(function->getOutputFields()));
+				RefPtr<MsgMetadata> outputMetadata(REF_NO_INCR, createMetadata(function->getOutputFields(), false));
 				function->setOutputFormat(createFormat(function->getPool(), outputMetadata, true));
 
 				function->setImplemented(false);
@@ -533,4 +549,54 @@ bool Function::checkCache(thread_db* tdbb) const
 void Function::clearCache(thread_db* tdbb)
 {
 	tdbb->getAttachment()->att_functions[getId()] = NULL;
+}
+
+bool Function::reload(thread_db* tdbb)
+{
+	fb_assert(this->flags & Routine::FLAG_RELOAD);
+
+	Attachment* attachment = tdbb->getAttachment();
+	AutoCacheRequest request(tdbb, irq_l_funct_blr, IRQ_REQUESTS);
+
+	FOR(REQUEST_HANDLE request)
+		X IN RDB$FUNCTIONS
+		WITH X.RDB$FUNCTION_ID EQ this->getId()
+	{
+		if (X.RDB$FUNCTION_BLR.NULL)
+			continue;
+
+		MemoryPool* const csb_pool = attachment->createPool();
+		Jrd::ContextPoolHolder context(tdbb, csb_pool);
+
+		try
+		{
+			AutoPtr<CompilerScratch> csb(FB_NEW_POOL(*csb_pool) CompilerScratch(*csb_pool));
+
+			try
+			{
+				this->parseBlr(tdbb, csb, &X.RDB$FUNCTION_BLR,
+					X.RDB$DEBUG_INFO.NULL ? NULL : &X.RDB$DEBUG_INFO);
+
+				// parseBlr() above could set FLAG_RELOAD again
+				return !(this->flags & Routine::FLAG_RELOAD);
+			}
+			catch (const Exception& ex)
+			{
+				StaticStatusVector temp_status;
+				ex.stuffException(temp_status);
+
+				const string name = this->getName().toString();
+				(Arg::Gds(isc_bad_fun_BLR) << Arg::Str(name)
+					<< Arg::StatusVector(temp_status.begin())).raise();
+			}
+		}
+		catch (const Exception&)
+		{
+			attachment->deletePool(csb_pool);
+			throw;
+		}
+	}
+	END_FOR
+
+	return false;
 }

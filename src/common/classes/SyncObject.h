@@ -32,7 +32,8 @@
 #ifndef CLASSES_SYNCOBJECT_H
 #define CLASSES_SYNCOBJECT_H
 
-#include "../../common/classes/fb_atomic.h"
+#include <atomic>
+
 #include "../../common/classes/locks.h"
 #include "../../common/classes/Reasons.h"
 
@@ -53,7 +54,8 @@ class SyncObject : public Reasons
 {
 public:
 	SyncObject()
-		: waiters(0),
+		: lockState(0),
+		  waiters(0),
 		  monitorCount(0),
 		  exclusiveThread(NULL),
 		  waitingThreads(NULL)
@@ -92,10 +94,11 @@ public:
 
 	SyncType getState() const
 	{
-		if (lockState.value() == 0)
+		const state_type state = lockState.load();
+		if (state == 0)
 			return SYNC_NONE;
 
-		if (lockState.value() < 0)
+		if (state < 0)
 			return SYNC_EXCLUSIVE;
 
 		return SYNC_SHARED;
@@ -103,29 +106,44 @@ public:
 
 	bool isLocked() const
 	{
-		return lockState.value() != 0;
+		return (lockState.load() != 0);
 	}
 
 	bool hasContention() const
 	{
-		return (waiters.value() > 0);
+		return (waiters.load() > 0);
 	}
 
 	bool ourExclusiveLock() const;
 
 protected:
+	typedef int32_t state_type;
+	typedef uint32_t wait_type;
+
+	static const state_type STATE_READER_INCR = 0x00000001;
+	static const state_type STATE_WRITER_INCR = -0x00010000;
+
+	static const wait_type WAIT_READER_INCR = 0x00000001;
+	static const wait_type WAIT_WRITER_INCR = 0x00010000;
+	static const wait_type WAIT_READERS_MASK = 0x0000FFFF;
+	static const wait_type WAIT_WRITERS_MASK = ~WAIT_READERS_MASK;
+
+	bool tryLockShared(wait_type w, const char* from);
+	bool tryLockExclusuve(wait_type w, ThreadSync* thread, const char* from);
+	void stalled(ThreadSync* thread);
+
 	bool wait(SyncType type, ThreadSync* thread, Sync* sync, int timeOut);
 	ThreadSync* dequeThread(ThreadSync* thread);
 	ThreadSync* grantThread(ThreadSync* thread);
 	void grantLocks();
 	void validate(SyncType lockType) const;
 
-	AtomicCounter lockState;
-	AtomicCounter waiters;
+	std::atomic<state_type> lockState;
+	std::atomic<wait_type> waiters;
 	int monitorCount;
 	Mutex mutex;
-	ThreadSync* volatile exclusiveThread;
-	ThreadSync* volatile waitingThreads;
+	std::atomic<ThreadSync*> exclusiveThread;
+	ThreadSync* waitingThreads;
 };
 
 

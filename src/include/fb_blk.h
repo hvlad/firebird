@@ -152,18 +152,9 @@ public:
 	}
 
 private:
-#ifdef __clang__
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wnew-returns-null"
-#endif
-
 	// These operators are off-limits
-	void* operator new(size_t) { return 0; }
-	void* operator new[](size_t) { return 0; }
-
-#ifdef __clang__
-#pragma clang diagnostic pop
-#endif
+	void* operator new(size_t);
+	void* operator new[](size_t);
 };
 
 template<typename RPT, BlockType BLOCK_TYPE = type_unknown>
@@ -191,32 +182,14 @@ public:
 	}
 
 private:
-#ifdef __clang__
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wnew-returns-null"
-#endif
-
 	// These operations are not supported on static repeat-base objects
-	void* operator new[](size_t /*s*/, MemoryPool& /*p*/)
-	{
-		return 0;
-	}
-
-	void operator delete[](void* /*mem*/, MemoryPool& /*p*/)
-	{
-	}
-
-	void operator delete[](void* /*mem*/)
-	{
-	}
+	void* operator new[](size_t /*s*/, MemoryPool& /*p*/);
+	void operator delete[](void* /*mem*/, MemoryPool& /*p*/);
+	void operator delete[](void* /*mem*/);
 
 	// These operators are off-limits
-	void* operator new(size_t) { return 0; }
-	void* operator new[](size_t) { return 0; }
-
-#ifdef __clang__
-#pragma clang diagnostic pop
-#endif
+	void* operator new(size_t);
+	void* operator new[](size_t);
 };
 
 #endif	// INCLUDE_FB_BLK

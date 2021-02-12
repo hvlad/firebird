@@ -44,7 +44,7 @@ BufferedStream::BufferedStream(CompilerScratch* csb, RecordSource* next)
 {
 	fb_assert(m_next);
 
-	m_impure = CMP_impure(csb, sizeof(Impure));
+	m_impure = csb->allocImpure<Impure>();
 
 	StreamList streams;
 	m_next->findUsedStreams(streams);
@@ -149,8 +149,7 @@ void BufferedStream::close(thread_db* tdbb) const
 
 bool BufferedStream::getRecord(thread_db* tdbb) const
 {
-	if (--tdbb->tdbb_quantum < 0)
-		JRD_reschedule(tdbb, 0, true);
+	JRD_reschedule(tdbb);
 
 	jrd_req* const request = tdbb->getRequest();
 	Impure* const impure = request->getImpure<Impure>(m_impure);
@@ -234,7 +233,15 @@ bool BufferedStream::getRecord(thread_db* tdbb) const
 			const FieldMap& map = m_map[i];
 
 			record_param* const rpb = &request->req_rpb[map.map_stream];
-			rpb->rpb_runtime_flags |= RPB_refetch;
+			jrd_rel* const relation = rpb->rpb_relation;
+
+			if (relation &&
+				!relation->rel_file &&
+				!relation->rel_view_rse &&
+				!relation->isVirtual())
+			{
+				rpb->rpb_runtime_flags |= RPB_refetch;
+			}
 
 			if (map.map_stream != stream)
 			{
@@ -243,14 +250,14 @@ bool BufferedStream::getRecord(thread_db* tdbb) const
 				// See SortedStream::mapData() for explanations why we need
 				// to upgrade the record format
 
-				if (rpb->rpb_relation && !rpb->rpb_number.isValid())
-					VIO_record(tdbb, rpb, MET_current(tdbb, rpb->rpb_relation), tdbb->getDefaultPool());
+				if (relation && !rpb->rpb_number.isValid())
+					VIO_record(tdbb, rpb, MET_current(tdbb, relation), tdbb->getDefaultPool());
 			}
 
 			Record* const record = rpb->rpb_record;
 			record->reset();
 
-			if (!EVL_field(rpb->rpb_relation, buffer_record, (USHORT) i, &from))
+			if (!EVL_field(relation, buffer_record, (USHORT) i, &from))
 			{
 				fb_assert(map.map_type == FieldMap::REGULAR_FIELD);
 				record->setNull(map.map_id);
@@ -261,7 +268,7 @@ bool BufferedStream::getRecord(thread_db* tdbb) const
 			{
 			case FieldMap::REGULAR_FIELD:
 				{
-					EVL_field(rpb->rpb_relation, record, map.map_id, &to);
+					EVL_field(relation, record, map.map_id, &to);
 					MOV_move(tdbb, &from, &to);
 					record->clearNull(map.map_id);
 				}

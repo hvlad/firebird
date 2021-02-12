@@ -37,7 +37,7 @@ public:
 };
 
 void FUN_evaluate(Jrd::thread_db*, const Jrd::Function*, const Jrd::NestValueArray&,
-	Jrd::impure_value*);
+	Jrd::impure_value*, Firebird::Array<UCHAR>& temp);
 
 
 #endif // JRD_FUN_PROTO_H

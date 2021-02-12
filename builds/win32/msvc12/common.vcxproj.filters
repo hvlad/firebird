@@ -216,6 +216,39 @@
     <ClCompile Include="..\..\..\src\common\CRC32C.cpp">
       <Filter>common</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\common\DecFloat.cpp">
+      <Filter>classes</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\common\classes\TomCryptHash.cpp">
+      <Filter>classes</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\common\classes\BlobWrapper.cpp">
+      <Filter>classes</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\common\sha2\sha2.cpp">
+      <Filter>common</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\common\SimilarToRegex.cpp">
+      <Filter>common</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\common\TimeZoneUtil.cpp">
+      <Filter>common</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\common\classes\zip.cpp">
+      <Filter>classes</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\common\classes\ParsedList.cpp">
+      <Filter>classes</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\common\keywords.cpp">
+      <Filter>common</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\common\Int128.cpp">
+      <Filter>common</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\common\classes\TimerImpl.cpp">
+      <Filter>classes</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\..\..\src\common\xdr_proto.h">
@@ -440,9 +473,6 @@
     <ClInclude Include="..\..\..\src\common\classes\tree.h">
       <Filter>headers</Filter>
     </ClInclude>
-    <ClInclude Include="..\..\..\src\common\classes\TriState.h">
-      <Filter>headers</Filter>
-    </ClInclude>
     <ClInclude Include="..\..\..\src\common\classes\UserBlob.h">
       <Filter>headers</Filter>
     </ClInclude>
@@ -528,6 +558,42 @@
       <Filter>headers</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\common\Tokens.h">
+      <Filter>headers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\common\DecFloat.h">
+      <Filter>headers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\common\classes\BatchCompletionState.h">
+      <Filter>headers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\common\classes\BlobWrapper.h">
+      <Filter>headers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\common\sha2\sha2.h">
+      <Filter>headers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\common\SimilarToRegex.h">
+      <Filter>headers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\common\TimeZones.h">
+      <Filter>headers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\common\TimeZoneUtil.h">
+      <Filter>headers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\common\classes\zip.h">
+      <Filter>headers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\common\classes\ParsedList.h">
+      <Filter>headers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\common\keywords.h">
+      <Filter>headers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\common\Int128.h">
+      <Filter>headers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\common\classes\TimerImpl.h">
       <Filter>headers</Filter>
     </ClInclude>
   </ItemGroup>

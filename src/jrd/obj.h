@@ -47,28 +47,31 @@ const int obj_blob_filter		= 16;
 const int obj_collation			= 17;
 const int obj_package_header	= 18;
 const int obj_package_body		= 19;
+const int obj_privilege			= 20;
+
+const int obj_last_non_ddl		= 20;	// keep in sync!!!
 
 // objects types for ddl operations
-const int obj_database			= 20;
-const int obj_relations			= 21;
-const int obj_views				= 22;
-const int obj_procedures		= 23;
-const int obj_functions			= 24;
-const int obj_packages			= 25;
-const int obj_generators		= 26;
-const int obj_domains			= 27;
-const int obj_exceptions		= 28;
-const int obj_roles				= 29;
-const int obj_charsets			= 30;
-const int obj_collations		= 31;
-const int obj_filters			= 32;
+const int obj_database			= obj_last_non_ddl + 1;
+const int obj_relations			= obj_last_non_ddl + 2;
+const int obj_views				= obj_last_non_ddl + 3;
+const int obj_procedures		= obj_last_non_ddl + 4;
+const int obj_functions			= obj_last_non_ddl + 5;
+const int obj_packages			= obj_last_non_ddl + 6;
+const int obj_generators		= obj_last_non_ddl + 7;
+const int obj_domains			= obj_last_non_ddl + 8;
+const int obj_exceptions		= obj_last_non_ddl + 9;
+const int obj_roles				= obj_last_non_ddl + 10;
+const int obj_charsets			= obj_last_non_ddl + 11;
+const int obj_collations		= obj_last_non_ddl + 12;
+const int obj_filters			= obj_last_non_ddl + 13;
 
-const int obj_type_MAX			= 33;	// keep this last!
+const int obj_type_MAX			= obj_last_non_ddl + 14;	// keep this last!
 
-// used in the parser only / no relation with obj_type_MAX
-const int obj_user_or_role		= 34;
-const int obj_schema			= 35;
-const int obj_parameter			= 36;
+// used in the parser only / no relation with obj_type_MAX (should be greater)
+const int obj_user_or_role		= 100;
+const int obj_schema			= 101;
+const int obj_parameter			= 102;
 
 inline const char* get_object_name(int object_type)
 {

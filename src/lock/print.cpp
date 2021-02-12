@@ -45,6 +45,7 @@
 #include "../common/isc_proto.h"
 #include "../common/isc_s_proto.h"
 #include "../common/StatusHolder.h"
+#include "../common/os/os_utils.h"
 
 namespace Jrd {
 // Lock types
@@ -74,11 +75,11 @@ enum lck_t {
 	LCK_btr_dont_gc,			// Prevent removal of b-tree page from index
 	LCK_shared_counter,			// Database-wide shared counter
 	LCK_tra_pc,					// Precommitted transaction lock
+	LCK_rel_gc,					// Allow garbage collection for relation
 	LCK_fun_exist,				// Function existence lock
 	LCK_rel_rescan,				// Relation forced rescan lock
 	LCK_crypt,					// Crypt lock for single crypt thread
 	LCK_crypt_status,			// Notifies about changed database encryption status
-	LCK_idx_reserve,			// Index reservation lock
 	LCK_record_gc				// Record-level GC lock
 };
 
@@ -139,15 +140,15 @@ using namespace Firebird;
 
 namespace
 {
-	class sh_mem FB_FINAL : public Firebird::IpcObject
+	class sh_mem FB_FINAL : public IpcObject
 	{
 	public:
 		explicit sh_mem(bool p_consistency, const char* filename)
 		  :	sh_mem_consistency(p_consistency),
-			shared_memory(FB_NEW_POOL(*getDefaultMemoryPool()) Firebird::SharedMemory<lhb>(filename, 0, this))
+			shared_memory(FB_NEW_POOL(*getDefaultMemoryPool()) SharedMemory<lhb>(filename, 0, this))
 		{ }
 
-		bool initialize(Firebird::SharedMemoryBase*, bool)
+		bool initialize(SharedMemoryBase*, bool)
 		{
 			// Initialize a lock table to looking -- i.e. don't do nuthin.
 			return sh_mem_consistency;
@@ -162,7 +163,7 @@ namespace
 		bool sh_mem_consistency;
 
 	public:
-		Firebird::AutoPtr<Firebird::SharedMemory<lhb> > shared_memory;
+		AutoPtr<SharedMemory<lhb> > shared_memory;
 	};
 }
 
@@ -356,15 +357,15 @@ int CLIB_ROUTINE main( int argc, char *argv[])
 		if (*p++ != '-')
 		{
 			FPRINTF(outfile, "%s", usage);
-			exit(FINI_OK);
+			return FINI_OK;
 		}
 		SCHAR c;
-		while (c = *p++)
+		while ((c = *p++))
 			switch (c)
 			{
 			case '?':
 				FPRINTF(outfile, "%s", usage);
-				exit(FINI_OK);
+				return FINI_OK;
 				break;
 
 			case 'o':
@@ -401,13 +402,13 @@ int CLIB_ROUTINE main( int argc, char *argv[])
 				if (sw_series <= 0)
 				{
 					FPRINTF(outfile, "Please specify a positive value following option -s\n");
-					exit(FINI_OK);
+					return FINI_OK;
 				}
 				--argc;
 				break;
 
 			case 'i':
-				while (c = *p++)
+				while ((c = *p++))
 					switch (c)
 					{
 					case 'a':
@@ -428,7 +429,7 @@ int CLIB_ROUTINE main( int argc, char *argv[])
 
 					default:
 						FPRINTF(outfile, "Valid interactive switches are: a, o, t, w\n");
-						exit(FINI_OK);
+						return FINI_OK;
 						break;
 					}
 				if (!sw_interactive)
@@ -446,7 +447,7 @@ int CLIB_ROUTINE main( int argc, char *argv[])
 					if (sw_seconds <= 0 || sw_intervals < 0)
 					{
 						FPRINTF(outfile, "Please specify 2 positive values for option -i\n");
-						exit(FINI_OK);
+						return FINI_OK;
 					}
 				}
 				--p;
@@ -465,7 +466,7 @@ int CLIB_ROUTINE main( int argc, char *argv[])
 				else
 				{
 					FPRINTF(outfile, "Usage: -f <filename>\n");
-					exit(FINI_OK);
+					return FINI_OK;
 				}
 				break;
 
@@ -478,7 +479,7 @@ int CLIB_ROUTINE main( int argc, char *argv[])
 				else
 				{
 					FPRINTF(outfile, "Usage: -d <filename>\n");
-					exit(FINI_OK);
+					return FINI_OK;
 				}
 				break;
 
@@ -492,65 +493,43 @@ int CLIB_ROUTINE main( int argc, char *argv[])
 
 			default:
 				FPRINTF(outfile, "%s", usage);
-				exit(FINI_OK);
+				return FINI_OK;
 				break;
 			}
 	}
 
-	Firebird::PathName filename;
+	PathName filename;
 
 	if (db_file && lock_file)
 	{
 		FPRINTF(outfile, "Switches -d and -f cannot be specified together\n");
-		exit(FINI_OK);
+		return FINI_OK;
 	}
 	else if (db_file)
 	{
-		Firebird::PathName org_name = db_file;
-		Firebird::PathName db_name;
+		PathName org_name = db_file;
+		PathName db_name;
 		expandDatabaseName(org_name, db_name, NULL);
 
-		// Below code mirrors the one in JRD (PIO modules and Database class).
-		// Maybe it's worth putting it into common, if no better solution is found.
+		UCharBuffer buffer;
 #ifdef WIN_NT
 		const HANDLE h = CreateFile(db_name.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
 									NULL, OPEN_EXISTING, 0, 0);
 		if (h == INVALID_HANDLE_VALUE)
 		{
 			FPRINTF(outfile, "Unable to open the database file (%d).\n", GetLastError());
-			exit(FINI_OK);
+			return FINI_OK;
 		}
-		BY_HANDLE_FILE_INFORMATION file_info;
-		GetFileInformationByHandle(h, &file_info);
-		const size_t len1 = sizeof(file_info.dwVolumeSerialNumber);
-		const size_t len2 = sizeof(file_info.nFileIndexHigh);
-		const size_t len3 = sizeof(file_info.nFileIndexLow);
-		UCHAR buffer[len1 + len2 + len3], *p = buffer;
-		memcpy(p, &file_info.dwVolumeSerialNumber, len1);
-		p += len1;
-		memcpy(p, &file_info.nFileIndexHigh, len2);
-		p += len2;
-		memcpy(p, &file_info.nFileIndexLow, len3);
+		os_utils::getUniqueFileId(h, buffer);
 		CloseHandle(h);
 #else
-		struct stat statistics;
-		if (stat(db_name.c_str(), &statistics) == -1)
-		{
-			FPRINTF(outfile, "Unable to open the database file.\n");
-			exit(FINI_OK);
-		}
-		const size_t len1 = sizeof(statistics.st_dev);
-		const size_t len2 = sizeof(statistics.st_ino);
-		UCHAR buffer[len1 + len2], *p = buffer;
-		memcpy(p, &statistics.st_dev, len1);
-		p += len1;
-		memcpy(p, &statistics.st_ino, len2);
+		os_utils::getUniqueFileId(db_name.c_str(), buffer);
 #endif
 
-		Firebird::string file_id;
-		for (size_t i = 0; i < sizeof(buffer); i++)
+		string file_id;
+		for (FB_SIZE_T i = 0; i < buffer.getCount(); i++)
 		{
-			TEXT hex[3];
+			char hex[3];
 			sprintf(hex, "%02x", (int) buffer[i]);
 			file_id.append(hex);
 		}
@@ -565,12 +544,12 @@ int CLIB_ROUTINE main( int argc, char *argv[])
 	{
 		FPRINTF(outfile, "Please specify either -d <database name> or -f <lock file name>\n\n");
 		FPRINTF(outfile, "%s", usage);
-		exit(FINI_OK);
+		return FINI_OK;
 	}
 
-	Firebird::AutoPtr<UCHAR, Firebird::ArrayDelete<UCHAR> > buffer;
+	AutoPtr<UCHAR, ArrayDelete> buffer;
 	lhb* LOCK_header = NULL;
-	Firebird::AutoPtr<sh_mem> shmem_data;
+	AutoPtr<sh_mem> shmem_data;
 
 	if (db_file)
 	{
@@ -587,7 +566,7 @@ int CLIB_ROUTINE main( int argc, char *argv[])
 		{
 			// Mapped file is obviously too small to really be a lock file
 			FPRINTF(outfile, "Unable to access lock table - file too small.\n");
-			exit(FINI_OK);
+			return FINI_OK;
 		}
 
 		if (sw_consistency)
@@ -604,24 +583,24 @@ int CLIB_ROUTINE main( int argc, char *argv[])
 		{
 			buffer = FB_NEW UCHAR[extentsCount * extentSize];
 		}
-		catch (const Firebird::BadAlloc&)
+		catch (const BadAlloc&)
 		{
 			FPRINTF(outfile, "Insufficient memory for lock statistics.\n");
-			exit(FINI_OK);
+			return FINI_OK;
 		}
 
 		memcpy((UCHAR*) buffer, LOCK_header, extentSize);
 
 		for (ULONG extent = 1; extent < extentsCount; ++extent)
 		{
-			Firebird::PathName extName;
+			PathName extName;
 			extName.printf("%s.ext%d", filename.c_str(), extent);
 
 			sh_mem extData(false);
 			if (! extData.mapFile(statusVector, extName.c_str(), 0))
 			{
 				FPRINTF(outfile, "Could not map extent number %d, file %s.\n", extent, extName.c_str());
-				exit(FINI_OK);
+				return FINI_OK;
 			}
 
 			memcpy(((UCHAR*) buffer) + extent * extentSize, extData.sh_mem_header, extentSize);
@@ -634,8 +613,8 @@ int CLIB_ROUTINE main( int argc, char *argv[])
 		if (LOCK_header->lhb_length > shmem_data->shared_memory->sh_mem_length_mapped)
 		{
 			const ULONG length = LOCK_header->lhb_length;
-			Firebird::LocalStatus ls;
-			Firebird::CheckStatusWrapper statusVector(&ls);
+			LocalStatus ls;
+			CheckStatusWrapper statusVector(&ls);
 
 			shmem_data->shared_memory->remapFile(&statusVector, length, false);
 			LOCK_header = (lhb*)(shmem_data->shared_memory->sh_mem_header);
@@ -654,11 +633,11 @@ int CLIB_ROUTINE main( int argc, char *argv[])
 			{
 				buffer = FB_NEW UCHAR[LOCK_header->lhb_length];
 			}
-			catch (const Firebird::BadAlloc&)
+			catch (const BadAlloc&)
 			{
 				FPRINTF(outfile, "Insufficient memory for consistent lock statistics.\n");
 				FPRINTF(outfile, "Try omitting the -c switch.\n");
-				exit(FINI_OK);
+				return FINI_OK;
 			}
 
 			memcpy((UCHAR*) buffer, LOCK_header, LOCK_header->lhb_length);
@@ -668,49 +647,49 @@ int CLIB_ROUTINE main( int argc, char *argv[])
 			shmem_data->shared_memory->mutexUnlock();
 		}
 	  }
-	  catch (const Firebird::Exception& ex)
+	  catch (const Exception& ex)
 	  {
 		FPRINTF(outfile, "Unable to access lock table.\n");
 
- 		Firebird::StaticStatusVector st;
+		StaticStatusVector st;
 		ex.stuffException(st);
 		gds__print_status(st.begin());
 
-		exit(FINI_OK);
+		return FINI_OK;
 	  }
 	}
 	else if (lock_file)
 	{
-		const int fd = open(filename.c_str(), O_RDONLY | O_BINARY);
+		const int fd = os_utils::open(filename.c_str(), O_RDONLY | O_BINARY);
 		if (fd == -1)
 		{
 			FPRINTF(outfile, "Unable to open lock file.\n");
-			exit(FINI_OK);
+			return FINI_OK;
 		}
 
-		struct stat file_stat;
-		if (fstat(fd, &file_stat) == -1)
+		struct STAT file_stat;
+		if (os_utils::fstat(fd, &file_stat) == -1)
 		{
 			close(fd);
 			FPRINTF(outfile, "Unable to retrieve lock file size.\n");
-			exit(FINI_OK);
+			return FINI_OK;
 		}
 
 		if (!file_stat.st_size)
 		{
 			close(fd);
 			FPRINTF(outfile, "Lock file is empty.\n");
-			exit(FINI_OK);
+			return FINI_OK;
 		}
 
 		try
 		{
 			buffer = FB_NEW UCHAR[file_stat.st_size];
 		}
-		catch (const Firebird::BadAlloc&)
+		catch (const BadAlloc&)
 		{
 			FPRINTF(outfile, "Insufficient memory to read lock file.\n");
-			exit(FINI_OK);
+			return FINI_OK;
 		}
 
 		LOCK_header = (lhb*)(UCHAR*) buffer;
@@ -720,7 +699,7 @@ int CLIB_ROUTINE main( int argc, char *argv[])
 		if (bytes_read != file_stat.st_size)
 		{
 			FPRINTF(outfile, "Unable to read lock file.\n");
-			exit(FINI_OK);
+			return FINI_OK;
 		}
 
 #ifdef USE_SHMEM_EXT
@@ -733,10 +712,10 @@ int CLIB_ROUTINE main( int argc, char *argv[])
 		{
 			newBuf = FB_NEW UCHAR[extentsCount * extentSize];
 		}
-		catch (const Firebird::BadAlloc&)
+		catch (const BadAlloc&)
 		{
 			FPRINTF(outfile, "Insufficient memory for lock statistics.\n");
-			exit(FINI_OK);
+			return FINI_OK;
 		}
 
 		memcpy(newBuf, LOCK_header, extentSize);
@@ -744,22 +723,22 @@ int CLIB_ROUTINE main( int argc, char *argv[])
 
 		for (ULONG extent = 1; extent < extentsCount; ++extent)
 		{
-			Firebird::PathName extName;
+			PathName extName;
 			extName.printf("%s.ext%d", filename.c_str(), extent);
 
-			const int fd = open(extName.c_str(), O_RDONLY | O_BINARY);
+			const int fd = os_utils::open(extName.c_str(), O_RDONLY | O_BINARY);
 			if (fd == -1)
 			{
 				FPRINTF(outfile, "Unable to open lock file extent number %d, file %s.\n",
 						extent, extName.c_str());
-				exit(FINI_OK);
+				return FINI_OK;
 			}
 
 			if (read(fd, ((UCHAR*) buffer) + extent * extentSize, extentSize) != extentSize)
 			{
 				FPRINTF(outfile, "Could not read lock file extent number %d, file %s.\n",
 						extent, extName.c_str());
-				exit(FINI_OK);
+				return FINI_OK;
 			}
 			close(fd);
 		}
@@ -788,7 +767,7 @@ int CLIB_ROUTINE main( int argc, char *argv[])
 			FPRINTF(outfile, "\tUnable to read lock table version %d:%d.\n",
 				LOCK_header->mhb_header_version, LOCK_header->mhb_version);
 		}
-		exit(FINI_OK);
+		return FINI_OK;
 	}
 
 	// Print lock activity report
@@ -798,7 +777,7 @@ int CLIB_ROUTINE main( int argc, char *argv[])
 		sw_html_format = false;
 		prt_lock_activity(outfile, LOCK_header, sw_interactive,
 						  (ULONG) sw_seconds, (ULONG) sw_intervals);
-		exit(FINI_OK);
+		return FINI_OK;
 	}
 
 	// Print lock header block
@@ -950,7 +929,7 @@ int CLIB_ROUTINE main( int argc, char *argv[])
 
 
 static void prt_lock_activity(OUTFILE outfile,
-							  const lhb* header,
+							  const lhb* LOCK_header,
 							  USHORT flag,
 							  ULONG seconds,
 							  ULONG intervals)
@@ -984,8 +963,8 @@ static void prt_lock_activity(OUTFILE outfile,
 
 	FPRINTF(outfile, "\n");
 
-	lhb base = *header;
-	lhb prior = *header;
+	lhb base = *LOCK_header;
+	lhb prior = *LOCK_header;
 
 	if (intervals == 0)
 	{
@@ -995,11 +974,27 @@ static void prt_lock_activity(OUTFILE outfile,
 	for (ULONG i = 0; i < intervals; i++)
 	{
 		fflush(outfile);
+
+		bool empty = false;
+		for (ULONG ss = 0; ss < seconds; ss++)
+		{
+			empty = SRQ_EMPTY(LOCK_header->lhb_processes);
+			if (empty)
+				break;
+
 #ifdef WIN_NT
-		Sleep(seconds * 1000);
+			Sleep(1000);
 #else
-		sleep(seconds);
+			sleep(1);
 #endif
+		}
+
+		if (empty)
+		{
+			FPRINTF(outfile, "Lock table is empty\n");
+			break;
+		}
+
 		clock = time(NULL);
 		d = *localtime(&clock);
 
@@ -1009,20 +1004,20 @@ static void prt_lock_activity(OUTFILE outfile,
 		{
 			FPRINTF(outfile, "%9" UQUADFORMAT" %9" UQUADFORMAT" %9" UQUADFORMAT
 					" %9" UQUADFORMAT" %9" UQUADFORMAT" ",
-					(header->lhb_acquires - prior.lhb_acquires) / seconds,
-					(header->lhb_acquire_blocks - prior.lhb_acquire_blocks) / seconds,
-					(header->lhb_acquires - prior.lhb_acquires) ?
-					 	(100 * (header->lhb_acquire_blocks - prior.lhb_acquire_blocks)) /
-							(header->lhb_acquires - prior.lhb_acquires) : 0,
-					(header->lhb_acquire_retries -
+					(LOCK_header->lhb_acquires - prior.lhb_acquires) / seconds,
+					(LOCK_header->lhb_acquire_blocks - prior.lhb_acquire_blocks) / seconds,
+					(LOCK_header->lhb_acquires - prior.lhb_acquires) ?
+					 	(100 * (LOCK_header->lhb_acquire_blocks - prior.lhb_acquire_blocks)) /
+							(LOCK_header->lhb_acquires - prior.lhb_acquires) : 0,
+					(LOCK_header->lhb_acquire_retries -
 					 prior.lhb_acquire_retries) / seconds,
-					(header->lhb_retry_success -
+					(LOCK_header->lhb_retry_success -
 					 prior.lhb_retry_success) / seconds);
 
-			prior.lhb_acquires = header->lhb_acquires;
-			prior.lhb_acquire_blocks = header->lhb_acquire_blocks;
-			prior.lhb_acquire_retries = header->lhb_acquire_retries;
-			prior.lhb_retry_success = header->lhb_retry_success;
+			prior.lhb_acquires = LOCK_header->lhb_acquires;
+			prior.lhb_acquire_blocks = LOCK_header->lhb_acquire_blocks;
+			prior.lhb_acquire_retries = LOCK_header->lhb_acquire_retries;
+			prior.lhb_retry_success = LOCK_header->lhb_retry_success;
 		}
 
 		if (flag & SW_I_OPERATION)
@@ -1030,21 +1025,21 @@ static void prt_lock_activity(OUTFILE outfile,
 			FPRINTF(outfile, "%9" UQUADFORMAT" %9" UQUADFORMAT" %9" UQUADFORMAT
 					" %9" UQUADFORMAT" %9" UQUADFORMAT" %9" UQUADFORMAT
 					" %9" UQUADFORMAT" ",
-					(header->lhb_enqs - prior.lhb_enqs) / seconds,
-					(header->lhb_converts - prior.lhb_converts) / seconds,
-					(header->lhb_downgrades - prior.lhb_downgrades) / seconds,
-					(header->lhb_deqs - prior.lhb_deqs) / seconds,
-					(header->lhb_read_data - prior.lhb_read_data) / seconds,
-					(header->lhb_write_data - prior.lhb_write_data) / seconds,
-					(header->lhb_query_data - prior.lhb_query_data) / seconds);
+					(LOCK_header->lhb_enqs - prior.lhb_enqs) / seconds,
+					(LOCK_header->lhb_converts - prior.lhb_converts) / seconds,
+					(LOCK_header->lhb_downgrades - prior.lhb_downgrades) / seconds,
+					(LOCK_header->lhb_deqs - prior.lhb_deqs) / seconds,
+					(LOCK_header->lhb_read_data - prior.lhb_read_data) / seconds,
+					(LOCK_header->lhb_write_data - prior.lhb_write_data) / seconds,
+					(LOCK_header->lhb_query_data - prior.lhb_query_data) / seconds);
 
-			prior.lhb_enqs = header->lhb_enqs;
-			prior.lhb_converts = header->lhb_converts;
-			prior.lhb_downgrades = header->lhb_downgrades;
-			prior.lhb_deqs = header->lhb_deqs;
-			prior.lhb_read_data = header->lhb_read_data;
-			prior.lhb_write_data = header->lhb_write_data;
-			prior.lhb_query_data = header->lhb_query_data;
+			prior.lhb_enqs = LOCK_header->lhb_enqs;
+			prior.lhb_converts = LOCK_header->lhb_converts;
+			prior.lhb_downgrades = LOCK_header->lhb_downgrades;
+			prior.lhb_deqs = LOCK_header->lhb_deqs;
+			prior.lhb_read_data = LOCK_header->lhb_read_data;
+			prior.lhb_write_data = LOCK_header->lhb_write_data;
+			prior.lhb_query_data = LOCK_header->lhb_query_data;
 		}
 
 		if (flag & SW_I_TYPE)
@@ -1052,27 +1047,27 @@ static void prt_lock_activity(OUTFILE outfile,
 			FPRINTF(outfile, "%9" UQUADFORMAT" %9" UQUADFORMAT" %9" UQUADFORMAT
 					" %9" UQUADFORMAT" %9" UQUADFORMAT" %9" UQUADFORMAT
 					" %9" UQUADFORMAT" ",
-					(header->lhb_operations[Jrd::LCK_database] -
+					(LOCK_header->lhb_operations[Jrd::LCK_database] -
 					 	prior.lhb_operations[Jrd::LCK_database]) / seconds,
-					(header->lhb_operations[Jrd::LCK_relation] -
+					(LOCK_header->lhb_operations[Jrd::LCK_relation] -
 					 	prior.lhb_operations[Jrd::LCK_relation]) / seconds,
-					(header->lhb_operations[Jrd::LCK_bdb] -
+					(LOCK_header->lhb_operations[Jrd::LCK_bdb] -
 					 	prior.lhb_operations[Jrd::LCK_bdb]) / seconds,
-					(header->lhb_operations[Jrd::LCK_tra] -
+					(LOCK_header->lhb_operations[Jrd::LCK_tra] -
 					 	prior.lhb_operations[Jrd::LCK_tra]) / seconds,
-					(header->lhb_operations[Jrd::LCK_rel_exist] -
+					(LOCK_header->lhb_operations[Jrd::LCK_rel_exist] -
 					 	prior.lhb_operations[Jrd::LCK_rel_exist]) / seconds,
-					(header->lhb_operations[Jrd::LCK_idx_exist] -
+					(LOCK_header->lhb_operations[Jrd::LCK_idx_exist] -
 					 	prior.lhb_operations[Jrd::LCK_idx_exist]) / seconds,
-					(header->lhb_operations[0] - prior.lhb_operations[0]) / seconds);
+					(LOCK_header->lhb_operations[0] - prior.lhb_operations[0]) / seconds);
 
-			prior.lhb_operations[Jrd::LCK_database] = header->lhb_operations[Jrd::LCK_database];
-			prior.lhb_operations[Jrd::LCK_relation] = header->lhb_operations[Jrd::LCK_relation];
-			prior.lhb_operations[Jrd::LCK_bdb] = header->lhb_operations[Jrd::LCK_bdb];
-			prior.lhb_operations[Jrd::LCK_tra] = header->lhb_operations[Jrd::LCK_tra];
-			prior.lhb_operations[Jrd::LCK_rel_exist] = header->lhb_operations[Jrd::LCK_rel_exist];
-			prior.lhb_operations[Jrd::LCK_idx_exist] = header->lhb_operations[Jrd::LCK_idx_exist];
-			prior.lhb_operations[0] = header->lhb_operations[0];
+			prior.lhb_operations[Jrd::LCK_database] = LOCK_header->lhb_operations[Jrd::LCK_database];
+			prior.lhb_operations[Jrd::LCK_relation] = LOCK_header->lhb_operations[Jrd::LCK_relation];
+			prior.lhb_operations[Jrd::LCK_bdb] = LOCK_header->lhb_operations[Jrd::LCK_bdb];
+			prior.lhb_operations[Jrd::LCK_tra] = LOCK_header->lhb_operations[Jrd::LCK_tra];
+			prior.lhb_operations[Jrd::LCK_rel_exist] = LOCK_header->lhb_operations[Jrd::LCK_rel_exist];
+			prior.lhb_operations[Jrd::LCK_idx_exist] = LOCK_header->lhb_operations[Jrd::LCK_idx_exist];
+			prior.lhb_operations[0] = LOCK_header->lhb_operations[0];
 		}
 
 		if (flag & SW_I_WAIT)
@@ -1080,21 +1075,21 @@ static void prt_lock_activity(OUTFILE outfile,
 			FPRINTF(outfile, "%9" UQUADFORMAT" %9" UQUADFORMAT" %9" UQUADFORMAT
 					" %9" UQUADFORMAT" %9" UQUADFORMAT" %9" UQUADFORMAT
 					" %9" UQUADFORMAT" ",
-					(header->lhb_waits - prior.lhb_waits) / seconds,
-					(header->lhb_denies - prior.lhb_denies) / seconds,
-					(header->lhb_timeouts - prior.lhb_timeouts) / seconds,
-					(header->lhb_blocks - prior.lhb_blocks) / seconds,
-					(header->lhb_wakeups - prior.lhb_wakeups) / seconds,
-					(header->lhb_scans - prior.lhb_scans) / seconds,
-					(header->lhb_deadlocks - prior.lhb_deadlocks) / seconds);
+					(LOCK_header->lhb_waits - prior.lhb_waits) / seconds,
+					(LOCK_header->lhb_denies - prior.lhb_denies) / seconds,
+					(LOCK_header->lhb_timeouts - prior.lhb_timeouts) / seconds,
+					(LOCK_header->lhb_blocks - prior.lhb_blocks) / seconds,
+					(LOCK_header->lhb_wakeups - prior.lhb_wakeups) / seconds,
+					(LOCK_header->lhb_scans - prior.lhb_scans) / seconds,
+					(LOCK_header->lhb_deadlocks - prior.lhb_deadlocks) / seconds);
 
-			prior.lhb_waits = header->lhb_waits;
-			prior.lhb_denies = header->lhb_denies;
-			prior.lhb_timeouts = header->lhb_timeouts;
-			prior.lhb_blocks = header->lhb_blocks;
-			prior.lhb_wakeups = header->lhb_wakeups;
-			prior.lhb_scans = header->lhb_scans;
-			prior.lhb_deadlocks = header->lhb_deadlocks;
+			prior.lhb_waits = LOCK_header->lhb_waits;
+			prior.lhb_denies = LOCK_header->lhb_denies;
+			prior.lhb_timeouts = LOCK_header->lhb_timeouts;
+			prior.lhb_blocks = LOCK_header->lhb_blocks;
+			prior.lhb_wakeups = LOCK_header->lhb_wakeups;
+			prior.lhb_scans = LOCK_header->lhb_scans;
+			prior.lhb_deadlocks = LOCK_header->lhb_deadlocks;
 		}
 
 		FPRINTF(outfile, "\n");
@@ -1110,13 +1105,13 @@ static void prt_lock_activity(OUTFILE outfile,
 	{
 		FPRINTF(outfile, "%9" UQUADFORMAT" %9" UQUADFORMAT" %9" UQUADFORMAT
 				" %9" UQUADFORMAT" %9" UQUADFORMAT" ",
-				(header->lhb_acquires - base.lhb_acquires) / factor,
-				(header->lhb_acquire_blocks - base.lhb_acquire_blocks) / factor,
-				(header->lhb_acquires - base.lhb_acquires) ?
-				 	(100 * (header->lhb_acquire_blocks - base.lhb_acquire_blocks)) /
-						(header->lhb_acquires - base.lhb_acquires) : 0,
-				(header->lhb_acquire_retries - base.lhb_acquire_retries) / factor,
-				(header->lhb_retry_success - base.lhb_retry_success) / factor);
+				(LOCK_header->lhb_acquires - base.lhb_acquires) / factor,
+				(LOCK_header->lhb_acquire_blocks - base.lhb_acquire_blocks) / factor,
+				(LOCK_header->lhb_acquires - base.lhb_acquires) ?
+				 	(100 * (LOCK_header->lhb_acquire_blocks - base.lhb_acquire_blocks)) /
+						(LOCK_header->lhb_acquires - base.lhb_acquires) : 0,
+				(LOCK_header->lhb_acquire_retries - base.lhb_acquire_retries) / factor,
+				(LOCK_header->lhb_retry_success - base.lhb_retry_success) / factor);
 	}
 
 	if (flag & SW_I_OPERATION)
@@ -1124,13 +1119,13 @@ static void prt_lock_activity(OUTFILE outfile,
 		FPRINTF(outfile, "%9" UQUADFORMAT" %9" UQUADFORMAT" %9" UQUADFORMAT
 				" %9" UQUADFORMAT" %9" UQUADFORMAT" %9" UQUADFORMAT" %9"
 				UQUADFORMAT" ",
-				(header->lhb_enqs - base.lhb_enqs) / factor,
-				(header->lhb_converts - base.lhb_converts) / factor,
-				(header->lhb_downgrades - base.lhb_downgrades) / factor,
-				(header->lhb_deqs - base.lhb_deqs) / factor,
-				(header->lhb_read_data - base.lhb_read_data) / factor,
-				(header->lhb_write_data - base.lhb_write_data) / factor,
-				(header->lhb_query_data - base.lhb_query_data) / factor);
+				(LOCK_header->lhb_enqs - base.lhb_enqs) / factor,
+				(LOCK_header->lhb_converts - base.lhb_converts) / factor,
+				(LOCK_header->lhb_downgrades - base.lhb_downgrades) / factor,
+				(LOCK_header->lhb_deqs - base.lhb_deqs) / factor,
+				(LOCK_header->lhb_read_data - base.lhb_read_data) / factor,
+				(LOCK_header->lhb_write_data - base.lhb_write_data) / factor,
+				(LOCK_header->lhb_query_data - base.lhb_query_data) / factor);
 	}
 
 	if (flag & SW_I_TYPE)
@@ -1138,19 +1133,19 @@ static void prt_lock_activity(OUTFILE outfile,
 		FPRINTF(outfile, "%9" UQUADFORMAT" %9" UQUADFORMAT" %9" UQUADFORMAT
 				" %9" UQUADFORMAT" %9" UQUADFORMAT" %9" UQUADFORMAT
 				" %9" UQUADFORMAT" ",
-				(header->lhb_operations[Jrd::LCK_database] -
+				(LOCK_header->lhb_operations[Jrd::LCK_database] -
 				 	base.lhb_operations[Jrd::LCK_database]) / factor,
-				(header->lhb_operations[Jrd::LCK_relation] -
+				(LOCK_header->lhb_operations[Jrd::LCK_relation] -
 				 	base.lhb_operations[Jrd::LCK_relation]) / factor,
-				(header->lhb_operations[Jrd::LCK_bdb] -
+				(LOCK_header->lhb_operations[Jrd::LCK_bdb] -
 				 	base.lhb_operations[Jrd::LCK_bdb]) / factor,
-				(header->lhb_operations[Jrd::LCK_tra] -
+				(LOCK_header->lhb_operations[Jrd::LCK_tra] -
 				 	base.lhb_operations[Jrd::LCK_tra]) / factor,
-				(header->lhb_operations[Jrd::LCK_rel_exist] -
+				(LOCK_header->lhb_operations[Jrd::LCK_rel_exist] -
 				 	base.lhb_operations[Jrd::LCK_rel_exist]) / factor,
-				(header->lhb_operations[Jrd::LCK_idx_exist] -
+				(LOCK_header->lhb_operations[Jrd::LCK_idx_exist] -
 				 	base.lhb_operations[Jrd::LCK_idx_exist]) / factor,
-				(header->lhb_operations[0] - base.lhb_operations[0]) / factor);
+				(LOCK_header->lhb_operations[0] - base.lhb_operations[0]) / factor);
 	}
 
 	if (flag & SW_I_WAIT)
@@ -1158,13 +1153,13 @@ static void prt_lock_activity(OUTFILE outfile,
 		FPRINTF(outfile, "%9" UQUADFORMAT" %9" UQUADFORMAT" %9" UQUADFORMAT
 				" %9" UQUADFORMAT" %9" UQUADFORMAT" %9" UQUADFORMAT
 				" %9" UQUADFORMAT" ",
-				(header->lhb_waits - base.lhb_waits) / factor,
-				(header->lhb_denies - base.lhb_denies) / factor,
-				(header->lhb_timeouts - base.lhb_timeouts) / factor,
-				(header->lhb_blocks - base.lhb_blocks) / factor,
-				(header->lhb_wakeups - base.lhb_wakeups) / factor,
-				(header->lhb_scans - base.lhb_scans) / factor,
-				(header->lhb_deadlocks - base.lhb_deadlocks) / factor);
+				(LOCK_header->lhb_waits - base.lhb_waits) / factor,
+				(LOCK_header->lhb_denies - base.lhb_denies) / factor,
+				(LOCK_header->lhb_timeouts - base.lhb_timeouts) / factor,
+				(LOCK_header->lhb_blocks - base.lhb_blocks) / factor,
+				(LOCK_header->lhb_wakeups - base.lhb_wakeups) / factor,
+				(LOCK_header->lhb_scans - base.lhb_scans) / factor,
+				(LOCK_header->lhb_deadlocks - base.lhb_deadlocks) / factor);
 	}
 
 	FPRINTF(outfile, "\n");
@@ -1239,21 +1234,73 @@ static void prt_lock(OUTFILE outfile, const lhb* LOCK_header, const lbl* lock, U
 		// in <page_space>:<page_number> format
 		const UCHAR* q = lock->lbl_key;
 
-		SLONG key;
-		memcpy(&key, q, sizeof(SLONG));
-		q += sizeof(SLONG);
+		ULONG pageno;
+		memcpy(&pageno, q, sizeof(ULONG));
+		q += sizeof(ULONG);
 
 		ULONG pg_space;
-		memcpy(&pg_space, q, sizeof(SLONG));
+		memcpy(&pg_space, q, sizeof(ULONG));
 
-		FPRINTF(outfile, "\tKey: %04" ULONGFORMAT":%06" SLONGFORMAT",", pg_space, key);
+		FPRINTF(outfile, "\tKey: %04" ULONGFORMAT":%06" ULONGFORMAT",", pg_space, pageno);
 	}
-	else if (lock->lbl_length == 4)
+	else if ((lock->lbl_series == Jrd::LCK_relation || lock->lbl_series == Jrd::LCK_rel_gc) &&
+		lock->lbl_length == sizeof(ULONG) + sizeof(SINT64)) // Jrd::jrd_rel::getRelLockKeyLength()
+	{
+		const UCHAR* q = lock->lbl_key;
+
+		ULONG rel_id;
+		memcpy(&rel_id, q, sizeof(ULONG));
+		q += sizeof(ULONG);
+
+		SINT64 instance_id;
+		memcpy(&instance_id, q, sizeof(SINT64));
+
+		FPRINTF(outfile, "\tKey: %04" ULONGFORMAT":%09" SQUADFORMAT",", rel_id, instance_id);
+	}
+	else if ((lock->lbl_series == Jrd::LCK_tra ||
+			  lock->lbl_series == Jrd::LCK_tra_pc ||
+			  lock->lbl_series == Jrd::LCK_attachment ||
+			  lock->lbl_series == Jrd::LCK_monitor ||
+			  lock->lbl_series == Jrd::LCK_cancel) &&
+			 lock->lbl_length == sizeof(SINT64))
+	{
+		SINT64 key;
+		memcpy(&key, lock->lbl_key, lock->lbl_length);
+
+		FPRINTF(outfile, "\tKey: %09" SQUADFORMAT",", key);
+	}
+	else if (lock->lbl_series == Jrd::LCK_record_gc &&
+		lock->lbl_length == sizeof(SINT64))
+	{
+		SINT64 key;
+		memcpy(&key, lock->lbl_key, lock->lbl_length);
+
+		const ULONG pageno = key >> 16;
+		const ULONG line = (ULONG) (key & MAX_USHORT);
+
+		FPRINTF(outfile, "\tKey: %06" ULONGFORMAT":%04" ULONGFORMAT",", pageno, line);
+	}
+	else if ((lock->lbl_series == Jrd::LCK_idx_exist || lock->lbl_series == Jrd::LCK_expression) &&
+		lock->lbl_length == sizeof(SLONG))
 	{
 		SLONG key;
-		memcpy(&key, lock->lbl_key, 4);
+		memcpy(&key, lock->lbl_key, lock->lbl_length);
+
+		const ULONG rel_id = key >> 16;
+		const ULONG idx_id = (ULONG) (key & MAX_USHORT);
+
+		FPRINTF(outfile, "\tKey: %04" ULONGFORMAT":%04" ULONGFORMAT",", rel_id, idx_id);
+	}
+	else if (lock->lbl_length == sizeof(SLONG))
+	{
+		SLONG key;
+		memcpy(&key, lock->lbl_key, lock->lbl_length);
 
 		FPRINTF(outfile, "\tKey: %06" SLONGFORMAT",", key);
+	}
+	else if (lock->lbl_length == 0)
+	{
+		FPRINTF(outfile, "\tKey: <none>");
 	}
 	else
 	{

@@ -22,6 +22,8 @@
 #		Alex Peshkoff
 #
 
+fb_install_prefix=@prefix@
+
 # Script to copy install files from the build/transport area
 
 
@@ -33,7 +35,8 @@ BuildRootDir=..
 BuiltFBDir=Release/firebird  # Where the just build fb exists.
 TargetDir=buildroot    # Where we want to build the install image
 SecurityDatabase=security4.fdb
-TomBuild="@TOMBUILD@"
+TomMathBuild="@TOMMATH_BUILD@"
+TomCryptBuild="@TOMCRYPT_BUILD@"
 
 
 #------------------------------------------------------------------------
@@ -51,6 +54,13 @@ addLibs() {
 	touch $libTarget
 	echo "#!/bin/sh" >>$libTarget
 	echo >>$libTarget
+
+	LIB=`objdump -p $libSdir/firebird|grep NEEDED|grep tomcrypt|awk '{print $2;}'`
+	[ "$LIB" ] && echo "export LIBTOMCRYPT=$LIB" >>$libTarget
+	LIB=`objdump -p $libSdir/isql|grep NEEDED|egrep "(curses|termcap|tinfo)"|awk '{print $2;}'`
+	[ "$LIB" ] && echo "export LIBCURSES=$LIB" >>$libTarget
+	echo >>$libTarget
+
 	for i in posixLibrary.sh linuxLibrary.sh
 	do
 		echo "# $i" >>$libTarget
@@ -151,11 +161,11 @@ copyFiles() {
     fi
 
 	#directories
-    makeDirs "@FB_BINDIR@ @FB_SBINDIR@ @FB_CONFDIR@ @FB_LIBDIR@ @FB_INCDIR@/firebird @FB_DOCDIR@/sql.extensions @FB_UDFDIR@ \
+    makeDirs "@FB_BINDIR@ @FB_SBINDIR@ @FB_CONFDIR@ @FB_LIBDIR@ @FB_INCDIR@/firebird @FB_DOCDIR@/sql.extensions \
     		  @FB_SAMPLEDIR@ @FB_SAMPLEDBDIR@ @FB_HELPDIR@ @FB_INTLDIR@ @FB_MISCDIR@ @FB_SECDBDIR@ @FB_MSGDIR@ @FB_LOGDIR@ \
-    		  @FB_GUARDDIR@ @FB_PLUGDIR@"
+    		  @FB_GUARDDIR@ @FB_PLUGDIR@ @FB_TZDATADIR@"
 
-	for i in security; do
+	for i in udf; do
 		makeDirs @FB_MISCDIR@/upgrade/$i
 	done
 
@@ -184,19 +194,13 @@ copyFiles() {
     addLibs $BuiltFBDir/bin changeServerMode.sh ${TargetDir}@FB_SBINDIR@
     cp $BuiltFBDir/bin/registerDatabase.sh ${TargetDir}@FB_SBINDIR@
     cp $BuiltFBDir/bin/fb_config ${TargetDir}@FB_SBINDIR@
+    addLibs $BuiltFBDir/bin FirebirdUninstall.sh ${TargetDir}@FB_SBINDIR@
 
 	chmod 0755 ${TargetDir}@FB_SBINDIR@/*
 	chmod 0700 ${TargetDir}@FB_SBINDIR@/*.sh
 
-	#install scripts
-    addLibs $BuiltFBDir/bin tarMainInstall.sh $BuildRootDir/gen/install/scripts
-    addLibs $BuiltFBDir/bin tarinstall.sh $BuildRootDir/gen/install/scripts
-    addLibs $BuiltFBDir/bin preinstall.sh $BuildRootDir/gen/install/scripts
-    addLibs $BuiltFBDir/bin postinstall.sh $BuildRootDir/gen/install/scripts
-    addLibs $BuiltFBDir/bin preuninstall.sh $BuildRootDir/gen/install/scripts
-    addLibs $BuiltFBDir/bin postuninstall.sh $BuildRootDir/gen/install/scripts
-    addLibs $BuiltFBDir/bin taruninstall.sh $BuildRootDir/gen/install/scripts
-    addLibs $BuiltFBDir/bin tarMainUninstall.sh $BuildRootDir/gen/install/scripts
+	#install script
+    addLibs $BuiltFBDir/bin install.sh $BuildRootDir/gen/install
 
     #examples - copy only if we have them
     exampleFiles=`find $BuiltFBDir/examples/README -type f -print`
@@ -210,7 +214,16 @@ copyFiles() {
 		cp $BuiltFBDir/examples/empbuild/*.fdb ${TargetDir}@FB_SAMPLEDBDIR@
 
 		ReadOnlyTree ${TargetDir}@FB_SAMPLEDIR@
-		chmod 0444 ${TargetDir}@FB_SAMPLEDBDIR@/*.fdb
+		chmod 0664 ${TargetDir}@FB_SAMPLEDBDIR@/*.fdb
+
+		#plugins samples
+		makeDirs ${TargetDir}@FB_SAMPLEDIR@/prebuilt
+		cp $BuiltFBDir/plugins/*fbSample* ${TargetDir}@FB_SAMPLEDIR@/prebuilt/plugins
+		cp $BuiltFBDir/bin/*fbSample* ${TargetDir}@FB_SAMPLEDIR@/prebuilt/bin
+		chmod 0644 ${TargetDir}@FB_SAMPLEDIR@/prebuilt/plugins/*
+
+		# exec bit for sample binaries
+		chmod 0755 ${TargetDir}@FB_SAMPLEDIR@/prebuilt/bin/*
     fi
 
 	#QLI help
@@ -239,19 +252,28 @@ copyFiles() {
     cp -df $BuiltFBDir/lib/libfbclient.so* ${TargetDir}@FB_LIBDIR@
     cp -f $BuiltFBDir/lib/libib_util.so ${TargetDir}@FB_LIBDIR@/libib_util.so
 
-	if [ "$TomBuild" = "Y" ]; then
+	if [ "$TomMathBuild" = "Y" ]; then
 		makeDirs @FB_LIBDIR@/.tm
 		cp -df $BuildRootDir/extern/libtommath/.libs/libtommath.so* ${TargetDir}@FB_LIBDIR@/.tm
+	fi
+
+	if [ "$TomCryptBuild" = "Y" ]; then
+		makeDirs @FB_LIBDIR@/.tm
+		cp -df $BuildRootDir/extern/libtomcrypt/.libs/libtomcrypt.so* ${TargetDir}@FB_LIBDIR@/.tm
 	fi
 
 	chmod 0755 ${TargetDir}@FB_LIBDIR@/*.so*
 
 	#plugins
-	(cd $BuiltFBDir/plugins;tar cf - .) | (cd ${TargetDir}@FB_PLUGDIR@; tar xvf -)
+	(cd $BuiltFBDir/plugins;tar cf - --exclude='*fbSample*' .) | (cd ${TargetDir}@FB_PLUGDIR@; tar xvf -)
 
 	for file in `find ${TargetDir}@FB_PLUGDIR@ -name '*.so*' -print`; do
 		chmod 0755 ${file}
 	done
+
+	makeDirs ${TargetDir}@FB_TZDATADIR@
+	cp $BuiltFBDir/tzdata/*.res ${TargetDir}@FB_TZDATADIR@
+	chmod 0444 ${TargetDir}@FB_TZDATADIR@/*.res
 
 	#intl
     cp $BuiltFBDir/intl/libfbintl.so ${TargetDir}@FB_INTLDIR@/fbintl
@@ -260,17 +282,8 @@ copyFiles() {
 	chmod 0755 ${TargetDir}@FB_INTLDIR@/fbintl
 	chmod 0644 ${TargetDir}@FB_INTLDIR@/fbintl.conf
 
-	#UDF
-    cp $BuiltFBDir/UDF/ib_udf.so ${TargetDir}@FB_UDFDIR@
-    cp $BuiltFBDir/UDF/fbudf.so ${TargetDir}@FB_UDFDIR@
 #	Note that the following items copy files from outside the build tree.
 #   Copy the sql-declarations into the UDF-directory
-    cp $BuildRootDir/src/extlib/ib_udf.sql ${TargetDir}@FB_UDFDIR@
-    cp $BuildRootDir/src/extlib/ib_udf2.sql ${TargetDir}@FB_UDFDIR@
-    cp $BuildRootDir/src/extlib/fbudf/fbudf.sql ${TargetDir}@FB_UDFDIR@
-
-	chmod 0755 ${TargetDir}@FB_UDFDIR@/*.so
-	chmod 0644 ${TargetDir}@FB_UDFDIR@/*.sql
 
 	#doc
     cp $BuildRootDir/doc/*.pdf ${TargetDir}@FB_DOCDIR@
@@ -288,11 +301,10 @@ copyFiles() {
 
 	#misc
     cp $BuildRootDir/src/misc/intl.sql							${TargetDir}@FB_MISCDIR@
-    cp $BuildRootDir/src/misc/upgrade/v3.0/security_database*	${TargetDir}@FB_MISCDIR@/upgrade/security
-    cp $BuildRootDir/gen/install/misc/firebird.xinetd			${TargetDir}@FB_MISCDIR@
+    cp $BuildRootDir/src/misc/upgrade/v4.0/udf_replace*			${TargetDir}@FB_MISCDIR@/upgrade/udf
 	cp $BuildRootDir/gen/install/misc/firebird.init.d.*			${TargetDir}@FB_MISCDIR@
 	cp $BuildRootDir/gen/install/misc/rc.config.firebird		${TargetDir}@FB_MISCDIR@
-    cp $BuildRootDir/gen/install/misc/firebird-*				${TargetDir}@FB_MISCDIR@
+    cp $BuildRootDir/gen/install/misc/firebird.service			${TargetDir}@FB_MISCDIR@
 
 	chmod -R go-rwx ${TargetDir}@FB_MISCDIR@
 
@@ -301,6 +313,7 @@ copyFiles() {
     cp $BuiltFBDir/databases.conf ${TargetDir}@FB_CONFDIR@
     cp $BuiltFBDir/fbtrace.conf ${TargetDir}@FB_CONFDIR@
     cp $BuiltFBDir/plugins.conf ${TargetDir}@FB_CONFDIR@
+    cp $BuiltFBDir/replication.conf ${TargetDir}@FB_CONFDIR@
 
 	chmod 0644 ${TargetDir}@FB_CONFDIR@/*.conf
 

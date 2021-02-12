@@ -41,6 +41,11 @@ TYPE("DATE", blr_sql_date, nam_f_type)
 TYPE("TIME", blr_sql_time, nam_f_type)
 TYPE("INT64", blr_int64, nam_f_type)
 TYPE("BOOLEAN", blr_bool, nam_f_type)
+TYPE("DECFLOAT(16)", blr_dec64, nam_f_type)
+TYPE("DECFLOAT(34)", blr_dec128, nam_f_type)
+TYPE("TIMESTAMP WITH TIMEZONE", blr_timestamp_tz, nam_f_type)
+TYPE("TIME WITH TIMEZONE", blr_sql_time_tz, nam_f_type)
+TYPE("INT128", blr_int128, nam_f_type)
 
 TYPE("BINARY", 0, nam_f_sub_type)
 TYPE("TEXT", 1, nam_f_sub_type)
@@ -135,6 +140,7 @@ TYPE("CONSISTENCY", iso_mode_consistency, nam_mon_iso_mode)
 TYPE("CONCURRENCY", iso_mode_concurrency, nam_mon_iso_mode)
 TYPE("READ_COMMITTED_VERSION", iso_mode_rc_version, nam_mon_iso_mode)
 TYPE("READ_COMMITTED_NO_VERSION", iso_mode_rc_no_version, nam_mon_iso_mode)
+TYPE("READ_COMMITTED_READ_CONSISTENCY", iso_mode_rc_read_consistency, nam_mon_iso_mode)
 
 TYPE("NORMAL", backup_state_normal, nam_mon_backup_state)
 TYPE("STALLED", backup_state_stalled, nam_mon_backup_state)
@@ -187,3 +193,16 @@ TYPE("DETERMINISTIC", 1, nam_deterministic_flag)
 
 TYPE("USER", 0, nam_map_to_type)
 TYPE("ROLE", 1, nam_map_to_type)
+
+#define SYSTEM_PRIVILEGE(p) TYPE(STRINGIZE(p), int(Jrd::p), nam_system_privileges)
+#include "SystemPrivileges.h"
+#undef SYSTEM_PRIVILEGE
+
+TYPE("NOT ENCRYPTED", 0, nam_mon_crypt_state)
+TYPE("ENCRYPTED", 1, nam_mon_crypt_state)
+TYPE("DECRYPT IN PROGRESS", 2, nam_mon_crypt_state)
+TYPE("ENCRYPT IN PROGRESS", 3, nam_mon_crypt_state)
+
+TYPE("NONE", 0, nam_mon_repl_mode)
+TYPE("READ-ONLY", 1, nam_mon_repl_mode)
+TYPE("READ-WRITE", 2, nam_mon_repl_mode)

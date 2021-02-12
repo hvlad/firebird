@@ -27,10 +27,12 @@
 #ifndef JRD_DSC_H
 #define JRD_DSC_H
 
-#include "../common/dsc_pub.h"
-#include "consts_pub.h"
+#include "firebird/impl/dsc_pub.h"
+#include "firebird/impl/consts_pub.h"
 #include "../jrd/ods.h"
 #include "../intl/charsets.h"
+#include "../common/DecFloat.h"
+#include "../common/Int128.h"
 
 // Data type information
 
@@ -41,7 +43,7 @@ inline bool DTYPE_IS_TEXT(UCHAR d)
 
 inline bool DTYPE_IS_DATE(UCHAR t)
 {
-	return t >= dtype_sql_date && t <= dtype_timestamp;
+	return (t >= dtype_sql_date && t <= dtype_timestamp) || (t >= dtype_sql_time_tz && t <= dtype_ex_timestamp_tz);
 }
 
 // DTYPE_IS_BLOB includes both BLOB and ARRAY since array's are implemented over blobs.
@@ -59,7 +61,7 @@ inline bool DTYPE_IS_BLOB_OR_QUAD(UCHAR d)
 // Exact numeric?
 inline bool DTYPE_IS_EXACT(UCHAR d)
 {
-	return d == dtype_int64 || d == dtype_long || d == dtype_short;
+	return d == dtype_int64 || d == dtype_long || d == dtype_short || d == dtype_int128;
 }
 
 inline bool DTYPE_IS_APPROX(UCHAR d)
@@ -67,9 +69,15 @@ inline bool DTYPE_IS_APPROX(UCHAR d)
 	return d == dtype_double || d == dtype_real;
 }
 
+inline bool DTYPE_IS_DECFLOAT(UCHAR d)
+{
+	return d == dtype_dec128 || d == dtype_dec64;
+}
+
 inline bool DTYPE_IS_NUMERIC(UCHAR d)
 {
-	return (d >= dtype_byte && d <= dtype_d_float) || d  == dtype_int64;
+	return (d >= dtype_byte && d <= dtype_d_float) || d == dtype_int64 ||
+			d == dtype_int128 || DTYPE_IS_DECFLOAT(d);
 }
 
 // Descriptor format
@@ -132,7 +140,13 @@ typedef struct dsc
 
 	bool isExact() const
 	{
-		return dsc_dtype == dtype_int64 || dsc_dtype == dtype_long || dsc_dtype == dtype_short;
+		return dsc_dtype == dtype_int128 || dsc_dtype == dtype_int64 ||
+			   dsc_dtype == dtype_long || dsc_dtype == dtype_short;
+	}
+
+	bool isNumeric() const
+	{
+		return (dsc_dtype >= dtype_byte && dsc_dtype <= dtype_d_float) || dsc_dtype == dtype_int64;
 	}
 
 	bool isText() const
@@ -147,7 +161,57 @@ typedef struct dsc
 
 	bool isDateTime() const
 	{
-		return dsc_dtype >= dtype_sql_date && dsc_dtype <= dtype_timestamp;
+		return DTYPE_IS_DATE(dsc_dtype);
+	}
+
+	bool isDateTimeTz() const
+	{
+		return dsc_dtype >= dtype_sql_time_tz && dsc_dtype <= dtype_ex_timestamp_tz;
+	}
+
+	bool isDate() const
+	{
+		return dsc_dtype == dtype_sql_date;
+	}
+
+	bool isTime() const
+	{
+		return dsc_dtype == dtype_sql_time || dsc_dtype == dtype_sql_time_tz || dsc_dtype == dtype_ex_time_tz;
+	}
+
+	bool isTimeStamp() const
+	{
+		return dsc_dtype == dtype_timestamp || dsc_dtype == dtype_timestamp_tz || dsc_dtype == dtype_ex_timestamp_tz;
+	}
+
+	bool isDecFloat() const
+	{
+		return dsc_dtype == dtype_dec128 || dsc_dtype == dtype_dec64;
+	}
+
+	bool isInt128() const
+	{
+		return dsc_dtype == dtype_int128;
+	}
+
+	bool isDecOrInt() const
+	{
+		return isDecFloat() || isExact();
+	}
+
+	bool isDecOrInt128() const
+	{
+		return isDecFloat() || isInt128();
+	}
+
+	bool is128() const
+	{
+		return dsc_dtype == dtype_dec128 || dsc_dtype == dtype_int128;
+	}
+
+	bool isApprox() const
+	{
+		return DTYPE_IS_APPROX(dsc_dtype);
 	}
 
 	bool isUnknown() const
@@ -161,6 +225,14 @@ typedef struct dsc
 			return dsc_sub_type;
 
 		return isc_blob_text;
+	}
+
+	SSHORT getSubType() const
+	{
+		if (isBlob() || isExact())
+			return dsc_sub_type;
+
+		return 0;
 	}
 
 	void setBlobSubType(SSHORT subType)
@@ -228,6 +300,14 @@ typedef struct dsc
 		memset(this, 0, sizeof(*this));
 	}
 
+	void clearFlags()
+	{
+		if (isBlob() && dsc_sub_type == isc_blob_text)
+			dsc_flags &= 0xFF00;
+		else
+			dsc_flags = 0;
+	}
+
 	void makeBlob(SSHORT subType, USHORT ttype, ISC_QUAD* address = NULL)
 	{
 		clear();
@@ -246,6 +326,14 @@ typedef struct dsc
 		dsc_address = (UCHAR*) address;
 	}
 
+	void makeDbkey(void* address = NULL)
+	{
+		clear();
+		dsc_dtype = dtype_dbkey;
+		dsc_length = sizeof(ISC_QUAD);
+		dsc_address = (UCHAR*) address;
+	}
+
 	void makeDouble(double* address = NULL)
 	{
 		clear();
@@ -254,11 +342,36 @@ typedef struct dsc
 		dsc_address = (UCHAR*) address;
 	}
 
+	void makeDecimal64(Firebird::Decimal64* address = NULL)
+	{
+		clear();
+		dsc_dtype = dtype_dec64;
+		dsc_length = sizeof(Firebird::Decimal64);
+		dsc_address = (UCHAR*) address;
+	}
+
+	void makeDecimal128(Firebird::Decimal128* address = NULL)
+	{
+		clear();
+		dsc_dtype = dtype_dec128;
+		dsc_length = sizeof(Firebird::Decimal128);
+		dsc_address = (UCHAR*) address;
+	}
+
 	void makeInt64(SCHAR scale, SINT64* address = NULL)
 	{
 		clear();
 		dsc_dtype = dtype_int64;
 		dsc_length = sizeof(SINT64);
+		dsc_scale = scale;
+		dsc_address = (UCHAR*) address;
+	}
+
+	void makeInt128(SCHAR scale, Firebird::Int128* address = NULL)
+	{
+		clear();
+		dsc_dtype = dtype_int128;
+		dsc_length = sizeof(Firebird::Int128);
 		dsc_scale = scale;
 		dsc_address = (UCHAR*) address;
 	}
@@ -318,6 +431,24 @@ typedef struct dsc
 		dsc_address = (UCHAR*) address;
 	}
 
+	void makeTimeTz(ISC_TIME_TZ* address = NULL)
+	{
+		clear();
+		dsc_dtype = dtype_sql_time_tz;
+		dsc_length = sizeof(ISC_TIME_TZ);
+		dsc_scale = 0;
+		dsc_address = (UCHAR*) address;
+	}
+
+	void makeTimeTzEx(ISC_TIME_TZ_EX* address = NULL)
+	{
+		clear();
+		dsc_dtype = dtype_ex_time_tz;
+		dsc_length = sizeof(ISC_TIME_TZ_EX);
+		dsc_scale = 0;
+		dsc_address = (UCHAR*) address;
+	}
+
 	void makeTimestamp(GDS_TIMESTAMP* address = NULL)
 	{
 		clear();
@@ -327,11 +458,34 @@ typedef struct dsc
 		dsc_address = (UCHAR*) address;
 	}
 
+	void makeTimestampTz(ISC_TIMESTAMP_TZ* address = NULL)
+	{
+		clear();
+		dsc_dtype = dtype_timestamp_tz;
+		dsc_length = sizeof(ISC_TIMESTAMP_TZ);
+		dsc_scale = 0;
+		dsc_address = (UCHAR*) address;
+	}
+
+	void makeTimestampTzEx(ISC_TIMESTAMP_TZ_EX* address = NULL)
+	{
+		clear();
+		dsc_dtype = dtype_ex_timestamp_tz;
+		dsc_length = sizeof(ISC_TIMESTAMP_TZ_EX);
+		dsc_scale = 0;
+		dsc_address = (UCHAR*) address;
+	}
+
 	void makeVarying(USHORT length, USHORT ttype, UCHAR* address = NULL)
 	{
 		clear();
 		dsc_dtype = dtype_varying;
 		dsc_length = sizeof(USHORT) + length;
+		if (dsc_length < length)
+		{
+			// overflow - avoid segfault
+			dsc_length = MAX_USHORT;
+		}
 		setTextType(ttype);
 		dsc_address = address;
 	}
@@ -394,19 +548,23 @@ inline bool DSC_EQUIV(const dsc* d1, const dsc* d2, bool check_collate)
 {
 	if (((alt_dsc*) d1)->dsc_combined_type == ((alt_dsc*) d2)->dsc_combined_type)
 	{
-		if (d1->dsc_dtype >= dtype_text && d1->dsc_dtype <= dtype_varying)
+		if ((d1->dsc_dtype >= dtype_text && d1->dsc_dtype <= dtype_varying) ||
+			d1->dsc_dtype == dtype_blob)
 		{
-			if (DSC_GET_CHARSET(d1) == DSC_GET_CHARSET(d2))
+			if (d1->getCharSet() == d2->getCharSet())
 			{
-				if (check_collate) {
-					return (DSC_GET_COLLATE(d1) == DSC_GET_COLLATE(d2));
-				}
+				if (check_collate)
+					return d1->getCollation() == d2->getCollation();
+
 				return true;
 			}
+
 			return false;
 		}
+
 		return true;
 	}
+
 	return false;
 }
 
@@ -455,5 +613,7 @@ inline SCHAR NUMERIC_SCALE(const dsc desc)
 {
 	return ((DTYPE_IS_TEXT(desc.dsc_dtype)) ? 0 : desc.dsc_scale);
 }
+
+const UCHAR DEFAULT_DOUBLE  = dtype_double;
 
 #endif // JRD_DSC_H

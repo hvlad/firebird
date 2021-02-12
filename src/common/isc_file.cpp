@@ -57,6 +57,7 @@
 #include "../common/classes/Aligner.h"
 #include "../common/utils_proto.h"
 #include "../common/os/os_utils.h"
+#include "../common/os/path_utils.h"
 
 #include <sys/types.h>
 #ifdef HAVE_SYS_IPC_H
@@ -83,6 +84,9 @@
 #endif
 #ifdef HAVE_ICONV_H
 #include <iconv.h>
+#endif
+#ifdef LINUX
+#include <sys/sysmacros.h>
 #endif
 
 #include "../common/config/config.h"
@@ -224,9 +228,33 @@ bool ISC_analyze_nfs(tstring& expanded_filename, tstring& node_name)
 	// If we are ignoring NFS remote mounts then do not bother checking here
 	// and pretend it's only local. MOD 16-Nov-2002
 
-	if (Config::getRemoteFileOpenAbility()) {
+	if (Config::getRemoteFileOpenAbility())
+		return false;
+
+#ifdef LINUX
+	// In order to avoid analyzing mtab in most cases check for non-device mounts first
+	struct stat fileStat;
+	unsigned m = 1;		// use something that is known to be not non-device major
+
+	if (os_utils::stat(expanded_filename.c_str(), &fileStat) == 0)
+		m = major(fileStat.st_dev);
+	else	// stat error - let's try with path component
+	{
+		tstring path, name;
+		PathUtils::splitLastComponent(path, name, expanded_filename);
+
+		if (path.hasData() && os_utils::stat(path.c_str(), &fileStat) == 0)
+			m = major(fileStat.st_dev);
+	}
+
+	if (m != 0 && m != 144 && m != 145 && m != 146)
+	{
+		// device mount or stat for file/path is impossible - definitely not NFS
 		return false;
 	}
+
+	// proceed with deeper analysis
+#endif
 
 	tstring max_node, max_path;
 	size_t len = 0;
@@ -319,7 +347,7 @@ bool ISC_analyze_nfs(tstring& expanded_filename, tstring& node_name)
 
 
 bool ISC_analyze_protocol(const char* protocol, tstring& expanded_name, tstring& node_name,
-						  const char* separator)
+						  const char* separator, bool need_file)
 {
 /**************************************
  *
@@ -339,6 +367,7 @@ bool ISC_analyze_protocol(const char* protocol, tstring& expanded_name, tstring&
 	if (expanded_name.find(prefix) != 0)
 		return false;
 
+	PathName savedName = expanded_name;
 	expanded_name.erase(0, prefix.length());
 
 	if (separator) // this implies node name is expected!
@@ -346,7 +375,7 @@ bool ISC_analyze_protocol(const char* protocol, tstring& expanded_name, tstring&
 		size p = expanded_name.find_first_of('/');
 		if (p != 0 && p != npos)
 		{
-			node_name = expanded_name.substr(0, p);
+			node_name = p == npos ? expanded_name : expanded_name.substr(0, p);
 			expanded_name.erase(0, node_name.length() + 1);
 
 			if (node_name[0] == '[')
@@ -362,6 +391,12 @@ bool ISC_analyze_protocol(const char* protocol, tstring& expanded_name, tstring&
 			if (p != npos)
 				node_name[p] = *separator;
 		}
+	}
+
+	if (need_file && !expanded_name.hasData())
+	{
+		expanded_name = savedName;
+		return false;
 	}
 
 	return true;
@@ -419,7 +454,7 @@ bool ISC_analyze_pclan(tstring& expanded_name, tstring& node_name)
 #endif	// WIN_NT
 
 
-bool ISC_analyze_tcp(tstring& file_name, tstring& node_name)
+bool ISC_analyze_tcp(tstring& file_name, tstring& node_name, bool need_file)
 {
 /**************************************
  *
@@ -454,7 +489,7 @@ bool ISC_analyze_tcp(tstring& file_name, tstring& node_name)
 	else
 		p = file_name.find(INET_FLAG);
 
-	if (p == npos || p == 0 || p == file_name.length() - 1)
+	if (p == npos || p == 0 || (need_file && (p == file_name.length() - 1)))
 		return false;
 
 	node_name = file_name.substr(0, p);
@@ -1459,7 +1494,7 @@ bool Mnt::get()
  **************************************/
 
 
-	TEXT device[128], mount_point[128], mount_type[16], rw[128], foo1[16];
+	TEXT device[MAXPATHLEN], mount_point[MAXPATHLEN], mount_type[16], rw[512], foo1[16];
 
 	const int n = fscanf(mtab, "%s %s %s %s %s %s", device, mount_point, mount_type, rw, foo1, foo1);
 	if (n < 0)
@@ -1669,11 +1704,7 @@ private:
 	{
 		iconv_t ret = iconv_open(tocode, fromcode);
 		if (ret == (iconv_t) -1)
-		{
-			(Arg::Gds(isc_random) << "Error opening conversion descriptor" <<
-			 Arg::Unix(errno)).raise();
-			// adding text "from @1 to @2" is good idea
-		}
+			(Arg::Gds(isc_iconv_open) << fromcode << tocode << Arg::Unix(errno)).raise();
 
 		return ret;
 	}

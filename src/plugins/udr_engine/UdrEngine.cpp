@@ -21,7 +21,7 @@
  */
 
 #include "firebird.h"
-#include "../jrd/ibase.h"
+#include "ibase.h"
 #include "firebird/Interface.h"
 #include "../common/classes/alloc.h"
 #include "../common/classes/array.h"
@@ -89,17 +89,6 @@ public:
 		}
 	}
 
-	int release()
-	{
-		if (--refCounter == 0)
-		{
-			delete this;
-			return 0;
-		}
-
-		return 1;
-	}
-
 public:
 	UdrPluginImpl* loadModule(ThrowStatusWrapper* status, IRoutineMetadata* metadata,
 		PathName* moduleName, string* entryPoint);
@@ -126,9 +115,6 @@ public:
 		IRoutineMetadata* metadata, IMetadataBuilder* inBuilder, IMetadataBuilder* outBuilder);
 	IExternalTrigger* makeTrigger(ThrowStatusWrapper* status, IExternalContext* context,
 		IRoutineMetadata* metadata, IMetadataBuilder* fieldsBuilder);
-
-public:
-	void dispose();
 
 private:
 	Mutex childrenMutex;
@@ -302,12 +288,6 @@ public:
 	}
 
 public:
-	void dispose()
-	{
-		delete this;
-	}
-
-public:
 	void getCharSet(ThrowStatusWrapper* status, IExternalContext* context,
 		char* name, unsigned nameSize)
 	{
@@ -370,12 +350,6 @@ public:
 	}
 
 public:
-	void dispose()
-	{
-		delete this;
-	}
-
-public:
 	void getCharSet(ThrowStatusWrapper* status, IExternalContext* context,
 		char* name, unsigned nameSize)
 	{
@@ -434,12 +408,6 @@ public:
 	~SharedTrigger()
 	{
 		engine->deleteChildren(children);
-	}
-
-public:
-	void dispose()
-	{
-		delete this;
 	}
 
 public:
@@ -567,47 +535,36 @@ UdrPluginImpl* Engine::loadModule(ThrowStatusWrapper* status, IRoutineMetadata* 
 		PathName path;
 		PathUtils::concatPath(path, *i, *moduleName);
 
-		ModuleLoader::Module* module = ModuleLoader::fixAndLoadModule(path);
+		ISC_STATUS_ARRAY statusArray = {
+			isc_arg_gds, isc_random,
+			isc_arg_string, (ISC_STATUS) "UDR module not loaded",
+			isc_arg_end
+		};
+		const unsigned ARG_TEXT = 3;	// Keep both in sync
+		const unsigned ARG_END = 4;		// with status initializer!
 
-		if (module)
+		ModuleLoader::Module* module = ModuleLoader::fixAndLoadModule(&statusArray[ARG_END], path);
+		if (!module)
+			throw FbException(status, statusArray);
+
+		FB_BOOLEAN* (*entryPoint)(IStatus*, FB_BOOLEAN*, IUdrPlugin*);
+		statusArray[ARG_TEXT] = (ISC_STATUS) "UDR plugin entry point not found";
+
+		if (!module->findSymbol(&statusArray[ARG_END], STRINGIZE(FB_UDR_PLUGIN_ENTRY_POINT), entryPoint))
+			throw FbException(status, statusArray);
+
+		UdrPluginImpl* udrPlugin = FB_NEW UdrPluginImpl(*moduleName, module);
+		udrPlugin->theirUnloadFlag = entryPoint(status, &udrPlugin->myUnloadFlag, udrPlugin);
+
+		if (status->getState() & IStatus::STATE_ERRORS)
 		{
-			FB_BOOLEAN* (*entryPoint)(IStatus*, FB_BOOLEAN*, IUdrPlugin*);
-
-			if (!module->findSymbol(STRINGIZE(FB_UDR_PLUGIN_ENTRY_POINT), entryPoint))
-			{
-				static const ISC_STATUS statusVector[] = {
-					isc_arg_gds, isc_random,
-					isc_arg_string, (ISC_STATUS) "UDR plugin entry point not found",
-					isc_arg_end
-				};
-
-				throw FbException(status, statusVector);
-			}
-
-			UdrPluginImpl* udrPlugin = FB_NEW UdrPluginImpl(*moduleName, module);
-			udrPlugin->theirUnloadFlag = entryPoint(status, &udrPlugin->myUnloadFlag, udrPlugin);
-
-			if (status->getState() & IStatus::STATE_ERRORS)
-			{
-				delete udrPlugin;
-				ThrowStatusWrapper::checkException(status);
-			}
-
-			modules->put(*moduleName, udrPlugin);
-
-			return udrPlugin;
+			delete udrPlugin;
+			ThrowStatusWrapper::checkException(status);
 		}
-		else
-		{
-			static const ISC_STATUS statusVector[] = {
-				isc_arg_gds, isc_random,
-				isc_arg_string, (ISC_STATUS) "Module not found",
-				//// TODO: isc_arg_gds, isc_random, isc_arg_string, (ISC_STATUS) moduleName->c_str(),
-				isc_arg_end
-			};
 
-			throw FbException(status, statusVector);
-		}
+		modules->put(*moduleName, udrPlugin);
+
+		return udrPlugin;
 	}
 
 	static const ISC_STATUS statusVector[] = {
@@ -747,12 +704,6 @@ IExternalTrigger* Engine::makeTrigger(ThrowStatusWrapper* status, IExternalConte
 	IRoutineMetadata* metadata, IMetadataBuilder* fieldsBuilder)
 {
 	return FB_NEW SharedTrigger(status, this, context, metadata, fieldsBuilder);
-}
-
-
-void Engine::dispose()
-{
-	delete this;
 }
 
 

@@ -44,12 +44,12 @@ using namespace Jrd;
 
 
 static RecordSourceNode* dsqlPassRelProc(DsqlCompilerScratch* dsqlScratch, RecordSourceNode* source);
-static MapNode* parseMap(thread_db* tdbb, CompilerScratch* csb, StreamType stream);
+static MapNode* parseMap(thread_db* tdbb, CompilerScratch* csb, StreamType stream, bool parseHeader);
 static int strcmpSpace(const char* p, const char* q);
 static void processSource(thread_db* tdbb, CompilerScratch* csb, RseNode* rse,
 	RecordSourceNode* source, BoolExprNode** boolean, RecordSourceNodeStack& stack);
 static void processMap(thread_db* tdbb, CompilerScratch* csb, MapNode* map, Format** inputFormat);
-static void genDeliverUnmapped(thread_db* tdbb, BoolExprNodeStack* deliverStack, MapNode* map,
+static void genDeliverUnmapped(CompilerScratch* csb, BoolExprNodeStack* deliverStack, MapNode* map,
 	BoolExprNodeStack* parentStack, StreamType shellStream);
 static ValueExprNode* resolveUsingField(DsqlCompilerScratch* dsqlScratch, const MetaName& name,
 	ValueListNode* list, const FieldNode* flawedNode, const TEXT* side, dsql_ctx*& ctx);
@@ -120,7 +120,7 @@ SortNode* SortNode::copy(thread_db* tdbb, NodeCopier& copier) const
 	for (const NestConst<ValueExprNode>* i = expressions.begin(); i != expressions.end(); ++i)
 		newSort->expressions.add(copier.copy(tdbb, *i));
 
-	newSort->descending = descending;
+	newSort->direction = direction;
 	newSort->nullOrder = nullOrder;
 
 	return newSort;
@@ -220,11 +220,13 @@ MapNode* MapNode::pass2(thread_db* tdbb, CompilerScratch* csb)
 
 PlanNode* PlanNode::dsqlPass(DsqlCompilerScratch* dsqlScratch)
 {
-	PlanNode* node = FB_NEW_POOL(getPool()) PlanNode(getPool(), type);
+	MemoryPool& pool = dsqlScratch->getPool();
+
+	PlanNode* node = FB_NEW_POOL(pool) PlanNode(pool, type);
 
 	if (accessType)
 	{
-		node->accessType = FB_NEW_POOL(getPool()) AccessType(getPool(), accessType->type);
+		node->accessType = FB_NEW_POOL(pool) AccessType(pool, accessType->type);
 		node->accessType->items = accessType->items;
 	}
 
@@ -235,14 +237,14 @@ PlanNode* PlanNode::dsqlPass(DsqlCompilerScratch* dsqlScratch)
 
 	if (dsqlNames)
 	{
-		node->dsqlNames = FB_NEW_POOL(getPool()) ObjectsArray<MetaName>(getPool());
+		node->dsqlNames = FB_NEW_POOL(pool) ObjectsArray<MetaName>(pool);
 		*node->dsqlNames = *dsqlNames;
 
 		dsql_ctx* context = dsqlPassAliasList(dsqlScratch);
 
 		if (context->ctx_relation)
 		{
-			RelationSourceNode* relNode = FB_NEW_POOL(getPool()) RelationSourceNode(getPool());
+			RelationSourceNode* relNode = FB_NEW_POOL(pool) RelationSourceNode(pool);
 			relNode->dsqlContext = context;
 			node->dsqlRecordSourceNode = relNode;
 		}
@@ -250,7 +252,7 @@ PlanNode* PlanNode::dsqlPass(DsqlCompilerScratch* dsqlScratch)
 		{
 			// ASF: Note that usage of procedure name in a PLAN clause causes errors when
 			// parsing the BLR.
-			ProcedureSourceNode* procNode = FB_NEW_POOL(getPool()) ProcedureSourceNode(getPool());
+			ProcedureSourceNode* procNode = FB_NEW_POOL(pool) ProcedureSourceNode(pool);
 			procNode->dsqlContext = context;
 			node->dsqlRecordSourceNode = procNode;
 		}
@@ -311,7 +313,7 @@ dsql_ctx* PlanNode::dsqlPassAliasList(DsqlCompilerScratch* dsqlScratch)
 				{
 					// AB: Pretty ugly huh?
 					// make up a dummy context to hold the resultant relation.
-					dsql_ctx* newContext = FB_NEW_POOL(getPool()) dsql_ctx(getPool());
+					dsql_ctx* newContext = FB_NEW_POOL(dsqlScratch->getPool()) dsql_ctx(dsqlScratch->getPool());
 					newContext->ctx_context = context->ctx_context;
 					newContext->ctx_relation = relation;
 
@@ -424,20 +426,20 @@ RecSourceListNode::RecSourceListNode(MemoryPool& pool, unsigned count)
 	items.resize(count);
 
 	for (unsigned i = 0; i < count; ++i)
-		addDsqlChildNode((items[i] = NULL));
+		items[i] = NULL;
 }
 
 RecSourceListNode::RecSourceListNode(MemoryPool& pool, RecordSourceNode* arg1)
 	: TypedNode<ListExprNode, ExprNode::TYPE_REC_SOURCE_LIST>(pool),
 	  items(pool)
 {
-	items.resize(1);
-	addDsqlChildNode((items[0] = arg1));
+	items.push(arg1);
 }
 
 RecSourceListNode* RecSourceListNode::dsqlPass(DsqlCompilerScratch* dsqlScratch)
 {
-	RecSourceListNode* node = FB_NEW_POOL(getPool()) RecSourceListNode(getPool(), items.getCount());
+	RecSourceListNode* node = FB_NEW_POOL(dsqlScratch->getPool()) RecSourceListNode(dsqlScratch->getPool(),
+		items.getCount());
 
 	NestConst<RecordSourceNode>* dst = node->items.begin();
 
@@ -528,7 +530,6 @@ RelationSourceNode* RelationSourceNode::parse(thread_db* tdbb, CompilerScratch* 
 	if (parseContext)
 	{
 		node->stream = PAR_context(csb, &node->context);
-		fb_assert(node->stream <= MAX_STREAMS);
 
 		csb->csb_rpt[node->stream].csb_relation = node->relation;
 		csb->csb_rpt[node->stream].csb_alias = aliasString;
@@ -549,6 +550,8 @@ string RelationSourceNode::internalPrint(NodePrinter& printer) const
 	NODE_PRINT(printer, dsqlName);
 	NODE_PRINT(printer, alias);
 	NODE_PRINT(printer, context);
+	if (relation)
+		printer.print("rel_name", relation->rel_name);
 
 	return "RelationSourceNode";
 }
@@ -558,9 +561,10 @@ RecordSourceNode* RelationSourceNode::dsqlPass(DsqlCompilerScratch* dsqlScratch)
 	return dsqlPassRelProc(dsqlScratch, this);
 }
 
-bool RelationSourceNode::dsqlMatch(const ExprNode* other, bool /*ignoreMapCast*/) const
+bool RelationSourceNode::dsqlMatch(DsqlCompilerScratch* dsqlScratch, const ExprNode* other,
+	bool /*ignoreMapCast*/) const
 {
-	const RelationSourceNode* o = other->as<RelationSourceNode>();
+	const RelationSourceNode* o = nodeAs<RelationSourceNode>(other);
 	return o && dsqlContext == o->dsqlContext;
 }
 
@@ -596,11 +600,6 @@ RelationSourceNode* RelationSourceNode::copy(thread_db* tdbb, NodeCopier& copier
 	RelationSourceNode* newSource = FB_NEW_POOL(*tdbb->getDefaultPool()) RelationSourceNode(
 		*tdbb->getDefaultPool());
 
-	// Last entry in the remap contains the the original stream number.
-	// Get that stream number so that the flags can be copied
-	// into the newly created child stream.
-
-	const StreamType relativeStream = stream ? copier.remap[stream - 1] : stream;
 	newSource->stream = copier.csb->nextStream();
 	copier.remap[stream] = newSource->stream;
 
@@ -613,61 +612,25 @@ RelationSourceNode* RelationSourceNode::copy(thread_db* tdbb, NodeCopier& copier
 	element->csb_view = newSource->view;
 	element->csb_view_stream = copier.remap[0];
 
-	/** If there was a parent stream no., then copy the flags
-		from that stream to its children streams. (Bug 10164/10166)
-		For e.g.
-		consider a view V1 with 2 streams
-				stream #1 from table T1
-			stream #2 from table T2
-		consider a procedure P1 with 2 streams
-				stream #1  from table X
-			stream #2  from view V1
-
-		During pass1 of procedure request, the engine tries to expand
-		all the views into their base tables. It creates a compiler
-		scratch block which initially looks like this
-				stream 1  -------- X
-				stream 2  -------- V1
-			while expanding V1 the engine calls copy() with nod_relation.
-			A new stream 3 is created. Now the CompilerScratch looks like
-				stream 1  -------- X
-				stream 2  -------- V1  map [2,3]
-				stream 3  -------- T1
-			After T1 stream has been created the flags are copied from
-			stream #1 because V1's definition said the original stream
-			number for T1 was 1. However since its being merged with
-			the procedure request, stream #1 belongs to a different table.
-			The flags should be copied from stream 2 i.e. V1. We can get
-			this info from variable remap.
-
-			Since we didn't do this properly before, V1's children got
-			tagged with whatever flags X possesed leading to various
-			errors.
-
-			We now store the proper stream no in relativeStream and
-			later use it to copy the flags. -Sudesh (03/05/99)
-	**/
-
-	copier.csb->csb_rpt[newSource->stream].csb_flags |=
-		copier.csb->csb_rpt[relativeStream].csb_flags & csb_no_dbkey;
+	if (alias.hasData())
+	{
+		element->csb_alias = FB_NEW_POOL(*tdbb->getDefaultPool())
+			string(*tdbb->getDefaultPool(), alias);
+	}
 
 	return newSource;
 }
 
-void RelationSourceNode::ignoreDbKey(thread_db* tdbb, CompilerScratch* csb) const
-{
-	csb->csb_rpt[stream].csb_flags |= csb_no_dbkey;
-}
-
 RecordSourceNode* RelationSourceNode::pass1(thread_db* tdbb, CompilerScratch* csb)
 {
-	const CompilerScratch::csb_repeat* const tail = &csb->csb_rpt[stream];
-	const jrd_rel* const relation = tail->csb_relation;
+	const auto tail = &csb->csb_rpt[stream];
+	const auto relation = tail->csb_relation;
 
-	if (relation)
+	if (relation && !csb->csb_implicit_cursor)
 	{
-		CMP_post_access(tdbb, csb, relation->rel_security_name,
-			(tail->csb_view) ? tail->csb_view->rel_id : (view ? view->rel_id : 0),
+		const SLONG ssRelationId = tail->csb_view ? tail->csb_view->rel_id :
+			view ? view->rel_id : csb->csb_view ? csb->csb_view->rel_id : 0;
+		CMP_post_access(tdbb, csb, relation->rel_security_name, ssRelationId,
 			SCL_select, SCL_object_table, relation->rel_name);
 	}
 
@@ -694,7 +657,6 @@ void RelationSourceNode::pass1Source(thread_db* tdbb, CompilerScratch* csb, RseN
 
 	CompilerScratch::csb_repeat* const element = CMP_csb_element(csb, stream);
 	element->csb_view = parentView;
-	fb_assert(viewStream <= MAX_STREAMS);
 	element->csb_view_stream = viewStream;
 
 	// in the case where there is a parent view, find the context name
@@ -720,7 +682,6 @@ void RelationSourceNode::pass1Source(thread_db* tdbb, CompilerScratch* csb, RseN
 
 	// we've got a view, expand it
 
-	DEBUG;
 	stack.pop();
 	StreamType* map = CMP_alloc_map(tdbb, csb, stream);
 
@@ -737,12 +698,10 @@ void RelationSourceNode::pass1Source(thread_db* tdbb, CompilerScratch* csb, RseN
 		viewRse->rse_sorted || viewRse->rse_projection || viewRse->rse_first ||
 		viewRse->rse_skip || viewRse->rse_plan)
 	{
-		NodeCopier copier(csb, map);
+		NodeCopier copier(csb->csb_pool, csb, map);
 		RseNode* copy = viewRse->copy(tdbb, copier);
-		DEBUG;
 		doPass1(tdbb, csb, &copy);
 		stack.push(copy);
-		DEBUG;
 		return;
 	}
 
@@ -764,7 +723,7 @@ void RelationSourceNode::pass1Source(thread_db* tdbb, CompilerScratch* csb, RseN
 	for (const NestConst<RecordSourceNode>* const end = viewRse->rse_relations.end(); arg != end; ++arg)
 	{
 		// this call not only copies the node, it adds any streams it finds to the map
-		NodeCopier copier(csb, map);
+		NodeCopier copier(csb->csb_pool, csb, map);
 		RecordSourceNode* node = (*arg)->copy(tdbb, copier);
 
 		// Now go out and process the base table itself. This table might also be a view,
@@ -782,7 +741,7 @@ void RelationSourceNode::pass1Source(thread_db* tdbb, CompilerScratch* csb, RseN
 
 	if (viewRse->rse_projection)
 	{
-		NodeCopier copier(csb, map);
+		NodeCopier copier(csb->csb_pool, csb, map);
 		rse->rse_projection = viewRse->rse_projection->copy(tdbb, copier);
 		doPass1(tdbb, csb, rse->rse_projection.getAddress());
 	}
@@ -792,7 +751,7 @@ void RelationSourceNode::pass1Source(thread_db* tdbb, CompilerScratch* csb, RseN
 
 	if (viewRse->rse_boolean)
 	{
-		NodeCopier copier(csb, map);
+		NodeCopier copier(csb->csb_pool, csb, map);
 		BoolExprNode* node = copier.copy(tdbb, viewRse->rse_boolean);
 
 		doPass1(tdbb, csb, &node);
@@ -816,7 +775,6 @@ void RelationSourceNode::pass1Source(thread_db* tdbb, CompilerScratch* csb, RseN
 
 void RelationSourceNode::pass2Rse(thread_db* tdbb, CompilerScratch* csb)
 {
-	fb_assert(stream <= MAX_STREAMS);
 	csb->csb_rpt[stream].activate();
 
 	pass2(tdbb, csb);
@@ -830,9 +788,6 @@ RecordSource* RelationSourceNode::compile(thread_db* tdbb, OptimizerBlk* opt, bo
 
 	opt->beds.add(stream);
 	opt->compileStreams.add(stream);
-
-	if (opt->rse->rse_jointype == blr_left)
-		opt->outerStreams.add(stream);
 
 	// if we have seen any booleans or sort fields, we may be able to
 	// use an index to optimize them; retrieve the current format of
@@ -902,9 +857,13 @@ ProcedureSourceNode* ProcedureSourceNode::parse(thread_db* tdbb, CompilerScratch
 
 			if (blrOp == blr_subproc)
 			{
-				DeclareSubProcNode* node;
-				if (csb->subProcedures.get(name.identifier, node))
-					procedure = node->routine;
+				DeclareSubProcNode* declareNode;
+
+				for (auto curCsb = csb; curCsb && !procedure; curCsb = curCsb->mainCsb)
+				{
+					if (curCsb->subProcedures.get(name.identifier, declareNode))
+						procedure = declareNode->routine;
+				}
 			}
 			else
 				procedure = MET_lookup_procedure(tdbb, name, false);
@@ -932,6 +891,8 @@ ProcedureSourceNode* ProcedureSourceNode::parse(thread_db* tdbb, CompilerScratch
 		*tdbb->getDefaultPool());
 
 	node->procedure = procedure;
+	node->isSubRoutine = procedure->isSubRoutine();
+	node->procedureId = node->isSubRoutine ? 0 : procedure->getId();
 	node->stream = PAR_context(csb, &node->context);
 
 	csb->csb_rpt[node->stream].csb_procedure = procedure;
@@ -1017,9 +978,10 @@ RecordSourceNode* ProcedureSourceNode::dsqlFieldRemapper(FieldRemapper& visitor)
 	return this;
 }
 
-bool ProcedureSourceNode::dsqlMatch(const ExprNode* other, bool /*ignoreMapCast*/) const
+bool ProcedureSourceNode::dsqlMatch(DsqlCompilerScratch* dsqlScratch, const ExprNode* other,
+	bool /*ignoreMapCast*/) const
 {
-	const ProcedureSourceNode* o = other->as<ProcedureSourceNode>();
+	const ProcedureSourceNode* o = nodeAs<ProcedureSourceNode>(other);
 	return o && dsqlContext == o->dsqlContext;
 }
 
@@ -1089,6 +1051,20 @@ ProcedureSourceNode* ProcedureSourceNode::copy(thread_db* tdbb, NodeCopier& copi
 	ProcedureSourceNode* newSource = FB_NEW_POOL(*tdbb->getDefaultPool()) ProcedureSourceNode(
 		*tdbb->getDefaultPool());
 
+	if (isSubRoutine)
+		newSource->procedure = procedure;
+	else
+	{
+		newSource->procedure = MET_lookup_procedure_id(tdbb, procedureId, false, false, 0);
+		if (!newSource->procedure)
+		{
+			string name;
+			name.printf("id %d", procedureId);
+			delete newSource;
+			ERR_post(Arg::Gds(isc_prcnotdef) << name);
+		}
+	}
+
 	// dimitr: See the appropriate code and comment in NodeCopier (in nod_argument).
 	// We must copy the message first and only then use the new pointer to
 	// copy the inputs properly.
@@ -1103,14 +1079,20 @@ ProcedureSourceNode* ProcedureSourceNode::copy(thread_db* tdbb, NodeCopier& copi
 	newSource->stream = copier.csb->nextStream();
 	copier.remap[stream] = newSource->stream;
 	newSource->context = context;
-	newSource->procedure = procedure;
+	newSource->isSubRoutine = isSubRoutine;
+	newSource->procedureId = procedureId;
 	newSource->view = view;
+
 	CompilerScratch::csb_repeat* element = CMP_csb_element(copier.csb, newSource->stream);
 	element->csb_procedure = newSource->procedure;
 	element->csb_view = newSource->view;
 	element->csb_view_stream = copier.remap[0];
 
-	copier.csb->csb_rpt[newSource->stream].csb_flags |= copier.csb->csb_rpt[stream].csb_flags & csb_no_dbkey;
+	if (alias.hasData())
+	{
+		element->csb_alias = FB_NEW_POOL(*tdbb->getDefaultPool())
+			string(*tdbb->getDefaultPool(), alias);
+	}
 
 	return newSource;
 }
@@ -1130,10 +1112,10 @@ void ProcedureSourceNode::pass1Source(thread_db* tdbb, CompilerScratch* csb, Rse
 
 	pass1(tdbb, csb);
 
-	if (!procedure->isSubRoutine())
+	if (!isSubRoutine)
 	{
 		CMP_post_procedure_access(tdbb, csb, procedure);
-		CMP_post_resource(&csb->csb_resources, procedure, Resource::rsc_procedure, procedure->getId());
+		CMP_post_resource(&csb->csb_resources, procedure, Resource::rsc_procedure, procedureId);
 	}
 
 	jrd_rel* const parentView = csb->csb_view;
@@ -1142,7 +1124,6 @@ void ProcedureSourceNode::pass1Source(thread_db* tdbb, CompilerScratch* csb, Rse
 
 	CompilerScratch::csb_repeat* const element = CMP_csb_element(csb, stream);
 	element->csb_view = parentView;
-	fb_assert(viewStream <= MAX_STREAMS);
 	element->csb_view_stream = viewStream;
 
 	// in the case where there is a parent view, find the context name
@@ -1171,7 +1152,6 @@ RecordSourceNode* ProcedureSourceNode::pass2(thread_db* tdbb, CompilerScratch* c
 
 void ProcedureSourceNode::pass2Rse(thread_db* tdbb, CompilerScratch* csb)
 {
-	fb_assert(stream <= MAX_STREAMS);
 	csb->csb_rpt[stream].activate();
 
 	pass2(tdbb, csb);
@@ -1191,8 +1171,7 @@ ProcedureScan* ProcedureSourceNode::generate(thread_db* tdbb, OptimizerBlk* opt)
 	SET_TDBB(tdbb);
 
 	CompilerScratch* const csb = opt->opt_csb;
-	CompilerScratch::csb_repeat* const csbTail = &csb->csb_rpt[stream];
-	const string alias = OPT_make_alias(tdbb, csb, csbTail);
+	const string alias = OPT_make_alias(csb, stream);
 
 	return FB_NEW_POOL(*tdbb->getDefaultPool()) ProcedureScan(csb, alias, stream, procedure,
 		sourceList, targetList, in_msg);
@@ -1220,15 +1199,15 @@ void ProcedureSourceNode::findDependentFromStreams(const OptimizerRetrieval* opt
 		targetList->findDependentFromStreams(optRet, streamList);
 }
 
-void ProcedureSourceNode::collectStreams(SortedStreamList& streamList) const
+void ProcedureSourceNode::collectStreams(CompilerScratch* csb, SortedStreamList& streamList) const
 {
-	RecordSourceNode::collectStreams(streamList);
+	RecordSourceNode::collectStreams(csb, streamList);
 
 	if (sourceList)
-		sourceList->collectStreams(streamList);
+		sourceList->collectStreams(csb, streamList);
 
 	if (targetList)
-		targetList->collectStreams(streamList);
+		targetList->collectStreams(csb, streamList);
 }
 
 
@@ -1244,10 +1223,9 @@ AggregateSourceNode* AggregateSourceNode::parse(thread_db* tdbb, CompilerScratch
 		*tdbb->getDefaultPool());
 
 	node->stream = PAR_context(csb, NULL);
-	fb_assert(node->stream <= MAX_STREAMS);
 	node->rse = PAR_rse(tdbb, csb);
 	node->group = PAR_sort(tdbb, csb, blr_group_by, true);
-	node->map = parseMap(tdbb, csb, node->stream);
+	node->map = parseMap(tdbb, csb, node->stream, true);
 
 	return node;
 }
@@ -1298,13 +1276,13 @@ RecordSourceNode* AggregateSourceNode::dsqlFieldRemapper(FieldRemapper& visitor)
 	return this;
 }
 
-bool AggregateSourceNode::dsqlMatch(const ExprNode* other, bool ignoreMapCast) const
+bool AggregateSourceNode::dsqlMatch(DsqlCompilerScratch* dsqlScratch, const ExprNode* other, bool ignoreMapCast) const
 {
-	const AggregateSourceNode* o = other->as<AggregateSourceNode>();
+	const AggregateSourceNode* o = nodeAs<AggregateSourceNode>(other);
 
 	return o && dsqlContext == o->dsqlContext &&
-		PASS1_node_match(dsqlGroup, o->dsqlGroup, ignoreMapCast) &&
-		PASS1_node_match(dsqlRse, o->dsqlRse, ignoreMapCast);
+		PASS1_node_match(dsqlScratch, dsqlGroup, o->dsqlGroup, ignoreMapCast) &&
+		PASS1_node_match(dsqlScratch, dsqlRse, o->dsqlRse, ignoreMapCast);
 }
 
 void AggregateSourceNode::genBlr(DsqlCompilerScratch* dsqlScratch)
@@ -1320,25 +1298,34 @@ void AggregateSourceNode::genBlr(DsqlCompilerScratch* dsqlScratch)
 
 	if (dsqlWindow)
 	{
-		fb_assert(dsqlContext->ctx_win_maps.hasData());
+		// There may be unused named windows.
+		//fb_assert(dsqlContext->ctx_win_maps.hasData());
+
 		dsqlScratch->appendUChar(dsqlContext->ctx_win_maps.getCount());	// number of windows
 
-		for (Array<PartitionMap*>::iterator i = dsqlContext->ctx_win_maps.begin();
+		for (Array<WindowMap*>::iterator i = dsqlContext->ctx_win_maps.begin();
 			 i != dsqlContext->ctx_win_maps.end();
 			 ++i)
 		{
-			dsqlScratch->appendUChar(blr_partition_by);
-			ValueListNode* partition = (*i)->partition;
+			bool v3 = !((*i)->window &&
+				((*i)->window->extent ||
+				 (*i)->window->exclusion != WindowClause::Exclusion::NO_OTHERS));
+
+			ValueListNode* partition = (*i)->window ? (*i)->window->partition : NULL;
 			ValueListNode* partitionRemapped = (*i)->partitionRemapped;
-			ValueListNode* order = (*i)->order;
+			ValueListNode* order = (*i)->window ? (*i)->window->order : NULL;
 
 			if ((*i)->context > MAX_UCHAR)
 				ERRD_post(Arg::Gds(isc_too_many_contexts));
 
+			dsqlScratch->appendUChar(v3 ? blr_partition_by : blr_window_win);
 			dsqlScratch->appendUChar((*i)->context);
 
 			if (partition)
 			{
+				if (!v3)
+					dsqlScratch->appendUChar(blr_window_win_partition);
+
 				dsqlScratch->appendUChar(partition->items.getCount());	// partition by expression count
 
 				NestConst<ValueExprNode>* ptr = partition->items.begin();
@@ -1346,21 +1333,58 @@ void AggregateSourceNode::genBlr(DsqlCompilerScratch* dsqlScratch)
 					GEN_expr(dsqlScratch, *ptr);
 
 				ptr = partitionRemapped->items.begin();
-				for (const NestConst<ValueExprNode>* end = partitionRemapped->items.end(); ptr != end; ++ptr)
+				for (const NestConst<ValueExprNode>* end = partitionRemapped->items.end();
+					 ptr != end;
+					 ++ptr)
+				{
 					GEN_expr(dsqlScratch, *ptr);
+				}
 			}
-			else
+			else if (v3)
 				dsqlScratch->appendUChar(0);	// partition by expression count
 
-			if (order)
-				GEN_sort(dsqlScratch, order);
-			else
-			{
-				dsqlScratch->appendUChar(blr_sort);
-				dsqlScratch->appendUChar(0);
-			}
+			if (v3 || order)
+				GEN_sort(dsqlScratch, (v3 ? blr_sort : blr_window_win_order), order);
 
-			genMap(dsqlScratch, (*i)->map);
+			genMap(dsqlScratch, (v3 ? blr_map : blr_window_win_map), (*i)->map);
+
+			if (!v3)
+			{
+				if ((*i)->window->extent)
+				{
+					dsqlScratch->appendUChar(blr_window_win_extent_unit);
+					dsqlScratch->appendUChar((UCHAR) (*i)->window->extent->unit);
+
+					WindowClause::Frame* frames[] = {
+						(*i)->window->extent->frame1, (*i)->window->extent->frame2
+					};
+
+					for (int j = 0; j < 2; ++j)
+					{
+						if (frames[j])
+						{
+							dsqlScratch->appendUChar(blr_window_win_extent_frame_bound);
+							dsqlScratch->appendUChar(j + 1);
+							dsqlScratch->appendUChar((UCHAR) frames[j]->bound);
+
+							if (frames[j]->value)
+							{
+								dsqlScratch->appendUChar(blr_window_win_extent_frame_value);
+								dsqlScratch->appendUChar(j + 1);
+								frames[j]->value->genBlr(dsqlScratch);
+							}
+						}
+					}
+				}
+
+				if ((*i)->window->exclusion != WindowClause::Exclusion::NO_OTHERS)
+				{
+					dsqlScratch->appendUChar(blr_window_win_exclusion);
+					dsqlScratch->appendUChar((UCHAR) (*i)->window->exclusion);
+				}
+
+				dsqlScratch->appendUChar(blr_end);
+			}
 		}
 	}
 	else
@@ -1380,12 +1404,12 @@ void AggregateSourceNode::genBlr(DsqlCompilerScratch* dsqlScratch)
 		else
 			dsqlScratch->appendUChar(0);
 
-		genMap(dsqlScratch, dsqlContext->ctx_map);
+		genMap(dsqlScratch, blr_map, dsqlContext->ctx_map);
 	}
 }
 
 // Generate a value map for a record selection expression.
-void AggregateSourceNode::genMap(DsqlCompilerScratch* dsqlScratch, dsql_map* map)
+void AggregateSourceNode::genMap(DsqlCompilerScratch* dsqlScratch, UCHAR blrVerb, dsql_map* map)
 {
 	USHORT count = 0;
 
@@ -1395,7 +1419,7 @@ void AggregateSourceNode::genMap(DsqlCompilerScratch* dsqlScratch, dsql_map* map
 	//if (count >= STREAM_MAP_LENGTH) // not sure if the same limit applies
 	//	ERR_post(Arg::Gds(isc_too_many_contexts)); // maybe there's better msg.
 
-	dsqlScratch->appendUChar(blr_map);
+	dsqlScratch->appendUChar(blrVerb);
 	dsqlScratch->appendUShort(count);
 
 	for (dsql_map* temp = map; temp; temp = temp->map_next)
@@ -1413,14 +1437,9 @@ AggregateSourceNode* AggregateSourceNode::copy(thread_db* tdbb, NodeCopier& copi
 	AggregateSourceNode* newSource = FB_NEW_POOL(*tdbb->getDefaultPool()) AggregateSourceNode(
 		*tdbb->getDefaultPool());
 
-	fb_assert(stream <= MAX_STREAMS);
 	newSource->stream = copier.csb->nextStream();
-	// fb_assert(newSource->stream <= MAX_UCHAR);
 	copier.remap[stream] = newSource->stream;
 	CMP_csb_element(copier.csb, newSource->stream);
-
-	copier.csb->csb_rpt[newSource->stream].csb_flags |=
-		copier.csb->csb_rpt[stream].csb_flags & csb_no_dbkey;
 
 	newSource->rse = rse->copy(tdbb, copier);
 	if (group)
@@ -1430,17 +1449,8 @@ AggregateSourceNode* AggregateSourceNode::copy(thread_db* tdbb, NodeCopier& copi
 	return newSource;
 }
 
-void AggregateSourceNode::ignoreDbKey(thread_db* tdbb, CompilerScratch* csb) const
-{
-	rse->ignoreDbKey(tdbb, csb);
-}
-
 RecordSourceNode* AggregateSourceNode::pass1(thread_db* tdbb, CompilerScratch* csb)
 {
-	fb_assert(stream <= MAX_STREAMS);
-	csb->csb_rpt[stream].csb_flags |= csb_no_dbkey;
-	rse->ignoreDbKey(tdbb, csb);
-
 	doPass1(tdbb, csb, rse.getAddress());
 	doPass1(tdbb, csb, map.getAddress());
 	doPass1(tdbb, csb, group.getAddress());
@@ -1453,7 +1463,6 @@ void AggregateSourceNode::pass1Source(thread_db* tdbb, CompilerScratch* csb, Rse
 {
 	stack.push(this);	// Assume that the source will be used. Push it on the final stream stack.
 
-	fb_assert(stream <= MAX_STREAMS);
 	pass1(tdbb, csb);
 
 	jrd_rel* const parentView = csb->csb_view;
@@ -1461,7 +1470,6 @@ void AggregateSourceNode::pass1Source(thread_db* tdbb, CompilerScratch* csb, Rse
 
 	CompilerScratch::csb_repeat* const element = CMP_csb_element(csb, stream);
 	element->csb_view = parentView;
-	fb_assert(viewStream <= MAX_STREAMS);
 	element->csb_view_stream = viewStream;
 
 }
@@ -1472,8 +1480,6 @@ RecordSourceNode* AggregateSourceNode::pass2(thread_db* tdbb, CompilerScratch* c
 	ExprNode::doPass2(tdbb, csb, map.getAddress());
 	ExprNode::doPass2(tdbb, csb, group.getAddress());
 
-	fb_assert(stream <= MAX_STREAMS);
-
 	processMap(tdbb, csb, map, &csb->csb_rpt[stream].csb_internal_format);
 	csb->csb_rpt[stream].csb_format = csb->csb_rpt[stream].csb_internal_format;
 
@@ -1482,7 +1488,6 @@ RecordSourceNode* AggregateSourceNode::pass2(thread_db* tdbb, CompilerScratch* c
 
 void AggregateSourceNode::pass2Rse(thread_db* tdbb, CompilerScratch* csb)
 {
-	fb_assert(stream <= MAX_STREAMS);
 	csb->csb_rpt[stream].activate();
 
 	pass2(tdbb, csb);
@@ -1532,7 +1537,7 @@ RecordSource* AggregateSourceNode::generate(thread_db* tdbb, OptimizerBlk* opt,
 	// Those fields are mappings. Mappings that hold a plain field may be used
 	// to distribute. Handle the simple cases only.
 	BoolExprNodeStack deliverStack;
-	genDeliverUnmapped(tdbb, &deliverStack, map, parentStack, shellStream);
+	genDeliverUnmapped(csb, &deliverStack, map, parentStack, shellStream);
 
 	// try to optimize MAX and MIN to use an index; for now, optimize
 	// only the simplest case, although it is probably possible
@@ -1541,7 +1546,7 @@ RecordSource* AggregateSourceNode::generate(thread_db* tdbb, OptimizerBlk* opt,
 	AggNode* aggNode = NULL;
 
 	if (map->sourceList.getCount() == 1 && (ptr = map->sourceList.begin()) &&
-		(aggNode = (*ptr)->as<AggNode>()) &&
+		(aggNode = nodeAs<AggNode>(*ptr)) &&
 		(aggNode->aggInfo.blr == blr_agg_min || aggNode->aggInfo.blr == blr_agg_max))
 	{
 		// generate a sort block which the optimizer will try to map to an index
@@ -1550,10 +1555,12 @@ RecordSource* AggregateSourceNode::generate(thread_db* tdbb, OptimizerBlk* opt,
 			FB_NEW_POOL(*tdbb->getDefaultPool()) SortNode(*tdbb->getDefaultPool());
 
 		aggregate->expressions.add(aggNode->arg);
-		// in the max case, flag the sort as descending
-		aggregate->descending.add(aggNode->aggInfo.blr == blr_agg_max);
+		// For MAX(), mark the sort as descending. For MIN(), mark as ascending.
+		const SortDirection direction =
+			(aggNode->aggInfo.blr == blr_agg_max) ? ORDER_DESC : ORDER_ASC;
+		aggregate->direction.add(direction);
 		// 10-Aug-2004. Nickolay Samofatov - Unneeded nulls seem to be skipped somehow.
-		aggregate->nullOrder.add(rse_nulls_default);
+		aggregate->nullOrder.add(NULLS_DEFAULT);
 
 		rse->flags |= RseNode::FLAG_OPT_FIRST_ROWS;
 	}
@@ -1610,7 +1617,6 @@ UnionSourceNode* UnionSourceNode::parse(thread_db* tdbb, CompilerScratch* csb, c
 	node->recursive = blrOp == blr_recurse;
 
 	node->stream = PAR_context(csb, NULL);
-	fb_assert(node->stream <= MAX_STREAMS);
 
 	// assign separate context for mapped record if union is recursive
 	StreamType stream2 = node->stream;
@@ -1629,7 +1635,7 @@ UnionSourceNode* UnionSourceNode::parse(thread_db* tdbb, CompilerScratch* csb, c
 	while (--count >= 0)
 	{
 		node->clauses.push(PAR_rse(tdbb, csb));
-		node->maps.push(parseMap(tdbb, csb, stream2));
+		node->maps.push(parseMap(tdbb, csb, stream2, true));
 	}
 
 	return node;
@@ -1685,15 +1691,15 @@ void UnionSourceNode::genBlr(DsqlCompilerScratch* dsqlScratch)
 	ValueExprNode* mapItem = dsqlParentRse->dsqlSelectList->items[0];
 
 	// AB: First item could be a virtual field generated by derived table.
-	DerivedFieldNode* derivedField = mapItem->as<DerivedFieldNode>();
+	DerivedFieldNode* derivedField = nodeAs<DerivedFieldNode>(mapItem);
 
 	if (derivedField)
 		mapItem = derivedField->value;
 
-	if (mapItem->is<CastNode>())
-		mapItem = mapItem->as<CastNode>()->source;
+	if (nodeIs<CastNode>(mapItem))
+		mapItem = nodeAs<CastNode>(mapItem)->source;
 
-	DsqlMapNode* mapNode = mapItem->as<DsqlMapNode>();
+	DsqlMapNode* mapNode = nodeAs<DsqlMapNode>(mapItem);
 	fb_assert(mapNode);
 
 	if (!mapNode)
@@ -1715,7 +1721,7 @@ void UnionSourceNode::genBlr(DsqlCompilerScratch* dsqlScratch)
 	NestConst<RecordSourceNode>* ptr = streams->items.begin();
 	for (const NestConst<RecordSourceNode>* const end = streams->items.end(); ptr != end; ++ptr)
 	{
-		RseNode* sub_rse = (*ptr)->as<RseNode>();
+		RseNode* sub_rse = nodeAs<RseNode>(*ptr);
 		GEN_rse(dsqlScratch, sub_rse);
 
 		ValueListNode* items = sub_rse->dsqlSelectList;
@@ -1744,26 +1750,16 @@ UnionSourceNode* UnionSourceNode::copy(thread_db* tdbb, NodeCopier& copier) cons
 		*tdbb->getDefaultPool());
 	newSource->recursive = recursive;
 
-	fb_assert(stream <= MAX_STREAMS);
 	newSource->stream = copier.csb->nextStream();
 	copier.remap[stream] = newSource->stream;
 	CMP_csb_element(copier.csb, newSource->stream);
 
-	StreamType oldStream = stream;
-	StreamType newStream = newSource->stream;
-
 	if (newSource->recursive)
 	{
-		oldStream = mapStream;
-		fb_assert(oldStream <= MAX_STREAMS);
-		newStream = copier.csb->nextStream();
-		newSource->mapStream = newStream;
-		copier.remap[oldStream] = newStream;
-		CMP_csb_element(copier.csb, newStream);
+		newSource->mapStream = copier.csb->nextStream();
+		copier.remap[mapStream] = newSource->mapStream;
+		CMP_csb_element(copier.csb, newSource->mapStream);
 	}
-
-	copier.csb->csb_rpt[newStream].csb_flags |=
-		copier.csb->csb_rpt[oldStream].csb_flags & csb_no_dbkey;
 
 	const NestConst<RseNode>* ptr = clauses.begin();
 	const NestConst<MapNode>* ptr2 = maps.begin();
@@ -1775,14 +1771,6 @@ UnionSourceNode* UnionSourceNode::copy(thread_db* tdbb, NodeCopier& copier) cons
 	}
 
 	return newSource;
-}
-
-void UnionSourceNode::ignoreDbKey(thread_db* tdbb, CompilerScratch* csb) const
-{
-	const NestConst<RseNode>* ptr = clauses.begin();
-
-	for (const NestConst<RseNode>* const end = clauses.end(); ptr != end; ++ptr)
-		(*ptr)->ignoreDbKey(tdbb, csb);
 }
 
 void UnionSourceNode::pass1Source(thread_db* tdbb, CompilerScratch* csb, RseNode* /*rse*/,
@@ -1804,7 +1792,6 @@ void UnionSourceNode::pass1Source(thread_db* tdbb, CompilerScratch* csb, RseNode
 
 	CompilerScratch::csb_repeat* const element = CMP_csb_element(csb, stream);
 	element->csb_view = parentView;
-	fb_assert(viewStream <= MAX_STREAMS);
 	element->csb_view_stream = viewStream;
 }
 
@@ -1839,7 +1826,6 @@ RecordSourceNode* UnionSourceNode::pass2(thread_db* tdbb, CompilerScratch* csb)
 
 void UnionSourceNode::pass2Rse(thread_db* tdbb, CompilerScratch* csb)
 {
-	fb_assert(stream <= MAX_STREAMS);
 	csb->csb_rpt[stream].activate();
 
 	pass2(tdbb, csb);
@@ -1892,7 +1878,7 @@ RecordSource* UnionSourceNode::generate(thread_db* tdbb, OptimizerBlk* opt, cons
 	CompilerScratch* csb = opt->opt_csb;
 	HalfStaticArray<RecordSource*, OPT_STATIC_ITEMS> rsbs;
 
-	const ULONG baseImpure = CMP_impure(csb, 0);
+	const ULONG baseImpure = csb->allocImpure(FB_ALIGNMENT, 0);
 
 	NestConst<RseNode>* ptr = clauses.begin();
 	NestConst<MapNode>* ptr2 = maps.begin();
@@ -1907,7 +1893,7 @@ RecordSource* UnionSourceNode::generate(thread_db* tdbb, OptimizerBlk* opt, cons
 		// hvlad: don't do it for recursive unions else they will work wrong !
 		BoolExprNodeStack deliverStack;
 		if (!recursive)
-			genDeliverUnmapped(tdbb, &deliverStack, map, parentStack, shellStream);
+			genDeliverUnmapped(csb, &deliverStack, map, parentStack, shellStream);
 
 		rsbs.add(OPT_compile(tdbb, csb, rse, &deliverStack));
 
@@ -1976,10 +1962,25 @@ WindowSourceNode* WindowSourceNode::parse(thread_db* tdbb, CompilerScratch* csb)
 
 	node->rse = PAR_rse(tdbb, csb);
 
-	unsigned partitionCount = csb->csb_blr_reader.getByte();
+	unsigned count = csb->csb_blr_reader.getByte();
 
-	for (unsigned i = 0; i < partitionCount; ++i)
-		node->parsePartitionBy(tdbb, csb);
+	for (unsigned i = 0; i < count; ++i)
+	{
+		switch (csb->csb_blr_reader.getByte())
+		{
+			case blr_partition_by:
+				node->parseLegacyPartitionBy(tdbb, csb);
+				break;
+
+			case blr_window_win:
+				node->parseWindow(tdbb, csb);
+				break;
+
+			default:
+				PAR_syntax_error(csb, "blr_window");
+				break;
+		}
+	}
 
 	return node;
 }
@@ -1995,27 +1996,149 @@ string WindowSourceNode::internalPrint(NodePrinter& printer) const
 }
 
 // Parse PARTITION BY subclauses of window functions.
-void WindowSourceNode::parsePartitionBy(thread_db* tdbb, CompilerScratch* csb)
+void WindowSourceNode::parseLegacyPartitionBy(thread_db* tdbb, CompilerScratch* csb)
 {
 	SET_TDBB(tdbb);
 
-	if (csb->csb_blr_reader.getByte() != blr_partition_by)
-		PAR_syntax_error(csb, "blr_partition_by");
-
 	SSHORT context;
-	Partition& partition = partitions.add();
-	partition.stream = PAR_context(csb, &context);
+	Window& window = windows.add();
+	window.stream = PAR_context(csb, &context);
 
 	const UCHAR count = csb->csb_blr_reader.getByte();
 
 	if (count != 0)
 	{
-		partition.group = PAR_sort_internal(tdbb, csb, blr_partition_by, count);
-		partition.regroup = PAR_sort_internal(tdbb, csb, blr_partition_by, count);
+		window.group = PAR_sort_internal(tdbb, csb, false, count);
+		window.regroup = PAR_sort_internal(tdbb, csb, false, count);
 	}
 
-	partition.order = PAR_sort(tdbb, csb, blr_sort, true);
-	partition.map = parseMap(tdbb, csb, partition.stream);
+	window.order = PAR_sort(tdbb, csb, blr_sort, true);
+	window.map = parseMap(tdbb, csb, window.stream, true);
+	window.frameExtent = WindowClause::FrameExtent::createDefault(*tdbb->getDefaultPool());
+}
+
+// Parse frame subclauses of window functions.
+void WindowSourceNode::parseWindow(thread_db* tdbb, CompilerScratch* csb)
+{
+	SET_TDBB(tdbb);
+
+	SSHORT context;
+	Window& window = windows.add();
+	window.stream = PAR_context(csb, &context);
+	window.frameExtent = WindowClause::FrameExtent::createDefault(*tdbb->getDefaultPool());
+
+	UCHAR verb, count;
+
+	while ((verb = csb->csb_blr_reader.getByte()) != blr_end)
+	{
+		switch (verb)
+		{
+			case blr_window_win_partition:
+				count = csb->csb_blr_reader.getByte();
+
+				if (count != 0)
+				{
+					window.group = PAR_sort_internal(tdbb, csb, false, count);
+					window.regroup = PAR_sort_internal(tdbb, csb, false, count);
+				}
+
+				break;
+
+			case blr_window_win_order:
+				count = csb->csb_blr_reader.getByte();
+
+				if (count != 0)
+					window.order = PAR_sort_internal(tdbb, csb, true, count);
+
+				break;
+
+			case blr_window_win_map:
+				window.map = parseMap(tdbb, csb, window.stream, false);
+				break;
+
+			case blr_window_win_extent_unit:
+				window.frameExtent->unit = (WindowClause::FrameExtent::Unit)
+					csb->csb_blr_reader.getByte();
+
+				switch (window.frameExtent->unit)
+				{
+					case WindowClause::FrameExtent::Unit::RANGE:
+					case WindowClause::FrameExtent::Unit::ROWS:
+						break;
+
+					default:
+						PAR_syntax_error(csb, "blr_window_win_extent_unit");
+				}
+
+				break;
+
+			case blr_window_win_exclusion:
+				//// TODO: CORE-5338 - write code for execution.
+				PAR_error(csb,
+					Arg::Gds(isc_wish_list) <<
+					Arg::Gds(isc_random) << "window EXCLUDE clause");
+
+				window.exclusion = (WindowClause::Exclusion) csb->csb_blr_reader.getByte();
+
+				switch (window.exclusion)
+				{
+					case WindowClause::Exclusion::NO_OTHERS:
+					case WindowClause::Exclusion::CURRENT_ROW:
+					case WindowClause::Exclusion::GROUP:
+					case WindowClause::Exclusion::TIES:
+						break;
+
+					default:
+						PAR_syntax_error(csb, "blr_window_win_exclusion");
+				}
+
+				break;
+
+			case blr_window_win_extent_frame_bound:
+			case blr_window_win_extent_frame_value:
+			{
+				UCHAR num = csb->csb_blr_reader.getByte();
+
+				if (num != 1 && num != 2)
+				{
+					PAR_syntax_error(csb, (verb == blr_window_win_extent_frame_bound ?
+						"blr_window_win_extent_frame_bound" : "blr_window_win_extent_frame_value"));
+				}
+
+				NestConst<WindowClause::Frame>& frame = num == 1 ?
+					window.frameExtent->frame1 : window.frameExtent->frame2;
+
+				switch (verb)
+				{
+					case blr_window_win_extent_frame_bound:
+						frame->bound = (WindowClause::Frame::Bound) csb->csb_blr_reader.getByte();
+
+						switch (frame->bound)
+						{
+							case WindowClause::Frame::Bound::PRECEDING:
+							case WindowClause::Frame::Bound::FOLLOWING:
+							case WindowClause::Frame::Bound::CURRENT_ROW:
+								break;
+
+							default:
+								PAR_syntax_error(csb, "blr_window_win_extent_frame_bound");
+						}
+
+						break;
+
+					case blr_window_win_extent_frame_value:
+						frame->value = PAR_parse_value(tdbb, csb);
+						break;
+				}
+
+				break;
+			}
+
+			default:
+				PAR_syntax_error(csb, "blr_window_win");
+				break;
+		}
+	}
 }
 
 WindowSourceNode* WindowSourceNode::copy(thread_db* tdbb, NodeCopier& copier) const
@@ -2028,58 +2151,48 @@ WindowSourceNode* WindowSourceNode::copy(thread_db* tdbb, NodeCopier& copier) co
 
 	newSource->rse = rse->copy(tdbb, copier);
 
-	for (ObjectsArray<Partition>::const_iterator inputPartition = partitions.begin();
-		 inputPartition != partitions.end();
-		 ++inputPartition)
+	for (ObjectsArray<Window>::const_iterator inputWindow = windows.begin();
+		 inputWindow != windows.end();
+		 ++inputWindow)
 	{
-		fb_assert(inputPartition->stream <= MAX_STREAMS);
+		Window& copyWindow = newSource->windows.add();
 
-		Partition& copyPartition = newSource->partitions.add();
+		copyWindow.stream = copier.csb->nextStream();
+		copier.remap[inputWindow->stream] = copyWindow.stream;
+		CMP_csb_element(copier.csb, copyWindow.stream);
 
-		copyPartition.stream = copier.csb->nextStream();
-		// fb_assert(copyPartition.stream <= MAX_UCHAR);
+		if (inputWindow->group)
+			copyWindow.group = inputWindow->group->copy(tdbb, copier);
 
-		copier.remap[inputPartition->stream] = copyPartition.stream;
-		CMP_csb_element(copier.csb, copyPartition.stream);
+		if (inputWindow->regroup)
+			copyWindow.regroup = inputWindow->regroup->copy(tdbb, copier);
 
-		if (inputPartition->group)
-			copyPartition.group = inputPartition->group->copy(tdbb, copier);
-		if (inputPartition->regroup)
-			copyPartition.regroup = inputPartition->regroup->copy(tdbb, copier);
-		if (inputPartition->order)
-			copyPartition.order = inputPartition->order->copy(tdbb, copier);
-		copyPartition.map = inputPartition->map->copy(tdbb, copier);
+		if (inputWindow->order)
+			copyWindow.order = inputWindow->order->copy(tdbb, copier);
+
+		if (inputWindow->frameExtent)
+			copyWindow.frameExtent = inputWindow->frameExtent->copy(tdbb, copier);
+
+		copyWindow.map = inputWindow->map->copy(tdbb, copier);
+		copyWindow.exclusion = inputWindow->exclusion;
 	}
 
 	return newSource;
 }
 
-void WindowSourceNode::ignoreDbKey(thread_db* tdbb, CompilerScratch* csb) const
-{
-	rse->ignoreDbKey(tdbb, csb);
-}
-
 RecordSourceNode* WindowSourceNode::pass1(thread_db* tdbb, CompilerScratch* csb)
 {
-	for (ObjectsArray<Partition>::iterator partition = partitions.begin();
-		 partition != partitions.end();
-		 ++partition)
-	{
-		fb_assert(partition->stream <= MAX_STREAMS);
-		csb->csb_rpt[partition->stream].csb_flags |= csb_no_dbkey;
-	}
-
-	rse->ignoreDbKey(tdbb, csb);
 	doPass1(tdbb, csb, rse.getAddress());
 
-	for (ObjectsArray<Partition>::iterator partition = partitions.begin();
-		 partition != partitions.end();
-		 ++partition)
+	for (ObjectsArray<Window>::iterator window = windows.begin();
+		 window != windows.end();
+		 ++window)
 	{
-		doPass1(tdbb, csb, partition->group.getAddress());
-		doPass1(tdbb, csb, partition->regroup.getAddress());
-		doPass1(tdbb, csb, partition->order.getAddress());
-		doPass1(tdbb, csb, partition->map.getAddress());
+		doPass1(tdbb, csb, window->group.getAddress());
+		doPass1(tdbb, csb, window->regroup.getAddress());
+		doPass1(tdbb, csb, window->order.getAddress());
+		doPass1(tdbb, csb, window->frameExtent.getAddress());
+		doPass1(tdbb, csb, window->map.getAddress());
 	}
 
 	return this;
@@ -2094,13 +2207,12 @@ void WindowSourceNode::pass1Source(thread_db* tdbb, CompilerScratch* csb, RseNod
 
 	jrd_rel* const parentView = csb->csb_view;
 	const StreamType viewStream = csb->csb_view_stream;
-	fb_assert(viewStream <= MAX_STREAMS);
 
-	for (ObjectsArray<Partition>::iterator partition = partitions.begin();
-		 partition != partitions.end();
-		 ++partition)
+	for (ObjectsArray<Window>::iterator window = windows.begin();
+		 window != windows.end();
+		 ++window)
 	{
-		CompilerScratch::csb_repeat* const element = CMP_csb_element(csb, partition->stream);
+		CompilerScratch::csb_repeat* const element = CMP_csb_element(csb, window->stream);
 		element->csb_view = parentView;
 		element->csb_view_stream = viewStream;
 	}
@@ -2110,26 +2222,25 @@ RecordSourceNode* WindowSourceNode::pass2(thread_db* tdbb, CompilerScratch* csb)
 {
 	rse->pass2Rse(tdbb, csb);
 
-	for (ObjectsArray<Partition>::iterator partition = partitions.begin();
-		 partition != partitions.end();
-		 ++partition)
+	for (ObjectsArray<Window>::iterator window = windows.begin();
+		 window != windows.end();
+		 ++window)
 	{
-		ExprNode::doPass2(tdbb, csb, partition->map.getAddress());
-		ExprNode::doPass2(tdbb, csb, partition->group.getAddress());
-		ExprNode::doPass2(tdbb, csb, partition->order.getAddress());
+		ExprNode::doPass2(tdbb, csb, window->map.getAddress());
+		ExprNode::doPass2(tdbb, csb, window->group.getAddress());
+		ExprNode::doPass2(tdbb, csb, window->order.getAddress());
+		ExprNode::doPass2(tdbb, csb, window->frameExtent.getAddress());
 
-		fb_assert(partition->stream <= MAX_STREAMS);
-
-		processMap(tdbb, csb, partition->map, &csb->csb_rpt[partition->stream].csb_internal_format);
-		csb->csb_rpt[partition->stream].csb_format =
-			csb->csb_rpt[partition->stream].csb_internal_format;
+		processMap(tdbb, csb, window->map, &csb->csb_rpt[window->stream].csb_internal_format);
+		csb->csb_rpt[window->stream].csb_format =
+			csb->csb_rpt[window->stream].csb_internal_format;
 	}
 
-	for (ObjectsArray<Partition>::iterator partition = partitions.begin();
-		 partition != partitions.end();
-		 ++partition)
+	for (ObjectsArray<Window>::iterator window = windows.begin();
+		 window != windows.end();
+		 ++window)
 	{
-		ExprNode::doPass2(tdbb, csb, partition->regroup.getAddress());
+		ExprNode::doPass2(tdbb, csb, window->regroup.getAddress());
 	}
 
 	return this;
@@ -2139,21 +2250,21 @@ void WindowSourceNode::pass2Rse(thread_db* tdbb, CompilerScratch* csb)
 {
 	pass2(tdbb, csb);
 
-	for (ObjectsArray<Partition>::iterator partition = partitions.begin();
-		 partition != partitions.end();
-		 ++partition)
+	for (ObjectsArray<Window>::iterator window = windows.begin();
+		 window != windows.end();
+		 ++window)
 	{
-		csb->csb_rpt[partition->stream].activate();
+		csb->csb_rpt[window->stream].activate();
 	}
 }
 
 bool WindowSourceNode::containsStream(StreamType checkStream) const
 {
-	for (ObjectsArray<Partition>::const_iterator partition = partitions.begin();
-		 partition != partitions.end();
-		 ++partition)
+	for (ObjectsArray<Window>::const_iterator window = windows.begin();
+		 window != windows.end();
+		 ++window)
 	{
-		if (checkStream == partition->stream)
+		if (checkStream == window->stream)
 			return true;		// do not mark as variant
 	}
 
@@ -2163,28 +2274,28 @@ bool WindowSourceNode::containsStream(StreamType checkStream) const
 	return false;
 }
 
-void WindowSourceNode::collectStreams(SortedStreamList& streamList) const
+void WindowSourceNode::collectStreams(CompilerScratch* /*csb*/, SortedStreamList& streamList) const
 {
-	for (ObjectsArray<Partition>::const_iterator partition = partitions.begin();
-		 partition != partitions.end();
-		 ++partition)
+	for (ObjectsArray<Window>::const_iterator window = windows.begin();
+		 window != windows.end();
+		 ++window)
 	{
-		if (!streamList.exist(partition->stream))
-			streamList.add(partition->stream);
+		if (!streamList.exist(window->stream))
+			streamList.add(window->stream);
 	}
 }
 
 RecordSource* WindowSourceNode::compile(thread_db* tdbb, OptimizerBlk* opt, bool /*innerSubStream*/)
 {
-	for (ObjectsArray<Partition>::iterator partition = partitions.begin();
-		 partition != partitions.end();
-		 ++partition)
+	for (ObjectsArray<Window>::iterator window = windows.begin();
+		 window != windows.end();
+		 ++window)
 	{
-		opt->beds.add(partition->stream);
+		opt->beds.add(window->stream);
 	}
 
 	RecordSource* const rsb = FB_NEW_POOL(*tdbb->getDefaultPool()) WindowedStream(tdbb, opt->opt_csb,
-		partitions, OPT_compile(tdbb, opt->opt_csb, rse, NULL));
+		windows, OPT_compile(tdbb, opt->opt_csb, rse, NULL));
 
 	StreamList rsbStreams;
 	rsb->findUsedStreams(rsbStreams);
@@ -2202,11 +2313,11 @@ bool WindowSourceNode::computable(CompilerScratch* csb, StreamType stream,
 
 void WindowSourceNode::computeRseStreams(StreamList& streamList) const
 {
-	for (ObjectsArray<Partition>::const_iterator partition = partitions.begin();
-		 partition != partitions.end();
-		 ++partition)
+	for (ObjectsArray<Window>::const_iterator window = windows.begin();
+		 window != windows.end();
+		 ++window)
 	{
-		streamList.add(partition->stream);
+		streamList.add(window->stream);
 	}
 }
 
@@ -2293,9 +2404,9 @@ RseNode* RseNode::dsqlFieldRemapper(FieldRemapper& visitor)
 	return this;
 }
 
-bool RseNode::dsqlMatch(const ExprNode* other, bool ignoreMapCast) const
+bool RseNode::dsqlMatch(DsqlCompilerScratch* dsqlScratch, const ExprNode* other, bool ignoreMapCast) const
 {
-	const RseNode* o = other->as<RseNode>();
+	const RseNode* o = nodeAs<RseNode>(other);
 
 	if (!o)
 		return false;
@@ -2303,7 +2414,7 @@ bool RseNode::dsqlMatch(const ExprNode* other, bool ignoreMapCast) const
 	// ASF: Commented-out code "Fixed assertion when subquery is used in group by" to make
 	// CORE-4084 work again.
 	return /***dsqlContext &&***/ dsqlContext == o->dsqlContext &&
-		RecordSourceNode::dsqlMatch(other, ignoreMapCast);
+		RecordSourceNode::dsqlMatch(dsqlScratch, other, ignoreMapCast);
 }
 
 // Make up join node and mark relations as "possibly NULL" if they are in outer joins (inOuterJoin).
@@ -2313,8 +2424,9 @@ RseNode* RseNode::dsqlPass(DsqlCompilerScratch* dsqlScratch)
 	// that it includes system (e.g. trigger) contexts (if present),
 	// as well as any outer (from other levels) contexts.
 
+	MemoryPool& pool = dsqlScratch->getPool();
 	DsqlContextStack* const base_context = dsqlScratch->context;
-	DsqlContextStack temp;
+	DsqlContextStack temp, outer;
 	dsqlScratch->context = &temp;
 
 	for (DsqlContextStack::iterator iter(*base_context); iter.hasData(); ++iter)
@@ -2330,10 +2442,10 @@ RseNode* RseNode::dsqlPass(DsqlCompilerScratch* dsqlScratch)
 	const size_t visibleContexts = temp.getCount();
 
 	RecSourceListNode* fromList = dsqlFrom;
-	RecSourceListNode* streamList = FB_NEW_POOL(getPool()) RecSourceListNode(
-		getPool(), fromList->items.getCount());
+	RecSourceListNode* streamList = FB_NEW_POOL(pool) RecSourceListNode(
+		pool, fromList->items.getCount());
 
-	RseNode* node = FB_NEW_POOL(getPool()) RseNode(getPool());
+	RseNode* node = FB_NEW_POOL(pool) RseNode(pool);
 	node->dsqlExplicitJoin = dsqlExplicitJoin;
 	node->rse_jointype = rse_jointype;
 	node->dsqlStreams = streamList;
@@ -2356,12 +2468,20 @@ RseNode* RseNode::dsqlPass(DsqlCompilerScratch* dsqlScratch)
 			++dsqlScratch->inOuterJoin;
 			streamList->items[0] = doDsqlPass(dsqlScratch, fromList->items[0]);
 			--dsqlScratch->inOuterJoin;
+			// Temporarily remove just created context(s) from the stack,
+			// because outer LATERAL references are not allowed in RIGHT/FULL joins
+			while (temp.getCount() > visibleContexts)
+				outer.push(temp.pop());
 			streamList->items[1] = doDsqlPass(dsqlScratch, fromList->items[1]);
 			break;
 
 		case blr_full:
 			++dsqlScratch->inOuterJoin;
 			streamList->items[0] = doDsqlPass(dsqlScratch, fromList->items[0]);
+			// Temporarily remove just created context(s) from the stack,
+			// because outer LATERAL references are not allowed in RIGHT/FULL joins
+			while (temp.getCount() > visibleContexts)
+				outer.push(temp.pop());
 			streamList->items[1] = doDsqlPass(dsqlScratch, fromList->items[1]);
 			--dsqlScratch->inOuterJoin;
 			break;
@@ -2370,6 +2490,10 @@ RseNode* RseNode::dsqlPass(DsqlCompilerScratch* dsqlScratch)
 			fb_assert(false);
 			break;
 	}
+
+	// Add outer contexts back to the stack
+	while (outer.hasData())
+		temp.push(outer.pop());
 
 	NestConst<BoolExprNode> boolean = dsqlWhere;
 	ValueListNode* usingList = dsqlJoinUsing;
@@ -2382,42 +2506,34 @@ RseNode* RseNode::dsqlPass(DsqlCompilerScratch* dsqlScratch)
 					  Arg::Gds(isc_dsql_unsupp_feature_dialect) << Arg::Num(dsqlScratch->clientDialect));
 		}
 
-		ValueListNode leftStack(dsqlScratch->getPool(), 0u);
-		ValueListNode rightStack(dsqlScratch->getPool(), 0u);
+		ValueListNode leftStack(pool, 0u);
+		ValueListNode rightStack(pool, 0u);
 
 		if (usingList->items.isEmpty())	// NATURAL JOIN
 		{
-			StrArray leftNames(dsqlScratch->getPool());
-			ValueListNode* matched = FB_NEW_POOL(getPool()) ValueListNode(getPool(), 0u);
+			StrArray leftNames(pool);
+			ValueListNode* matched = FB_NEW_POOL(pool) ValueListNode(pool, 0u);
 
 			PASS1_expand_select_node(dsqlScratch, streamList->items[0], &leftStack, true);
 			PASS1_expand_select_node(dsqlScratch, streamList->items[1], &rightStack, true);
 
 			// verify columns that exist in both sides
-			for (int i = 0; i < 2; ++i)
+			for (const auto* currentStack : {&leftStack, &rightStack})
 			{
-				ValueListNode& currentStack = i == 0 ? leftStack : rightStack;
-
-				for (NestConst<ValueExprNode>* j = currentStack.items.begin();
-					 j != currentStack.items.end();
-					 ++j)
+				for (auto& item : currentStack->items)
 				{
 					const TEXT* name = NULL;
-					ValueExprNode* item = *j;
-					DsqlAliasNode* aliasNode;
-					FieldNode* fieldNode;
-					DerivedFieldNode* derivedField;
 
-					if ((aliasNode = item->as<DsqlAliasNode>()))
+					if (auto* aliasNode = nodeAs<DsqlAliasNode>(item))
 						name = aliasNode->name.c_str();
-					else if ((fieldNode = item->as<FieldNode>()))
+					else if (auto* fieldNode = nodeAs<FieldNode>(item))
 						name = fieldNode->dsqlField->fld_name.c_str();
-					else if ((derivedField = item->as<DerivedFieldNode>()))
+					else if (auto* derivedField = nodeAs<DerivedFieldNode>(item))
 						name = derivedField->name.c_str();
 
 					if (name)
 					{
-						if (i == 0)	// left
+						if (currentStack == &leftStack)
 							leftNames.add(name);
 						else	// right
 						{
@@ -2443,11 +2559,11 @@ RseNode* RseNode::dsqlPass(DsqlCompilerScratch* dsqlScratch)
 		if (usingList)	// JOIN ... USING
 		{
 			BoolExprNode* newBoolean = NULL;
-			StrArray usedColumns(dsqlScratch->getPool());
+			StrArray usedColumns(pool);
 
 			for (FB_SIZE_T i = 0; i < usingList->items.getCount(); ++i)
 			{
-				const FieldNode* field = usingList->items[i]->as<FieldNode>();
+				const FieldNode* field = nodeAs<FieldNode>(usingList->items[i]);
 
 				// verify if the column was already used
 				FB_SIZE_T pos;
@@ -2477,7 +2593,7 @@ RseNode* RseNode::dsqlPass(DsqlCompilerScratch* dsqlScratch)
 				ValueExprNode* arg2 = resolveUsingField(dsqlScratch, field->dsqlName, &rightStack,
 					field, "right", rightCtx);
 
-				ComparativeBoolNode* eqlNode = FB_NEW_POOL(getPool()) ComparativeBoolNode(getPool(),
+				ComparativeBoolNode* eqlNode = FB_NEW_POOL(pool) ComparativeBoolNode(pool,
 					blr_eql, arg1, arg2);
 
 				fb_assert(leftCtx);
@@ -2487,7 +2603,7 @@ RseNode* RseNode::dsqlPass(DsqlCompilerScratch* dsqlScratch)
 				ImplicitJoin* impJoinLeft;
 				if (!leftCtx->ctx_imp_join.get(field->dsqlName, impJoinLeft))
 				{
-					impJoinLeft = FB_NEW_POOL(dsqlScratch->getPool()) ImplicitJoin();
+					impJoinLeft = FB_NEW_POOL(pool) ImplicitJoin();
 					impJoinLeft->value = eqlNode->arg1;
 					impJoinLeft->visibleInContext = leftCtx;
 				}
@@ -2497,17 +2613,17 @@ RseNode* RseNode::dsqlPass(DsqlCompilerScratch* dsqlScratch)
 				ImplicitJoin* impJoinRight;
 				if (!rightCtx->ctx_imp_join.get(field->dsqlName, impJoinRight))
 				{
-					impJoinRight = FB_NEW_POOL(dsqlScratch->getPool()) ImplicitJoin();
+					impJoinRight = FB_NEW_POOL(pool) ImplicitJoin();
 					impJoinRight->value = arg2;
 				}
 				else
 					fb_assert(impJoinRight->visibleInContext == rightCtx);
 
 				// create the COALESCE
-				ValueListNode* stack = FB_NEW_POOL(getPool()) ValueListNode(getPool(), 0u);
+				ValueListNode* stack = FB_NEW_POOL(pool) ValueListNode(pool, 0u);
 
 				NestConst<ValueExprNode> tempNode = impJoinLeft->value;
-				NestConst<DsqlAliasNode> aliasNode = tempNode->as<DsqlAliasNode>();
+				NestConst<DsqlAliasNode> aliasNode = nodeAs<DsqlAliasNode>(tempNode);
 				NestConst<CoalesceNode> coalesceNode;
 
 				if (aliasNode)
@@ -2516,7 +2632,7 @@ RseNode* RseNode::dsqlPass(DsqlCompilerScratch* dsqlScratch)
 				{	// scope
 					PsqlChanger changer(dsqlScratch, false);
 
-					if ((coalesceNode = tempNode->as<CoalesceNode>()))
+					if ((coalesceNode = nodeAs<CoalesceNode>(tempNode)))
 					{
 						ValueListNode* list = coalesceNode->args;
 
@@ -2532,10 +2648,10 @@ RseNode* RseNode::dsqlPass(DsqlCompilerScratch* dsqlScratch)
 
 					tempNode = impJoinRight->value;
 
-					if ((aliasNode = tempNode->as<DsqlAliasNode>()))
+					if ((aliasNode = nodeAs<DsqlAliasNode>(tempNode)))
 						tempNode = aliasNode->value;
 
-					if ((coalesceNode = tempNode->as<CoalesceNode>()))
+					if ((coalesceNode = nodeAs<CoalesceNode>(tempNode)))
 					{
 						ValueListNode* list = coalesceNode->args;
 
@@ -2550,9 +2666,9 @@ RseNode* RseNode::dsqlPass(DsqlCompilerScratch* dsqlScratch)
 						stack->add(doDsqlPass(dsqlScratch, tempNode));
 				}
 
-				coalesceNode = FB_NEW_POOL(getPool()) CoalesceNode(getPool(), stack);
+				coalesceNode = FB_NEW_POOL(pool) CoalesceNode(pool, stack);
 
-				aliasNode = FB_NEW_POOL(getPool()) DsqlAliasNode(getPool(), field->dsqlName, coalesceNode);
+				aliasNode = FB_NEW_POOL(pool) DsqlAliasNode(pool, field->dsqlName, coalesceNode);
 				aliasNode->implicitJoin = impJoinLeft;
 
 				impJoinLeft->value = aliasNode;
@@ -2608,15 +2724,6 @@ RseNode* RseNode::copy(thread_db* tdbb, NodeCopier& copier) const
 	return newSource;
 }
 
-// For each relation or aggregate in the RseNode, mark it as not having a dbkey.
-void RseNode::ignoreDbKey(thread_db* tdbb, CompilerScratch* csb) const
-{
-	const NestConst<RecordSourceNode>* ptr = rse_relations.begin();
-
-	for (const NestConst<RecordSourceNode>* const end = rse_relations.end(); ptr != end; ++ptr)
-		(*ptr)->ignoreDbKey(tdbb, csb);
-}
-
 // Process a record select expression during pass 1 of compilation.
 // Mostly this involves expanding views.
 RseNode* RseNode::pass1(thread_db* tdbb, CompilerScratch* csb)
@@ -2633,7 +2740,7 @@ RseNode* RseNode::pass1(thread_db* tdbb, CompilerScratch* csb)
 	for (ExprNode** node = csb->csb_current_nodes.begin();
 		 node != csb->csb_current_nodes.end(); ++node)
 	{
-		if ((*node)->as<RseNode>())
+		if (nodeAs<RseNode>(*node))
 		{
 			topLevelRse = false;
 			break;
@@ -2732,7 +2839,10 @@ void RseNode::pass1Source(thread_db* tdbb, CompilerScratch* csb, RseNode* rse,
 	// where we are just trying to inner join more than 2 streams. If possible,
 	// try to flatten the tree out before we go any further.
 
-	if (!rse->rse_jointype && !rse_jointype && !rse_sorted && !rse_projection &&
+	const auto isLateral = (this->flags & RseNode::FLAG_LATERAL) != 0;
+
+	if (!isLateral && !rse->rse_jointype && !rse_jointype &&
+		!rse_sorted && !rse_projection &&
 		!rse_first && !rse_skip && !rse_plan)
 	{
 		NestConst<RecordSourceNode>* arg = rse_relations.begin();
@@ -2831,6 +2941,8 @@ RecordSource* RseNode::compile(thread_db* tdbb, OptimizerBlk* opt, bool innerSub
 
 	BoolExprNodeStack conjunctStack;
 
+	const auto isLateral = (this->flags & RseNode::FLAG_LATERAL) != 0;
+
 	// pass RseNode boolean only to inner substreams because join condition
 	// should never exclude records from outer substreams
 	if (opt->rse->rse_jointype == blr_inner ||
@@ -2839,8 +2951,10 @@ RecordSource* RseNode::compile(thread_db* tdbb, OptimizerBlk* opt, bool innerSub
 		// AB: For an (X LEFT JOIN Y) mark the outer-streams (X) as
 		// active because the inner-streams (Y) are always "dependent"
 		// on the outer-streams. So that index retrieval nodes could be made.
+		//
+		// dimitr: the same for lateral derived tables in inner joins
 
-		if (opt->rse->rse_jointype == blr_left)
+		if (opt->rse->rse_jointype == blr_left || isLateral)
 		{
 			for (StreamList::iterator i = opt->outerStreams.begin();
 				 i != opt->outerStreams.end();
@@ -2849,10 +2963,13 @@ RecordSource* RseNode::compile(thread_db* tdbb, OptimizerBlk* opt, bool innerSub
 				opt->opt_csb->csb_rpt[*i].activate();
 			}
 
-			// Push all conjuncts except "missing" ones (e.g. IS NULL)
+			if (opt->rse->rse_jointype == blr_left)
+			{
+				// Push all conjuncts except "missing" ones (e.g. IS NULL)
 
-			for (USHORT i = 0; i < opt->opt_base_missing_conjuncts; i++)
-				conjunctStack.push(opt->opt_conjuncts[i].opt_conjunct_node);
+				for (USHORT i = 0; i < opt->opt_base_missing_conjuncts; i++)
+					conjunctStack.push(opt->opt_conjuncts[i].opt_conjunct_node);
+			}
 		}
 		else
 		{
@@ -2862,7 +2979,7 @@ RecordSource* RseNode::compile(thread_db* tdbb, OptimizerBlk* opt, bool innerSub
 
 		RecordSource* const rsb = OPT_compile(tdbb, opt->opt_csb, this, &conjunctStack);
 
-		if (opt->rse->rse_jointype == blr_left)
+		if (opt->rse->rse_jointype == blr_left || isLateral)
 		{
 			for (StreamList::iterator i = opt->outerStreams.begin();
 				i != opt->outerStreams.end(); ++i)
@@ -2893,7 +3010,7 @@ void RseNode::planCheck(const CompilerScratch* csb) const
 	{
 		const RecordSourceNode* node = *ptr;
 
-		if (node->type == RelationSourceNode::TYPE)
+		if (nodeIs<RelationSourceNode>(node))
 		{
 			const StreamType stream = node->getStream();
 
@@ -2903,7 +3020,7 @@ void RseNode::planCheck(const CompilerScratch* csb) const
 					Arg::Str(csb->csb_rpt[stream].csb_relation->rel_name));
 			}
 		}
-		else if (node->type == RseNode::TYPE)
+		else if (nodeIs<RseNode>(node))
 			static_cast<const RseNode*>(node)->planCheck(csb);
 	}
 }
@@ -3120,8 +3237,8 @@ bool RseNode::computable(CompilerScratch* csb, StreamType stream,
 	if (rse_first && !rse_first->computable(csb, stream, allowOnlyCurrentStream))
 		return false;
 
-    if (rse_skip && !rse_skip->computable(csb, stream, allowOnlyCurrentStream))
-        return false;
+	if (rse_skip && !rse_skip->computable(csb, stream, allowOnlyCurrentStream))
+		return false;
 
 	const NestConst<RecordSourceNode>* const end = rse_relations.end();
 	NestConst<RecordSourceNode>* ptr;
@@ -3156,8 +3273,8 @@ void RseNode::findDependentFromStreams(const OptimizerRetrieval* optRet,
 	if (rse_first)
 		rse_first->findDependentFromStreams(optRet, streamList);
 
-    if (rse_skip)
-        rse_skip->findDependentFromStreams(optRet, streamList);
+	if (rse_skip)
+		rse_skip->findDependentFromStreams(optRet, streamList);
 
 	if (rse_boolean)
 		rse_boolean->findDependentFromStreams(optRet, streamList);
@@ -3175,27 +3292,27 @@ void RseNode::findDependentFromStreams(const OptimizerRetrieval* optRet,
 		(*ptr)->findDependentFromStreams(optRet, streamList);
 }
 
-void RseNode::collectStreams(SortedStreamList& streamList) const
+void RseNode::collectStreams(CompilerScratch* csb, SortedStreamList& streamList) const
 {
 	if (rse_first)
-		rse_first->collectStreams(streamList);
+		rse_first->collectStreams(csb, streamList);
 
 	if (rse_skip)
-		rse_skip->collectStreams(streamList);
+		rse_skip->collectStreams(csb, streamList);
 
 	if (rse_boolean)
-		rse_boolean->collectStreams(streamList);
+		rse_boolean->collectStreams(csb, streamList);
 
 	// ASF: The legacy code used to visit rse_sorted and rse_projection, but the nod_sort was never
 	// handled.
-	// rse_sorted->collectStreams(streamList);
-	// rse_projection->collectStreams(streamList);
+	// rse_sorted->collectStreams(csb, streamList);
+	// rse_projection->collectStreams(csb, streamList);
 
 	const NestConst<RecordSourceNode>* ptr;
 	const NestConst<RecordSourceNode>* end;
 
 	for (ptr = rse_relations.begin(), end = rse_relations.end(); ptr != end; ++ptr)
-		(*ptr)->collectStreams(streamList);
+		(*ptr)->collectStreams(csb, streamList);
 }
 
 
@@ -3228,8 +3345,8 @@ RseNode* SelectExprNode::dsqlPass(DsqlCompilerScratch* dsqlScratch)
 
 static RecordSourceNode* dsqlPassRelProc(DsqlCompilerScratch* dsqlScratch, RecordSourceNode* source)
 {
-	ProcedureSourceNode* procNode = source->as<ProcedureSourceNode>();
-	RelationSourceNode* relNode = source->as<RelationSourceNode>();
+	ProcedureSourceNode* procNode = nodeAs<ProcedureSourceNode>(source);
+	RelationSourceNode* relNode = nodeAs<RelationSourceNode>(source);
 
 	fb_assert(procNode || relNode);
 
@@ -3280,7 +3397,7 @@ static RecordSourceNode* dsqlPassRelProc(DsqlCompilerScratch* dsqlScratch, Recor
 	}
 
 	RecordSourceNode* const query = cte->querySpec;
-	UnionSourceNode* unionQuery = ExprNode::as<UnionSourceNode>(query);
+	UnionSourceNode* unionQuery = nodeAs<UnionSourceNode>(query);
 	const bool isRecursive = unionQuery && unionQuery->recursive;
 
 	const string saveCteName = cte->alias;
@@ -3301,12 +3418,16 @@ static RecordSourceNode* dsqlPassRelProc(DsqlCompilerScratch* dsqlScratch, Recor
 }
 
 // Parse a MAP clause for a union or global aggregate expression.
-static MapNode* parseMap(thread_db* tdbb, CompilerScratch* csb, StreamType stream)
+static MapNode* parseMap(thread_db* tdbb, CompilerScratch* csb, StreamType stream,
+	bool parseHeader)
 {
 	SET_TDBB(tdbb);
 
-	if (csb->csb_blr_reader.getByte() != blr_map)
-		PAR_syntax_error(csb, "blr_map");
+	if (parseHeader)
+	{
+		if (csb->csb_blr_reader.getByte() != blr_map)
+			PAR_syntax_error(csb, "blr_map");
+	}
 
 	unsigned int count = csb->csb_blr_reader.getWord();
 	MapNode* node = FB_NEW_POOL(csb->csb_pool) MapNode(csb->csb_pool);
@@ -3369,7 +3490,7 @@ static void processMap(thread_db* tdbb, CompilerScratch* csb, MapNode* map, Form
 		 source != sourceEnd;
 		 ++source, ++target)
 	{
-		FieldNode* field = (*target)->as<FieldNode>();
+		FieldNode* field = nodeAs<FieldNode>(*target);
 		const USHORT id = field->fieldId;
 
 		if (id >= format->fmt_count)
@@ -3457,12 +3578,10 @@ static void processMap(thread_db* tdbb, CompilerScratch* csb, MapNode* map, Form
 
 // Make new boolean nodes from nodes that contain a field from the given shellStream.
 // Those fields are references (mappings) to other nodes and are used by aggregates and union rse's.
-static void genDeliverUnmapped(thread_db* tdbb, BoolExprNodeStack* deliverStack, MapNode* map,
+static void genDeliverUnmapped(CompilerScratch* csb, BoolExprNodeStack* deliverStack, MapNode* map,
 	BoolExprNodeStack* parentStack, StreamType shellStream)
 {
-	SET_TDBB(tdbb);
-
-	MemoryPool& pool = *tdbb->getDefaultPool();
+	MemoryPool& pool = csb->csb_pool;
 
 	for (BoolExprNodeStack::iterator stack1(*parentStack); stack1.hasData(); ++stack1)
 	{
@@ -3470,7 +3589,7 @@ static void genDeliverUnmapped(thread_db* tdbb, BoolExprNodeStack* deliverStack,
 
 		// Handle the "OR" case first
 
-		BinaryBoolNode* const binaryNode = boolean->as<BinaryBoolNode>();
+		BinaryBoolNode* const binaryNode = nodeAs<BinaryBoolNode>(boolean);
 		if (binaryNode && binaryNode->blrOp == blr_or)
 		{
 			BoolExprNodeStack orgStack, newStack;
@@ -3478,7 +3597,7 @@ static void genDeliverUnmapped(thread_db* tdbb, BoolExprNodeStack* deliverStack,
 			orgStack.push(binaryNode->arg1);
 			orgStack.push(binaryNode->arg2);
 
-			genDeliverUnmapped(tdbb, &newStack, map, &orgStack, shellStream);
+			genDeliverUnmapped(csb, &newStack, map, &orgStack, shellStream);
 
 			if (newStack.getCount() == 2)
 			{
@@ -3501,8 +3620,8 @@ static void genDeliverUnmapped(thread_db* tdbb, BoolExprNodeStack* deliverStack,
 
 		// Reduce to simple comparisons
 
-		ComparativeBoolNode* const cmpNode = boolean->as<ComparativeBoolNode>();
-		MissingBoolNode* const missingNode = boolean->as<MissingBoolNode>();
+		ComparativeBoolNode* const cmpNode = nodeAs<ComparativeBoolNode>(boolean);
+		MissingBoolNode* const missingNode = nodeAs<MissingBoolNode>(boolean);
 		HalfStaticArray<ValueExprNode*, 2> children;
 
 		if (cmpNode &&
@@ -3525,7 +3644,7 @@ static void genDeliverUnmapped(thread_db* tdbb, BoolExprNodeStack* deliverStack,
 
 		for (indexArg = 0; (indexArg < children.getCount()) && !mappingFound; ++indexArg)
 		{
-			FieldNode* fieldNode = children[indexArg]->as<FieldNode>();
+			FieldNode* fieldNode = nodeAs<FieldNode>(children[indexArg]);
 
 			if (fieldNode && fieldNode->fieldStream == shellStream)
 				mappingFound = true;
@@ -3570,7 +3689,7 @@ static void genDeliverUnmapped(thread_db* tdbb, BoolExprNodeStack* deliverStack,
 			// forget to leave aggregate-functions alone in case of aggregate rse).
 			// Because this is only to help using an index we keep it simple.
 
-			FieldNode* fieldNode = children[indexArg]->as<FieldNode>();
+			FieldNode* fieldNode = nodeAs<FieldNode>(children[indexArg]);
 
 			if (fieldNode && fieldNode->fieldStream == shellStream)
 			{
@@ -3583,7 +3702,7 @@ static void genDeliverUnmapped(thread_db* tdbb, BoolExprNodeStack* deliverStack,
 					// Check also the expression inside the map, because aggregate
 					// functions aren't allowed to be delivered to the WHERE clause.
 					ValueExprNode* value = map->sourceList[fieldId];
-					okNode = value->unmappable(map, shellStream);
+					okNode = value->unmappable(csb, map, shellStream);
 
 					if (okNode)
 						*newChildren[indexArg] = map->sourceList[fieldId];
@@ -3591,7 +3710,7 @@ static void genDeliverUnmapped(thread_db* tdbb, BoolExprNodeStack* deliverStack,
 			}
 			else
 			{
-				if ((okNode = children[indexArg]->unmappable(map, shellStream)))
+				if ((okNode = children[indexArg]->unmappable(csb, map, shellStream)))
 					*newChildren[indexArg] = children[indexArg];
 			}
 		}
@@ -3620,16 +3739,14 @@ static ValueExprNode* resolveUsingField(DsqlCompilerScratch* dsqlScratch, const 
 	FieldNode* fieldNode;
 	DerivedFieldNode* derivedField;
 
-	if ((aliasNode = ExprNode::as<DsqlAliasNode>(node)))
+	if ((aliasNode = nodeAs<DsqlAliasNode>(node)))
 		ctx = aliasNode->implicitJoin->visibleInContext;
-	else if ((fieldNode = ExprNode::as<FieldNode>(node)))
+	else if ((fieldNode = nodeAs<FieldNode>(node)))
 		ctx = fieldNode->dsqlContext;
-	else if ((derivedField = ExprNode::as<DerivedFieldNode>(node)))
+	else if ((derivedField = nodeAs<DerivedFieldNode>(node)))
 		ctx = derivedField->context;
 	else
-	{
 		fb_assert(false);
-	}
 
 	return node;
 }

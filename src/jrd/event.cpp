@@ -65,71 +65,26 @@ using namespace Firebird;
 
 namespace Jrd {
 
-GlobalPtr<EventManager::DbEventMgrMap> EventManager::g_emMap;
-GlobalPtr<Mutex> EventManager::g_mapMutex;
-
 
 void EventManager::init(Attachment* attachment)
 {
 	Database* const dbb = attachment->att_database;
-	EventManager* eventMgr = dbb->dbb_event_mgr;
-
-	if (!eventMgr)
-	{
-		const string id = dbb->getUniqueFileId();
-
-		MutexLockGuard guard(g_mapMutex, FB_FUNCTION);
-
-		if (!g_emMap->get(id, eventMgr))
-		{
-			eventMgr = FB_NEW EventManager(id, dbb->dbb_config);
-
-			if (g_emMap->put(id, eventMgr))
-			{
-				fb_assert(false);
-			}
-		}
-
-		fb_assert(eventMgr);
-
-		eventMgr->addRef();
-		dbb->dbb_event_mgr = eventMgr;
-	}
 
 	if (!attachment->att_event_session)
-		attachment->att_event_session = eventMgr->create_session();
+		attachment->att_event_session = dbb->eventManager()->create_session();
 }
 
 
-void EventManager::destroy(EventManager* eventMgr)
-{
-	if (eventMgr)
-	{
-		const Firebird::string id = eventMgr->m_dbId;
-
-		Firebird::MutexLockGuard guard(g_mapMutex, FB_FUNCTION);
-
-		if (!eventMgr->release())
-		{
-			if (!g_emMap->remove(id))
-			{
-				fb_assert(false);
-			}
-		}
-	}
-}
-
-
-EventManager::EventManager(const Firebird::string& id, Firebird::RefPtr<Config> conf)
+EventManager::EventManager(const string& id, const Config* conf)
 	: PID(getpid()),
 	  m_process(NULL),
 	  m_processOffset(0),
-	  m_dbId(getPool(), id),
+	  m_dbId(id),
 	  m_config(conf),
-	  m_sharedFileCreated(false),
+	  m_cleanupSync(getPool(), watcher_thread, THREAD_medium),
 	  m_exiting(false)
 {
-	attach_shared_file();
+	init_shared_file();
 }
 
 
@@ -146,7 +101,7 @@ EventManager::~EventManager()
 		// Terminate the event watcher thread
 		m_startupSemaphore.tryEnter(5);
 		(void) m_sharedMemory->eventPost(&m_process->prb_event);
-		m_cleanupSemaphore.tryEnter(5);
+		m_cleanupSync.waitForCompletion();
 
 #ifdef HAVE_OBJECT_MAP
 		m_sharedMemory->unmapObject(&localStatus, &m_process);
@@ -166,15 +121,13 @@ EventManager::~EventManager()
 		m_sharedMemory->removeMapFile();
 	}
 	release_shmem();
-
-	detach_shared_file();
 }
 
 
-void EventManager::attach_shared_file()
+void EventManager::init_shared_file()
 {
-	Firebird::PathName name;
-	get_shared_file_name(name);
+	PathName name;
+	name.printf(EVENT_FILE, m_dbId.c_str());
 
 	SharedMemory<evh>* tmp = FB_NEW_POOL(*getDefaultMemoryPool())
 		SharedMemory<evh>(name.c_str(), m_config->getEventMemSize(), this);
@@ -184,18 +137,6 @@ void EventManager::attach_shared_file()
 	fb_assert(m_sharedMemory->getHeader()->mhb_type == SharedMemoryBase::SRAM_EVENT_MANAGER);
 	fb_assert(m_sharedMemory->getHeader()->mhb_header_version == MemoryHeader::HEADER_VERSION);
 	fb_assert(m_sharedMemory->getHeader()->mhb_version == EVENT_VERSION);
-}
-
-
-void EventManager::detach_shared_file()
-{
-	delete m_sharedMemory.release();
-}
-
-
-void EventManager::get_shared_file_name(Firebird::PathName& name) const
-{
-	name.printf(EVENT_FILE, m_dbId.c_str());
 }
 
 
@@ -252,7 +193,7 @@ void EventManager::deleteSession(SLONG session_id)
 
 SLONG EventManager::queEvents(SLONG session_id,
 							  USHORT events_length, const UCHAR* events,
-							  Firebird::IEventCallback* ast)
+							  IEventCallback* ast)
 {
 /**************************************
  *
@@ -268,7 +209,7 @@ SLONG EventManager::queEvents(SLONG session_id,
 
 	if (events_length && (!events || events[0] != EPB_version1))
 	{
-		Firebird::Arg::Gds(isc_bad_epb_form).raise();
+		Arg::Gds(isc_bad_epb_form).raise();
 	}
 
 	acquire_shmem();
@@ -303,7 +244,7 @@ SLONG EventManager::queEvents(SLONG session_id,
 		if (count > end - events)
 		{
 			release_shmem();
-			Firebird::Arg::Gds(isc_bad_epb_form).raise();
+			Arg::Gds(isc_bad_epb_form).raise();
 		}
 
 		// The data in the event block may have trailing blanks. Strip them off.
@@ -370,7 +311,7 @@ SLONG EventManager::queEvents(SLONG session_id,
 		if (!post_process((prb*) SRQ_ABS_PTR(m_processOffset)))
 		{
 			release_shmem();
-			(Firebird::Arg::Gds(isc_random) << "post_process() failed").raise();
+			(Arg::Gds(isc_random) << "post_process() failed").raise();
 		}
 	}
 
@@ -491,7 +432,7 @@ void EventManager::deliverEvents()
 				if (!post_process(process))
 				{
 					release_shmem();
-					(Firebird::Arg::Gds(isc_random) << "post_process() failed").raise();
+					(Arg::Gds(isc_random) << "post_process() failed").raise();
 				}
 				flag = true;
 				break;
@@ -518,30 +459,25 @@ void EventManager::acquire_shmem()
 
 	m_sharedMemory->mutexLock();
 
-	// Check for shared memory state consistency
+	// Reattach if someone has just deleted the shared file
 
-	while (SRQ_EMPTY(m_sharedMemory->getHeader()->evh_processes))
+	while (m_sharedMemory->getHeader()->isDeleted())
 	{
-		if (! m_sharedFileCreated)
-		{
-			// Someone is going to delete shared file? Reattach.
-			m_sharedMemory->mutexUnlock();
-			detach_shared_file();
+		fb_assert(!m_process);
+		if (m_process)
+			fb_utils::logAndDie("Process disappeared in EventManager::acquire_shmem");
 
-			Thread::yield();
+		// Shared memory must be empty at this point
+		fb_assert(SRQ_EMPTY(m_sharedMemory->getHeader()->evh_processes));
 
-			attach_shared_file();
-			m_sharedMemory->mutexLock();
-		}
-		else
-		{
-			// complete initialization
-			m_sharedFileCreated = false;
+		m_sharedMemory->mutexUnlock();
+		m_sharedMemory.reset();
 
-			break;
-		}
+		Thread::yield();
+
+		init_shared_file();
+		m_sharedMemory->mutexLock();
 	}
-	fb_assert(!m_sharedFileCreated);
 
 	m_sharedMemory->getHeader()->evh_current_process = m_processOffset;
 
@@ -674,7 +610,7 @@ void EventManager::create_process()
 	if (m_sharedMemory->eventInit(&process->prb_event) != FB_SUCCESS)
 	{
 		release_shmem();
-		(Firebird::Arg::Gds(isc_random) << "eventInit() failed").raise();
+		(Arg::Gds(isc_random) << "eventInit() failed").raise();
 	}
 
 	m_processOffset = SRQ_REL_PTR(process);
@@ -697,7 +633,7 @@ void EventManager::create_process()
 
 	release_shmem();
 
-	Thread::start(watcher_thread, this, THREAD_medium);
+	m_cleanupSync.run(this);
 }
 
 
@@ -910,10 +846,10 @@ void EventManager::deliver_request(evt_req* request)
  *	Clean up request.
  *
  **************************************/
-	Firebird::HalfStaticArray<UCHAR, BUFFER_MEDIUM> buffer;
+	HalfStaticArray<UCHAR, BUFFER_MEDIUM> buffer;
 	UCHAR* p = buffer.getBuffer(1);
 
-	Firebird::IEventCallback* ast = request->req_ast;
+	IEventCallback* ast = request->req_ast;
 
 	*p++ = EPB_version1;
 
@@ -934,7 +870,7 @@ void EventManager::deliver_request(evt_req* request)
 
 			if (length + extent > MAX_USHORT)
 			{
-				Firebird::BadAlloc::raise();
+				BadAlloc::raise();
 			}
 
 			buffer.grow(length + extent);
@@ -950,7 +886,7 @@ void EventManager::deliver_request(evt_req* request)
 			*p++ = (UCHAR) (count >> 24);
 		}
 	}
-	catch (const Firebird::BadAlloc&)
+	catch (const BadAlloc&)
 	{
 		gds__log("Out of memory. Failed to post all events.");
 	}
@@ -1087,8 +1023,6 @@ bool EventManager::initialize(SharedMemoryBase* sm, bool init)
  *	Initialize global region header.
  *
  **************************************/
-
-	m_sharedFileCreated = init;
 
 	// reset m_sharedMemory in advance to be able to use SRQ_BASE macro
 	m_sharedMemory.reset(reinterpret_cast<SharedMemory<evh>*>(sm));
@@ -1403,7 +1337,7 @@ void EventManager::watcher_thread()
 			(void) m_sharedMemory->eventWait(&m_process->prb_event, value, 0);
 		}
 	}
-	catch (const Firebird::Exception& ex)
+	catch (const Exception& ex)
 	{
 		iscLogException("Error in event watcher thread\n", ex);
 	}
@@ -1414,12 +1348,16 @@ void EventManager::watcher_thread()
 		{
 			m_startupSemaphore.release();
 		}
-		m_cleanupSemaphore.release();
 	}
-	catch (const Firebird::Exception& ex)
+	catch (const Exception& ex)
 	{
-		iscLogException("Error closing event watcher thread\n", ex);
+		exceptionHandler(ex, NULL);
 	}
+}
+
+void EventManager::exceptionHandler(const Exception& ex, ThreadFinishSync<EventManager*>::ThreadRoutine*)
+{
+	iscLogException("Error closing event watcher thread\n", ex);
 }
 
 } // namespace

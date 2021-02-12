@@ -29,6 +29,16 @@
 typedef ISC_DATE;
 typedef ISC_QUAD;
 typedef ISC_TIME;
+typedef ISC_TIMESTAMP;
+typedef ISC_TIME_TZ;
+typedef ISC_TIMESTAMP_TZ;
+typedef ISC_TIME_TZ_EX;
+typedef ISC_TIMESTAMP_TZ_EX;
+typedef FB_DEC16;
+typedef FB_DEC34;
+typedef FB_I128;
+typedef isc_tr_handle;
+typedef isc_stmt_handle;
 
 // Versioned interface - base for all FB interfaces
 interface Versioned
@@ -93,6 +103,7 @@ interface Master : Versioned
 	ConfigManager getConfigManager();
 	boolean getProcessExiting();
 }
+
 
 /*
  * Firebird plugins are accessed using methods of PluginLoader interface.
@@ -180,6 +191,7 @@ interface FirebirdConf : ReferenceCounted
 	// Get integer key by it's name
 	// Value ~0 means name is invalid
 	// Keys are stable: one can use once obtained key in other instances of this interface
+	// provided they have same minor version (upper 16 bits match with getVersion())
 	uint getKey(const string name);
 	// Use to access integer values
 	int64 asInteger(uint key);
@@ -187,6 +199,10 @@ interface FirebirdConf : ReferenceCounted
 	const string asString(uint key);
 	// Use to access boolean values
 	boolean asBoolean(uint key);
+version:		// 3.0 => 4.0
+	// Use to access version of configuration manager serving this interface
+	// Format: major byte, minor byte, buildno 2-byte
+	uint getVersion(Status status);
 }
 
 // This interface is passed to plugin's factory as it's single parameter
@@ -211,6 +227,10 @@ interface PluginFactory : Versioned
 interface PluginModule : Versioned
 {
 	void doClean();
+
+version:		// 3.0.3 => 3.0.4
+	// Used to release resources allocated per-thread
+	void threadDetach();
 }
 
 // Interface to deal with plugins here and there, returned by master interface
@@ -227,7 +247,8 @@ interface PluginManager : Versioned
 	const uint TYPE_WIRE_CRYPT = 8;
 	const uint TYPE_DB_CRYPT = 9;
 	const uint TYPE_KEY_HOLDER = 10;
-	const uint TYPE_COUNT = 11;	// keep in sync
+	const uint TYPE_REPLICATOR = 11;
+	const uint TYPE_COUNT = 12;	// keep in sync
 	//// TODO: TYPE_COUNT is not count. And these constants starts from 1, different than DIR_* ones.
 
 	// Main function called by plugin modules in firebird_plugin()
@@ -290,7 +311,8 @@ interface ConfigManager : Versioned
 	const uint DIR_LOG = 14;
 	const uint DIR_GUARD = 15;
 	const uint DIR_PLUGINS = 16;
-	const uint DIR_COUNT = 17;	// keep in sync
+	const uint DIR_TZDATA = 17;
+	const uint DIR_COUNT = 18;	// keep in sync
 
 	const string getDirectory(uint code);
 	FirebirdConf getFirebirdConf();
@@ -298,6 +320,9 @@ interface ConfigManager : Versioned
 	Config getPluginConfig(const string configuredPlugin);
 	const string getInstallDirectory();
 	const string getRootDirectory();
+
+version:		// 3.0 => 4.0
+	const string getDefaultSecurityDb();
 }
 
 
@@ -362,6 +387,10 @@ interface MessageMetadata : ReferenceCounted
 
 	MetadataBuilder getBuilder(Status status);
 	uint getMessageLength(Status status);
+
+version:	// 3.0 => 4.0
+	uint getAlignment(Status status);
+	uint getAlignedLength(Status status);
 }
 
 interface MetadataBuilder : ReferenceCounted
@@ -370,7 +399,7 @@ interface MetadataBuilder : ReferenceCounted
 	void setSubType(Status status, uint index, int subType);
 	void setLength(Status status, uint index, uint length);
 	void setCharSet(Status status, uint index, uint charSet);
-	void setScale(Status status, uint index, uint scale);
+	void setScale(Status status, uint index, int scale);
 
 	void truncate(Status status, uint count);
 	void moveNameToIndex(Status status, const string name, uint index);
@@ -378,6 +407,12 @@ interface MetadataBuilder : ReferenceCounted
 	uint addField(Status status);
 
 	MessageMetadata getMetadata(Status status);
+
+version:	// 3.0 => 4.0
+	void setField(Status status, uint index, const string field);
+	void setRelation(Status status, uint index, const string relation);
+	void setOwner(Status status, uint index, const string owner);
+	void setAlias(Status status, uint index, const string alias);
 }
 
 interface ResultSet : ReferenceCounted
@@ -439,20 +474,100 @@ interface Statement : ReferenceCounted
 	void setCursorName(Status status, const string name);
 	void free(Status status);
 	uint getFlags(Status status);
+
+version:	// 3.0 => 4.0
+	// Statement execution timeout, milliseconds
+	uint getTimeout(Status status);
+	void setTimeout(Status status, uint timeOut);
+
+	// Batch API
+	Batch createBatch(Status status, MessageMetadata inMetadata, uint parLength, const uchar* par);
+
+	/*
+	Pipe createPipe(Status status, Transaction transaction, MessageMetadata inMetadata,
+		void* inBuffer, MessageMetadata outMetadata, uint parLength, const uchar* par);
+	*/
+}
+
+interface Batch : ReferenceCounted
+{
+	const uchar VERSION1 = 1;				// Tag for parameters block
+
+	const uchar TAG_MULTIERROR = 1;			// Can have >1 buffers with errors
+	const uchar TAG_RECORD_COUNTS = 2;		// Per-record modified records accountung
+	const uchar TAG_BUFFER_BYTES_SIZE = 3;	// Maximum possible buffer size
+	const uchar TAG_BLOB_POLICY = 4;		// What policy is used to store blobs
+	const uchar TAG_DETAILED_ERRORS = 5;	// How many vectors with detailed error info are stored
+
+	const uchar BLOB_NONE = 0;				// Blobs can't be used
+	const uchar BLOB_ID_ENGINE = 1;			// Blobs are added one by one, IDs are generated by firebird
+	const uchar BLOB_ID_USER = 2;			// Blobs are added one by one, IDs are generated by user
+	const uchar BLOB_STREAM = 3;			// Blobs are added in a stream, IDs are generated by user
+
+	const uint BLOB_SEGHDR_ALIGN = 2;		// Alignment of segment header in the stream
+
+	void add(Status status, uint count, const void* inBuffer);
+	void addBlob(Status status, uint length, const void* inBuffer, ISC_QUAD* blobId, uint parLength, const uchar* par);
+	void appendBlobData(Status status, uint length, const void* inBuffer);
+	void addBlobStream(Status status, uint length, const void* inBuffer);
+	void registerBlob(Status status, const ISC_QUAD* existingBlob, ISC_QUAD* blobId);
+	BatchCompletionState execute(Status status, Transaction transaction);
+	void cancel(Status status);
+	uint getBlobAlignment(Status status);
+	MessageMetadata getMetadata(Status status);
+	void setDefaultBpb(Status status, uint parLength, const uchar* par);
+}
+
+interface BatchCompletionState : Disposable
+{
+	const int EXECUTE_FAILED = -1;				// Error happened when processing record
+	const int SUCCESS_NO_INFO = -2;				// Record update info was not collected
+	const uint NO_MORE_ERRORS = 0xFFFFFFFF;		// Special value returned by findError()
+
+	uint getSize(Status status);
+	int getState(Status status, uint pos);
+	uint findError(Status status, uint pos);
+	void getStatus(Status status, Status to, uint pos);
+}
+
+/*
+interface Pipe : ReferenceCounted
+{
+	uint add(Status status, uint count, void* inBuffer);
+	uint fetch(Status status, uint count, void* outBuffer);
+	void close(Status status);
+}
+*/
+/*
+interface ReplicationBatch : Versioned
+{
+	void process(Status status, ReplicationSession replicator);
+	const string getDatabaseID();
+	uint64 getTransactionID();
+	ISC_TIMESTAMP getTimestamp();
+}
+*/
+interface Replicator : ReferenceCounted
+{
+/*
+	void process(Status status, ReplicationBatch batch);
+*/
+	void process(Status status, uint length, const uchar* data);
+	void close(Status status);
 }
 
 interface Request : ReferenceCounted
 {
 	void receive(Status status, int level, uint msgType,
-						 uint length, uchar* message);
+						 uint length, void* message);
 	void send(Status status, int level, uint msgType,
-					  uint length, const uchar* message);
+					  uint length, const void* message);
 	void getInfo(Status status, int level,
 						 uint itemsLength, const uchar* items,
 						 uint bufferLength, uchar* buffer);
 	void start(Status status, Transaction tra, int level);
 	void startAndSend(Status status, Transaction tra, int level, uint msgType,
-							  uint length, const uchar* message);
+							  uint length, const void* message);
 	void unwind(Status status, int level);
 	void free(Status status);
 }
@@ -460,16 +575,6 @@ interface Request : ReferenceCounted
 interface Events : ReferenceCounted
 {
 	void cancel(Status status);
-}
-
-interface EventBlock : Disposable
-{
-	uint getLength();
-	uchar* getValues();
-	uchar* getBuffer();
-	uint getCount();
-	uint* getCounters();
-	void counts();
 }
 
 interface Attachment : ReferenceCounted
@@ -516,6 +621,27 @@ interface Attachment : ReferenceCounted
 	void ping(Status status);
 	void detach(Status status);
 	void dropDatabase(Status status);
+
+version:	// 3.0 => 4.0
+	// Idle attachment timeout, seconds
+	uint getIdleTimeout(Status status);
+	void setIdleTimeout(Status status, uint timeOut);
+
+	// Statement execution timeout, milliseconds
+	uint getStatementTimeout(Status status);
+	void setStatementTimeout(Status status, uint timeOut);
+
+	// Batch API
+	Batch createBatch(Status status, Transaction transaction, uint stmtLength, const string sqlStmt,
+		uint dialect, MessageMetadata inMetadata, uint parLength, const uchar* par);
+
+	/*
+	Pipe createPipe(Status status, uint stmtLength, const string sqlStmt, uint dialect,
+		Transaction transaction, MessageMetadata inMetadata, void* inBuffer,
+		MessageMetadata outMetadata, uint parLength, const uchar* par);
+	*/
+
+	Replicator createReplicator(Status status);
 }
 
 interface Service : ReferenceCounted
@@ -557,7 +683,7 @@ interface Dtc : Versioned
 }
 
 
-//Interfaces, used by authentication plugins
+// Interfaces, used by authentication plugins
 
 interface Auth : PluginBase
 {
@@ -592,6 +718,8 @@ interface ClientBlock : ReferenceCounted
 	const uchar* getData(uint* length);
 	void putData(Status status, uint length, const void* data);
 	CryptKey newKey(Status status);
+version:	// 3.0 => 4.0
+	AuthBlock getAuthBlock(Status status);
 }
 
 // server part of authentication plugin
@@ -599,6 +727,9 @@ interface Server : Auth
 {
 	[notImplemented(Auth::AUTH_FAILED)]
 	int authenticate(Status status, ServerBlock sBlock, Writer writerInterface);
+
+version:		// 3.0.1 => 4.0
+	void setDbCryptCallback(Status status, CryptKeyCallback cryptCallback);
 }
 
 // .. and corresponding client
@@ -667,6 +798,10 @@ interface LogonInfo : Versioned
 	const string networkProtocol();
 	const string remoteAddress();
 	const uchar* authBlock(uint* length);
+
+version:
+	Attachment attachment(Status status);
+	Transaction transaction(Status status);
 }
 
 interface Management : PluginBase
@@ -675,6 +810,17 @@ interface Management : PluginBase
 	int execute(Status status, User user, ListUsers callback);
 	void commit(Status status);
 	void rollback(Status status);
+}
+
+interface AuthBlock : Versioned
+{
+	const string getType();
+	const string getName();
+	const string getPlugin();
+	const string getSecurityDb();
+	const string getOriginalPlugin();
+	boolean next(Status status);
+	boolean first(Status status);
 }
 
 
@@ -694,6 +840,10 @@ interface WireCryptPlugin : PluginBase
 	void setKey(Status status, CryptKey key);
 	void encrypt(Status status, uint length, const void* from, void* to);
 	void decrypt(Status status, uint length, const void* from, void* to);
+
+version:
+	const uchar* getSpecificData(Status status, const string keyType, uint* length);
+	void setSpecificData(Status status, const string keyType, uint length, const uchar* data);
 }
 
 
@@ -732,6 +882,20 @@ interface KeyHolderPlugin : PluginBase
 	// Missing key with given name is not an error condition for keyHandle().
 	// It should just return NULL in this case
 	CryptKeyCallback keyHandle(Status status, const string keyName);
+
+version:		// 3.0.1 => 4.0
+	// With returning true here KeyHolder attachment can use only keys, provided by this KeyHolder.
+	// Use of keys, got by database crypt plugin from other attachments, is prohibited.
+	boolean useOnlyOwnKeys(Status status);
+	// Communication in a chain of key holders - get callback interface for chaining holders
+	CryptKeyCallback chainHandle(Status status);
+}
+
+
+// Information calls available for crypt plugin
+interface DbCryptInfo : ReferenceCounted
+{
+	const string getDatabaseFullPath(Status status);
 }
 
 
@@ -745,6 +909,10 @@ interface DbCryptPlugin : PluginBase
 	void setKey(Status status, uint length, KeyHolderPlugin* sources, const string keyName);
 	void encrypt(Status status, uint length, const void* from, void* to);
 	void decrypt(Status status, uint length, const void* from, void* to);
+
+version:		// 3.0.1 => 4.0
+	// Crypto manager may pass some additional info to plugin
+	void setInfo(Status status, DbCryptInfo info);
 }
 
 
@@ -948,8 +1116,24 @@ interface Util : Versioned
 	XpbBuilder getXpbBuilder(Status status, uint kind, const uchar* buf, uint len);
 	uint setOffsets(Status status, MessageMetadata metadata, OffsetsCallback callback);
 
-version:
-	EventBlock createEventBlock(Status status, const string* events);
+version:	// 3.0 => 4.0 Alpha1
+	DecFloat16 getDecFloat16(Status status);
+	DecFloat34 getDecFloat34(Status status);
+	void decodeTimeTz(Status status, const ISC_TIME_TZ* timeTz, uint* hours, uint* minutes, uint* seconds,
+		uint* fractions, uint timeZoneBufferLength, string timeZoneBuffer);
+	void decodeTimeStampTz(Status status, const ISC_TIMESTAMP_TZ* timeStampTz, uint* year, uint* month, uint* day,
+		uint* hours, uint* minutes, uint* seconds, uint* fractions, uint timeZoneBufferLength, string timeZoneBuffer);
+	void encodeTimeTz(Status status, ISC_TIME_TZ* timeTz, uint hours, uint minutes, uint seconds,
+		uint fractions, const string timeZone);
+	void encodeTimeStampTz(Status status, ISC_TIMESTAMP_TZ* timeStampTz, uint year, uint month, uint day,
+		uint hours, uint minutes, uint seconds, uint fractions, const string timeZone);
+
+version:	// 4.0 Beta1 => 4.0 Beta2
+	Int128 getInt128(Status status);
+	void decodeTimeTzEx(Status status, const ISC_TIME_TZ_EX* timeTz, uint* hours, uint* minutes, uint* seconds,
+		uint* fractions, uint timeZoneBufferLength, string timeZoneBuffer);
+	void decodeTimeStampTzEx(Status status, const ISC_TIMESTAMP_TZ_EX* timeStampTz, uint* year, uint* month, uint* day,
+		uint* hours, uint* minutes, uint* seconds, uint* fractions, uint timeZoneBufferLength, string timeZoneBuffer);
 }
 
 interface OffsetsCallback : Versioned
@@ -963,6 +1147,11 @@ interface XpbBuilder : Disposable
 	const uint SPB_ATTACH = 2;
 	const uint SPB_START = 3;
 	const uint TPB = 4;
+	const uint BATCH = 5;
+	const uint BPB = 6;
+	const uint SPB_SEND = 7;
+	const uint SPB_RECEIVE = 8;
+	const uint SPB_RESPONSE = 9;
 
 	// removing data
 	void clear(Status status);
@@ -1029,18 +1218,26 @@ interface TraceTransaction : Versioned
 	const uint ISOLATION_CONCURRENCY = 2;
 	const uint ISOLATION_READ_COMMITTED_RECVER = 3;
 	const uint ISOLATION_READ_COMMITTED_NORECVER = 4;
+	const uint ISOLATION_READ_COMMITTED_READ_CONSISTENCY = 5;
 
 	int64 getTransactionID();
 	boolean getReadOnly();
 	int getWait();
 	uint getIsolation();
 	PerformanceInfo* getPerf();
+
+version: // 3.0.4 -> 3.0.5
+	int64 getInitialID();
+	int64 getPreviousID();
 }
 
 interface TraceParams : Versioned
 {
 	uint getCount();
 	const dsc* getParam(uint idx);
+
+version:
+	const string getTextUTF8(Status status, uint idx);
 }
 
 interface TraceStatement : Versioned
@@ -1138,6 +1335,8 @@ interface TraceSweepInfo : Versioned
 interface TraceLogWriter : ReferenceCounted
 {
 	uint write(const void* buf, uint size);
+version: // 3.0.4 -> 3.0.5
+	uint write_s(Status status, const void* buf, uint size);
 }
 
 interface TraceInitInfo : Versioned
@@ -1330,3 +1529,103 @@ interface UdrPlugin : Versioned
 	void registerProcedure(Status status, const string name, UdrProcedureFactory factory);
 	void registerTrigger(Status status, const string name, UdrTriggerFactory factory);
 }
+
+interface DecFloat16 : Versioned
+{
+	const uint BCD_SIZE = 16;
+	const uint STRING_SIZE = 24;	// includes terminating \0
+	void toBcd(const FB_DEC16* from, int* sign, uchar* bcd, int* exp);
+	void toString(Status status, const FB_DEC16* from, uint bufferLength, string buffer);
+	void fromBcd(int sign, const uchar* bcd, int exp, FB_DEC16* to);
+	void fromString(Status status, const string from, FB_DEC16* to);
+}
+
+interface DecFloat34 : Versioned
+{
+	const uint BCD_SIZE = 34;
+	const uint STRING_SIZE = 43;	// includes terminating \0
+	void toBcd(const FB_DEC34* from, int* sign, uchar* bcd, int* exp);
+	void toString(Status status, const FB_DEC34* from, uint bufferLength, string buffer);
+	void fromBcd(int sign, const uchar* bcd, int exp, FB_DEC34* to);
+	void fromString(Status status, const string from, FB_DEC34* to);
+}
+
+interface Int128 : Versioned
+{
+	// - 170141183460469231731687303715884105728 e - 128 \0
+	// 1 + 39 +							1 + 1 + 3 + 1 = 46
+	const uint STRING_SIZE = 46;	// includes terminating \0
+	void toString(Status status, const FB_I128* from, int scale, uint bufferLength, string buffer);
+	void fromString(Status status, int scale, const string from, FB_I128* to);
+}
+
+// Replication interfaces
+
+interface ReplicatedField : Versioned
+{
+	// Return field name (or nullptr on error)
+	const string getName();
+	// Return field type (or zero if the field does not exist)
+	uint getType();
+	// Return field subtype, if applicable
+	int getSubType();
+	// Return field scale (behavior is undefined for non-numeric fields)
+	int getScale();
+	// Return maximum length of the field data in bytes
+	uint getLength();
+	// Return character set without collation part for text or CLOB fields
+	uint getCharSet();
+	// Return pointer to data (or nullptr for NULL values)
+	const void* getData();
+}
+
+interface ReplicatedRecord : Versioned
+{
+	// Return count of fields
+	uint getCount();
+	// Return ReplicatedField with given index (or nullptr if index is invalid).
+	// Returned reference is valid until next call of getField() or end of the record life.
+	ReplicatedField getField(uint index);
+
+	// Return size of raw data
+	uint getRawLength();
+	// Dirty method to return record buffer in internal format
+	const uchar* getRawData();
+}
+
+interface ReplicatedTransaction : Disposable
+{
+	// Last chance to return an error and make commit to be aborted.
+	// The transaction still can be rolled back on error happened after this call.
+	void prepare(Status status);
+	// An error returned from these methods may be logged but do not abort process.
+	void commit(Status status);
+	void rollback(Status status);
+
+	void startSavepoint(Status status);
+	void releaseSavepoint(Status status);
+	void rollbackSavepoint(Status status);
+
+	// ReplicatedRecords parameters point to local objects, do not ever store the pointer.
+	void insertRecord(Status status, const string name,
+					  ReplicatedRecord record);
+	void updateRecord(Status status, const string name,
+					  ReplicatedRecord orgRecord,
+					  ReplicatedRecord newRecord);
+	void deleteRecord(Status status, const string name,
+					  ReplicatedRecord record);
+
+	void executeSql(Status status, const string sql);
+	void executeSqlIntl(Status status, uint charset, const string sql);
+}
+
+interface ReplicatedSession : PluginBase
+{
+	// Parameter don't need to be released if not used.
+	void setAttachment(Attachment attachment);
+
+	ReplicatedTransaction startTransaction(Status status, Transaction transaction, int64 number);
+	void cleanupTransaction(Status status, int64 number);
+	void setSequence(Status status, const string name, int64 value);
+}
+

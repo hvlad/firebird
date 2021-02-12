@@ -80,7 +80,7 @@
 #include "../jrd/intl_classes.h"
 #include "../jrd/rse.h"
 #include "../jrd/sort.h"
-#include "../jrd/blr.h"
+#include "firebird/impl/blr.h"
 #include "../jrd/tra.h"
 #include "../common/gdsassert.h"
 #include "../common/classes/auto.h"
@@ -148,7 +148,7 @@ dsc* EVL_assign_to(thread_db* tdbb, const ValueExprNode* node)
 	const VariableNode* varNode;
 	const FieldNode* fieldNode;
 
-	if ((paramNode = ExprNode::as<ParameterNode>(node)))
+	if ((paramNode = nodeAs<ParameterNode>(node)))
 	{
 		message = paramNode->message;
 		arg_number = paramNode->argNumber;
@@ -175,15 +175,15 @@ dsc* EVL_assign_to(thread_db* tdbb, const ValueExprNode* node)
 
 		return &impure->vlu_desc;
 	}
-	else if (ExprNode::is<NullNode>(node))
+	else if (nodeIs<NullNode>(node))
 		return NULL;
-	else if ((varNode = ExprNode::as<VariableNode>(node)))
+	else if ((varNode = nodeAs<VariableNode>(node)))
 	{
 		// Calculate descriptor
 		impure = request->getImpure<impure_value>(varNode->varDecl->impureOffset);
 		return &impure->vlu_desc;
 	}
-	else if ((fieldNode = ExprNode::as<FieldNode>(node)))
+	else if ((fieldNode = nodeAs<FieldNode>(node)))
 	{
 		record = request->req_rpb[fieldNode->fieldStream].rpb_record;
 
@@ -197,12 +197,12 @@ dsc* EVL_assign_to(thread_db* tdbb, const ValueExprNode* node)
 		}
 
 		if (!impure->vlu_desc.dsc_address)
-			ERR_post(Arg::Gds(isc_read_only_field));
+			ERR_post(Arg::Gds(isc_read_only_field) << "<unknown>");
 
 		return &impure->vlu_desc;
 	}
 
-	BUGCHECK(229);	// msg 229 EVL_assign_to: invalid operation
+	SOFT_BUGCHECK(229);	// msg 229 EVL_assign_to: invalid operation
 	return NULL;
 }
 
@@ -224,8 +224,7 @@ RecordBitmap** EVL_bitmap(thread_db* tdbb, const InversionNode* node, RecordBitm
 
 	DEV_BLKCHK(node, type_nod);
 
-	if (--tdbb->tdbb_quantum < 0)
-		JRD_reschedule(tdbb, 0, true);
+	JRD_reschedule(tdbb);
 
 	switch (node->type)
 	{
@@ -261,7 +260,7 @@ RecordBitmap** EVL_bitmap(thread_db* tdbb, const InversionNode* node, RecordBitm
 				(desc->isText() || desc->isDbKey()))
 			{
 				UCHAR* ptr = NULL;
-				const int length = MOV_get_string(desc, &ptr, NULL, 0);
+				const int length = MOV_get_string(tdbb, desc, &ptr, NULL, 0);
 
 				if (length == sizeof(RecordNumber::Packed))
 				{
@@ -290,10 +289,98 @@ RecordBitmap** EVL_bitmap(thread_db* tdbb, const InversionNode* node, RecordBitm
 		}
 
 	default:
-		BUGCHECK(230);			// msg 230 EVL_bitmap: invalid operation
+		SOFT_BUGCHECK(230);			// msg 230 EVL_bitmap: invalid operation
 	}
 
 	return NULL;
+}
+
+
+void EVL_dbkey_bounds(thread_db* tdbb, const Array<DbKeyRangeNode*>& ranges,
+	jrd_rel* relation, RecordNumber& lowerBound, RecordNumber& upperBound)
+{
+/**************************************
+*
+*      E V L _ d b k e y _ b o u n d s
+*
+**************************************
+*
+* Functional description
+*      Evaluate DBKEY ranges and find lower/upper bounds.
+*
+**************************************/
+	SET_TDBB(tdbb);
+
+	jrd_req* const request = tdbb->getRequest();
+
+	for (const auto node : ranges)
+	{
+		if (node->lower)
+		{
+			const auto desc = EVL_expr(tdbb, request, node->lower);
+
+			if (!(request->req_flags & req_null) &&
+				desc && (desc->isText() || desc->isDbKey()))
+			{
+				UCHAR* ptr = NULL;
+				const auto length = MOV_get_string(tdbb, desc, &ptr, NULL, 0);
+
+				if (length == sizeof(RecordNumber::Packed))
+				{
+					Aligner<RecordNumber::Packed> alignedNumber(ptr, length);
+					const auto dbkey = (const RecordNumber::Packed*) alignedNumber;
+
+					if (dbkey->bid_relation_id == relation->rel_id)
+					{
+						RecordNumber recno;
+						recno.bid_decode(dbkey);
+						// Decrement the value in order to switch back to the zero based numbering
+						recno.decrement();
+						recno.setValid(true);
+
+						if ((!lowerBound.isValid() || recno > lowerBound) &&
+							recno.getValue() > BOF_NUMBER)
+						{
+							lowerBound = recno;
+						}
+					}
+				}
+			}
+		}
+
+		if (node->upper)
+		{
+			const auto desc = EVL_expr(tdbb, request, node->upper);
+
+			if (!(request->req_flags & req_null) &&
+				desc && (desc->isText() || desc->isDbKey()))
+			{
+				UCHAR* ptr = NULL;
+				const auto length = MOV_get_string(tdbb, desc, &ptr, NULL, 0);
+
+				if (length == sizeof(RecordNumber::Packed))
+				{
+					Aligner<RecordNumber::Packed> alignedNumber(ptr, length);
+					const auto dbkey = (const RecordNumber::Packed*) alignedNumber;
+
+					if (dbkey->bid_relation_id == relation->rel_id)
+					{
+						RecordNumber recno;
+						recno.bid_decode(dbkey);
+						// Decrement the value in order to switch back to the zero based numbering
+						recno.decrement();
+						recno.setValid(true);
+
+						if ((!upperBound.isValid() || recno < upperBound) &&
+							recno.getValue() > BOF_NUMBER)
+						{
+							upperBound = recno;
+						}
+					}
+				}
+			}
+		}
+	}
 }
 
 
@@ -413,8 +500,6 @@ void EVL_make_value(thread_db* tdbb, const dsc* desc, impure_value* value, Memor
 
 	case dtype_long:
 	case dtype_real:
-	case dtype_sql_time:
-	case dtype_sql_date:
 		value->vlu_misc.vlu_long = *((SLONG*) from.dsc_address);
 		return;
 
@@ -426,7 +511,40 @@ void EVL_make_value(thread_db* tdbb, const dsc* desc, impure_value* value, Memor
 		value->vlu_misc.vlu_double = *((double*) from.dsc_address);
 		return;
 
+	case dtype_dec64:
+		value->vlu_misc.vlu_dec64 = *((Decimal64*) from.dsc_address);
+		return;
+
+	case dtype_dec128:
+		value->vlu_misc.vlu_dec128 = *((Decimal128*) from.dsc_address);
+		return;
+
+	case dtype_int128:
+		value->vlu_misc.vlu_int128 = *((Int128*) from.dsc_address);
+		return;
+
+	case dtype_sql_time:
+		value->vlu_misc.vlu_sql_time = *(GDS_TIME*) from.dsc_address;
+		return;
+
+	case dtype_ex_time_tz:
+	case dtype_sql_time_tz:
+		value->vlu_misc.vlu_sql_time_tz = *(ISC_TIME_TZ*) from.dsc_address;
+		return;
+
+	case dtype_sql_date:
+		value->vlu_misc.vlu_sql_date = *(GDS_DATE*) from.dsc_address;
+		return;
+
 	case dtype_timestamp:
+		value->vlu_misc.vlu_timestamp = *(GDS_TIMESTAMP*) from.dsc_address;
+		return;
+
+	case dtype_ex_timestamp_tz:
+	case dtype_timestamp_tz:
+		value->vlu_misc.vlu_timestamp_tz = *(ISC_TIMESTAMP_TZ*) from.dsc_address;
+		return;
+
 	case dtype_quad:
 		value->vlu_misc.vlu_dbkey[0] = ((SLONG*) from.dsc_address)[0];
 		value->vlu_misc.vlu_dbkey[1] = ((SLONG*) from.dsc_address)[1];
@@ -451,7 +569,7 @@ void EVL_make_value(thread_db* tdbb, const dsc* desc, impure_value* value, Memor
 		break;
 	}
 
-	VaryStr<128> temp;
+	VaryStr<TEMP_STR_LENGTH> temp;
 	UCHAR* address;
 	USHORT ttype;
 
@@ -459,7 +577,7 @@ void EVL_make_value(thread_db* tdbb, const dsc* desc, impure_value* value, Memor
 	// temporary buffer.  Since this will always be the result of a conversion,
 	// this isn't a serious problem.
 
-	const USHORT length = MOV_get_string_ptr(&from, &ttype, &address, &temp, sizeof(temp));
+	const USHORT length = MOV_get_string_ptr(tdbb, &from, &ttype, &address, &temp, sizeof(temp));
 
 	// Allocate a string block of sufficient size.
 
@@ -521,7 +639,7 @@ void EVL_validate(thread_db* tdbb, const Item& item, const ItemInfo* itemInfo, d
 		err = true;
 
 	const char* value = NULL_STRING_MARK;
-	VaryStr<128> temp;
+	VaryStr<TEMP_STR_LENGTH> temp;
 
 	MapFieldInfo::ValueType fieldInfo;
 	if (!err && itemInfo->fullDomain &&
@@ -539,7 +657,7 @@ void EVL_validate(thread_db* tdbb, const Item& item, const ItemInfo* itemInfo, d
 		if (!fieldInfo.validationExpr->execute(tdbb, request) && !(request->req_flags & req_null))
 		{
 			const USHORT length = desc_is_null ? 0 :
-				MOV_make_string(desc, ttype_dynamic, &value, &temp, sizeof(temp) - 1);
+				MOV_make_string(tdbb, desc, ttype_dynamic, &value, &temp, sizeof(temp) - 1);
 
 			if (desc_is_null)
 				value = NULL_STRING_MARK;

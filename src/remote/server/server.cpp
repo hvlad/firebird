@@ -31,7 +31,7 @@
 #include "firebird.h"
 #include <stdio.h>
 #include <string.h>
-#include "../jrd/ibase.h"			// fb_shutdown_callback() is used from it
+#include "ibase.h"			// fb_shutdown_callback() is used from it
 #include "../common/gdsassert.h"
 #ifdef UNIX
 #include "../common/file_params.h"
@@ -54,7 +54,7 @@
 #endif
 #include "../common/isc_proto.h"
 #include "../jrd/constants.h"
-#include "../jrd/inf_pub.h"
+#include "firebird/impl/inf_pub.h"
 #include "../common/classes/init.h"
 #include "../common/classes/semaphore.h"
 #include "../common/classes/ClumpletWriter.h"
@@ -74,6 +74,7 @@
 #include "../common/enc_proto.h"
 #include "../common/classes/InternalMessageBuffer.h"
 #include "../common/os/os_utils.h"
+#include "../common/security.h"
 
 using namespace Firebird;
 
@@ -105,7 +106,197 @@ public:
 
 namespace {
 
+// DB crypt key passthrough
+
+class NetworkCallback : public VersionedIface<ICryptKeyCallbackImpl<NetworkCallback, CheckStatusWrapper> >
+{
+public:
+	explicit NetworkCallback(rem_port* prt)
+		: port(prt), replyLength(0), replyData(NULL), stopped(false), wake(false)
+	{ }
+
+	unsigned int callback(unsigned int dataLength, const void* data,
+		unsigned int bufferLength, void* buffer)
+	{
+		if (stopped)
+			return 0;
+
+		if (port->port_protocol < PROTOCOL_VERSION13 || port->port_type != rem_port::INET)
+			return 0;
+
+		Reference r(*port);
+
+		replyData = buffer;
+		replyLength = bufferLength;
+
+		PACKET p;
+		p.p_operation = op_crypt_key_callback;
+		p.p_cc.p_cc_data.cstr_length = dataLength;
+		p.p_cc.p_cc_data.cstr_address = (UCHAR*) data;
+		p.p_cc.p_cc_reply = bufferLength;
+		port->send(&p);
+
+		if (!sem.tryEnter(60))
+			return 0;
+
+		return replyLength;
+	}
+
+	void wakeup(unsigned int wakeLength, const void* wakeData)
+	{
+		if (replyLength > wakeLength)
+			replyLength = wakeLength;
+
+		if (wakeData)
+		{
+			memcpy(replyData, wakeData, replyLength);
+			wake = true;
+		}
+		else
+			stop();
+
+		sem.release();
+	}
+
+	void stop()
+	{
+		stopped = true;
+	}
+
+	bool isStopped() const
+	{
+		return stopped;
+	}
+
+private:
+	rem_port* port;
+	Semaphore sem;
+	unsigned int replyLength;
+	void* replyData;
+	bool stopped;
+
+public:
+	bool wake;
+};
+
+class CryptKeyCallback : public VersionedIface<ICryptKeyCallbackImpl<CryptKeyCallback, CheckStatusWrapper> >
+{
+public:
+	explicit CryptKeyCallback(rem_port* prt)
+		: port(prt), networkCallback(prt), keyHolder(NULL), keyCallback(NULL)
+	{ }
+
+	~CryptKeyCallback()
+	{
+		if (keyHolder)
+			PluginManagerInterfacePtr()->releasePlugin(keyHolder);
+	}
+
+	unsigned int callback(unsigned int dataLength, const void* data,
+		unsigned int bufferLength, void* buffer)
+	{
+		if (keyCallback)
+			return keyCallback->callback(dataLength, data, bufferLength, buffer);
+
+		if (networkCallback.isStopped())
+			return 0;
+
+		Reference r(*port);
+		loadClientKey();
+		unsigned rc = keyCallback ?
+			keyCallback->callback(dataLength, data, bufferLength, buffer) :
+			// use legacy behavior if holders do wish to accept keys from client
+			networkCallback.callback(dataLength, data, bufferLength, buffer);
+
+		return rc;
+	}
+
+	void loadClientKey()
+	{
+		if (keyCallback)
+			return;
+
+		Reference r(*port);
+
+		for (GetPlugins<IKeyHolderPlugin> kh(IPluginManager::TYPE_KEY_HOLDER, port->getPortConfig());
+			kh.hasData(); kh.next())
+		{
+			IKeyHolderPlugin* keyPlugin = kh.plugin();
+			LocalStatus ls;
+			CheckStatusWrapper st(&ls);
+
+			networkCallback.wake = false;
+			bool callbackResult = keyPlugin->keyCallback(&st, &networkCallback);
+			if (st.getErrors()[1] != isc_wish_list)
+				check(&st);
+			if (callbackResult && networkCallback.wake)
+			{
+				// current holder has a key and it seems to be from the client
+				keyHolder = keyPlugin;
+				keyHolder->addRef();
+				keyCallback = keyHolder->chainHandle(&st);
+
+				if (st.isEmpty())
+				{
+					if (keyCallback)
+						break;
+				}
+				else if (st.getErrors()[1] != isc_wish_list)
+					check(&st);
+			}
+		}
+	}
+
+	void wakeup(unsigned int length, const void* data)
+	{
+		networkCallback.wakeup(length, data);
+	}
+
+	void stop()
+	{
+		networkCallback.stop();
+	}
+
+private:
+	rem_port* port;
+	NetworkCallback networkCallback;
+	IKeyHolderPlugin* keyHolder;
+	ICryptKeyCallback* keyCallback;
+};
+
+class ServerCallback : public ServerCallbackBase, public GlobalStorage
+{
+public:
+	explicit ServerCallback(rem_port* prt)
+		: cryptCallback(prt)
+	{ }
+
+	~ServerCallback()
+	{ }
+
+	void wakeup(unsigned int length, const void* data)
+	{
+		cryptCallback.wakeup(length, data);
+	}
+
+	ICryptKeyCallback* getInterface()
+	{
+		cryptCallback.loadClientKey();
+		return &cryptCallback;
+	}
+
+	void stop()
+	{
+		cryptCallback.stop();
+	}
+
+private:
+	CryptKeyCallback cryptCallback;
+};
+
+
 // Disable attempts to brute-force logins/passwords
+
 class FailedLogin
 {
 public:
@@ -219,13 +410,14 @@ public:
 GlobalPtr<FailedLogins> usernameFailedLogins;
 GlobalPtr<FailedLogins> remoteFailedLogins;
 bool server_shutdown = false;
+bool engine_shutdown = false;
 
 void loginFail(const string& login, const string& remId)
 {
 	// do not remove variables - both functions should be called
 	bool f1 = usernameFailedLogins->loginFail(login);
 	bool f2 = remoteFailedLogins->loginFail(remId);
-	if ((f1 || f2) && !server_shutdown)
+	if ((f1 || f2) && !engine_shutdown)
 	{
 		// Ahh, someone is too active today
 		Thread::sleep(FAILURE_DELAY * 1000);
@@ -263,7 +455,7 @@ static void getMultiPartConnectParameter(T& putTo, Firebird::ClumpletReader& id,
 					top = offset + 1;
 				if (checkBytes[offset])
 				{
-					(Arg::Gds(isc_random) << "Invalid CNCT block: repeated data").raise();	// print offset No here
+					(Arg::Gds(isc_multi_segment_dup) << Arg::Num(offset)).raise();
 				}
 				checkBytes[offset] = 1;
 
@@ -287,6 +479,7 @@ static void getMultiPartConnectParameter(T& putTo, Firebird::ClumpletReader& id,
 
 
 // delayed authentication block for auth callback
+
 class ServerAuth : public GlobalStorage, public ServerAuthBase
 {
 public:
@@ -379,12 +572,17 @@ public:
 			authPort->port_srv_auth_block->setDataForPlugin(u);
 		}
 #endif
+
+		if (!authPort->port_server_crypt_callback)
+		{
+			authPort->port_server_crypt_callback = FB_NEW ServerCallback(authPort);
+		}
 	}
 
 	~ServerAuth()
 	{ }
 
-	bool authenticate(PACKET* send, AuthenticateFlags flags)
+	bool authenticate(PACKET* send, unsigned flags)
 	{
 #ifdef DEV_BUILD
 		if (++hopsCount > 10)
@@ -425,16 +623,26 @@ public:
 			{
 				authServer = authItr->plugin();
 				authPort->port_srv_auth_block->authBlockWriter.setPlugin(authItr->name());
+
+				if (authPort->getPortConfig()->getCryptSecurityDatabase() &&
+					authPort->port_protocol >= PROTOCOL_VERSION15 &&
+					authPort->port_server_crypt_callback)
+				{
+					authServer->setDbCryptCallback(&st, authPort->port_server_crypt_callback->getInterface());
+				}
 			}
 
 			// if we asked for more data but received nothing switch to next plugin
-			const bool forceNext = (flags & CONT_AUTH) && (!authPort->port_srv_auth_block->hasDataForPlugin());
+			const bool forceNext = (flags & AUTH_CONTINUE) && (!authPort->port_srv_auth_block->hasDataForPlugin());
 			HANDSHAKE_DEBUG(fprintf(stderr, "Srv: authenticate: ServerAuth calls plug %s\n",
 				forceNext ? "forced-NEXT" : authItr->name()));
 			int authResult = forceNext ? IAuth::AUTH_CONTINUE :
 				authServer->authenticate(&st, authPort->port_srv_auth_block,
 					&authPort->port_srv_auth_block->authBlockWriter);
 			authPort->port_srv_auth_block->setPluginName(authItr->name());
+
+			if (forceNext)
+				flags &= ~AUTH_CONTINUE;
 
 			cstring* s;
 
@@ -460,13 +668,13 @@ public:
 				{
 					authServer = NULL;
 					working = false;
-					(Arg::Gds(isc_random) << "Plugin not supported by network protocol").copyTo(&st);		// add port_protocol parameter
+					Arg::Gds(isc_non_plugin_protocol).copyTo(&st);
 					break;
 				}
 
 				if (authPort->port_protocol >= PROTOCOL_VERSION13)
 				{
-					if (flags & USE_COND_ACCEPT)
+					if (flags & AUTH_COND_ACCEPT)
 					{
 						HANDSHAKE_DEBUG(fprintf(stderr, "Srv: authenticate: send op_cond_accept\n"));
 						send->p_operation = op_cond_accept;
@@ -496,14 +704,16 @@ public:
 					{
 						authServer = NULL;
 						working = false;
-						(Arg::Gds(isc_random) << "Plugin not supported by network protocol").copyTo(&st);		// add port_protocol parameter
+						Arg::Gds(isc_non_plugin_protocol).copyTo(&st);
 						break;
 					}
 				}
 
-				authPort->send(send);
 				if (send->p_acpt.p_acpt_type & pflag_compress)
 					authPort->initCompression();
+				authPort->send(send);
+				if (send->p_acpt.p_acpt_type & pflag_compress)
+					authPort->port_flags |= PORT_compressed;
 				memset(&send->p_auth_cont, 0, sizeof send->p_auth_cont);
 				return false;
 
@@ -652,7 +862,7 @@ public:
 				system_call_failed::raise("open");
 			}
 
-			struct flock lock;
+			struct FLOCK lock;
 			lock.l_type = F_WRLCK;
 			lock.l_whence = 0;
 			lock.l_start = 0;
@@ -671,7 +881,7 @@ public:
 	{
 		if (fd != -1)
 		{
-			struct flock lock;
+			struct FLOCK lock;
 			lock.l_type = F_UNLCK;
 			lock.l_whence = 0;
 			lock.l_start = 0;
@@ -734,6 +944,19 @@ public:
 		if (!allowCancel)
 			return;
 
+		if (!(port->port_flags & PORT_disconnect))
+		{
+			PACKET packet;
+			packet.p_operation = op_event;
+			P_EVENT* p_event = &packet.p_event;
+			p_event->p_event_database = rdb->rdb_id;
+			p_event->p_event_items.cstr_length = length;
+			p_event->p_event_items.cstr_address = items;
+			p_event->p_event_rid = event->rvnt_id;
+
+			port->send(&packet);
+		}
+
 		if (event->rvnt_iface)
 		{
 			LocalStatus ls;
@@ -741,30 +964,6 @@ public:
 			event->rvnt_iface->cancel(&status_vector);
 			event->rvnt_iface = NULL;
 		}
-
-		if (port->port_flags & PORT_disconnect)
-			return;
-
-		PACKET packet;
-		packet.p_operation = op_event;
-		P_EVENT* p_event = &packet.p_event;
-		p_event->p_event_database = rdb->rdb_id;
-		p_event->p_event_items.cstr_length = length;
-		p_event->p_event_items.cstr_address = items;
-		p_event->p_event_rid = event->rvnt_id;
-
-		port->send(&packet);
-	}
-
-	int release()
-	{
-		if (--refCounter == 0)
-		{
-			delete this;
-			return 0;
-		}
-
-		return 1;
 	}
 
 private:
@@ -772,10 +971,71 @@ private:
 	Rvnt* event;
 };
 
+
+// Stores types of known wire crypt keys
+
 class CryptKeyTypeManager : public PermanentStorage
 {
+private:
+    class CryptKeyType;
+
+public:
+	static const unsigned BITS64 = sizeof(FB_UINT64) * 8u;
+
+	class SpecificPlugins
+	{
+	public:
+		SpecificPlugins(CryptKeyType& t)
+			: knownType(t), n(0)
+		{
+			scan();
+		}
+
+		bool hasData()
+		{
+			return n < knownType.plugins.getCount();
+		}
+
+		const PathName& get()
+		{
+			if (hasData())
+				return knownType.plugins[n];
+
+			fb_assert(false);
+			fatal_exception::raise("Error using CryptKeyTypeManager");
+
+			// compiler warning silencer
+			return knownType.plugins[0];
+		}
+
+		void next()
+		{
+			if (hasData())
+			{
+				++n;
+				scan();
+			}
+		}
+
+	private:
+		CryptKeyType& knownType;
+		unsigned n;
+
+		void scan()
+		{
+			while (hasData())
+			{
+				if (knownType.hasSpecificData & (CryptKeyType::one << n))
+					break;
+				++n;
+			}
+		}
+	};
+
+private:
 	class CryptKeyType : public PermanentStorage
 	{
+		friend class SpecificPlugins;
 	public:
 		explicit CryptKeyType(MemoryPool& p)
 			: PermanentStorage(p), keyType(getPool()), plugins(getPool())
@@ -786,26 +1046,34 @@ class CryptKeyTypeManager : public PermanentStorage
 			return keyType == t;
 		}
 
-		void set(const PathName& t, const PathName& p)
+		void set(const PathName& t, const PathName& p, bool hasSpecData)
 		{
 			fb_assert(keyType.isEmpty() && plugins.isEmpty());
 			keyType = t;
-			plugins.add() = p;
+			add(p, hasSpecData);
 		}
 
-		void add(const PathName& p)
+		void add(const PathName& p, bool hasSpecData)
 		{
-			plugins.add() = p;		// Here we assume that init code runs once, i.e. plugins do not repeat
+			// Here we assume that init code runs once, i.e. plugins do not repeat
+			if (hasSpecData)
+			{
+				fb_assert(plugins.getCount() < 64);
+				hasSpecificData |= (one << plugins.getCount());
+			}
+			plugins.add() = p;
 		}
 
 		void value(PathName& to) const
 		{
-			REMOTE_makeList(to, plugins);
+			plugins.makeList(to);
 		}
 
 	private:
 		PathName keyType;
-		Remote::ParsedList plugins;
+		ParsedList plugins;
+		FB_UINT64 hasSpecificData;
+		static const FB_UINT64 one = 1u;
 	};
 
 public:
@@ -818,20 +1086,22 @@ public:
 		{
 			const char* list = cpItr.plugin()->getKnownTypes(&st);
 			check(&st);
-
 			fb_assert(list);
-			Remote::ParsedList newTypes;
-			REMOTE_parseList(newTypes, PathName(list));
+			PathName tmp(list);
+			ParsedList newTypes(tmp);
 
 			PathName plugin(cpItr.name());
 			for (unsigned i = 0; i < newTypes.getCount(); ++i)
 			{
+				unsigned l;
+				bool hasSpecific = cpItr.plugin()->getSpecificData(&st, newTypes[i].c_str(), &l) != nullptr;
+
 				bool found = false;
 				for (unsigned j = 0; j < knownTypes.getCount(); ++j)
 				{
 					if (knownTypes[j] == newTypes[i])
 					{
-						knownTypes[j].add(plugin);
+						knownTypes[j].add(plugin, hasSpecific);
 						found = true;
 						break;
 					}
@@ -839,7 +1109,7 @@ public:
 
 				if (!found)
 				{
-					knownTypes.add().set(newTypes[i], plugin);
+					knownTypes.add().set(newTypes[i], plugin, hasSpecific);
 				}
 			}
 		}
@@ -847,109 +1117,42 @@ public:
 
 	PathName operator[](const PathName& keyType) const
 	{
-		for (unsigned j = 0; j < knownTypes.getCount(); ++j)
+		unsigned pos = getPos(keyType);
+		if (pos == ~0u)
+			return "";
+
+		PathName rc;
+		knownTypes[pos].value(rc);
+		return rc;
+	}
+
+	SpecificPlugins getSpecific(const PathName& keyType)
+	{
+		unsigned pos = getPos(keyType);
+		if (pos == ~0u)
 		{
-			if (knownTypes[j] == keyType)
-			{
-				PathName rc;
-				knownTypes[j].value(rc);
-				return rc;
-			}
+			fb_assert(false);
+			fatal_exception::raise("Error using CryptKeyTypeManager");
 		}
 
-		return "";
+		return SpecificPlugins(knownTypes[pos]);
 	}
 
 private:
 	ObjectsArray<CryptKeyType> knownTypes;
+
+	unsigned getPos(const PathName& keyType) const
+	{
+		for (unsigned j = 0; j < knownTypes.getCount(); ++j)
+		{
+			if (knownTypes[j] == keyType)
+				return j;
+		}
+		return ~0u;
+	}
 };
 
 InitInstance<CryptKeyTypeManager> knownCryptKeyTypes;
-
-class CryptKeyCallback : public VersionedIface<ICryptKeyCallbackImpl<CryptKeyCallback, CheckStatusWrapper> >
-{
-public:
-	explicit CryptKeyCallback(rem_port* prt)
-		: port(prt), l(0), d(NULL), stopped(false)
-	{ }
-
-	unsigned int callback(unsigned int dataLength, const void* data,
-		unsigned int bufferLength, void* buffer)
-	{
-		if (stopped)
-			return 0;
-
-		Reference r(*port);
-
-		PACKET p;
-		p.p_operation = op_crypt_key_callback;
-		p.p_cc.p_cc_data.cstr_length = dataLength;
-		p.p_cc.p_cc_data.cstr_address = (UCHAR*) data;
-		p.p_cc.p_cc_reply = bufferLength;
-		port->send(&p);
-
-		if (!sem.tryEnter(10))
-			return 0;
-
-		if (bufferLength > l)
-			bufferLength = l;
-		memcpy(buffer, d, bufferLength);
-		if (l)
-			sem2.release();
-
-		return l;
-	}
-
-	void wakeup(unsigned int length, const void* data)
-	{
-		l = length;
-		d = data;
-		sem.release();
-		if (l)
-			sem2.enter();
-	}
-
-	void stop()
-	{
-		stopped = true;
-	}
-
-private:
-	rem_port* port;
-	Semaphore sem, sem2;
-	unsigned int l;
-	const void* d;
-	bool stopped;
-};
-
-class ServerCallback : public ServerCallbackBase, public GlobalStorage
-{
-public:
-	explicit ServerCallback(rem_port* prt)
-		: cryptCallback(prt)
-	{ }
-
-	~ServerCallback()
-	{ }
-
-	void wakeup(unsigned int length, const void* data)
-	{
-		cryptCallback.wakeup(length, data);
-	}
-
-	ICryptKeyCallback* getInterface()
-	{
-		return &cryptCallback;
-	}
-
-	void stop()
-	{
-		cryptCallback.stop();
-	}
-
-private:
-	CryptKeyCallback cryptCallback;
-};
 
 } // anonymous
 
@@ -981,7 +1184,7 @@ static void		ping_connection(rem_port*, PACKET*);
 static bool		process_packet(rem_port* port, PACKET* sendL, PACKET* receive, rem_port** result);
 static void		release_blob(Rbl*);
 static void		release_event(Rvnt*);
-static void		release_request(Rrq*);
+static void		release_request(Rrq*, bool rlsIface = false);
 static void		release_statement(Rsr**);
 static void		release_sql_request(Rsr*);
 static void		release_transaction(Rtr*);
@@ -990,6 +1193,7 @@ static void		send_error(rem_port* port, PACKET* apacket, ISC_STATUS errcode);
 static void		send_error(rem_port* port, PACKET* apacket, const Firebird::Arg::StatusVector&);
 static void		set_server(rem_port*, USHORT);
 static int		shut_server(const int, const int, void*);
+static int		pre_shutdown(const int, const int, void*);
 static THREAD_ENTRY_DECLARE loopThread(THREAD_ENTRY_PARAM);
 static void		zap_packet(PACKET*, bool);
 
@@ -1038,6 +1242,7 @@ private:
 	Worker* m_prev;
 	Semaphore m_sem;
 	bool	m_active;
+	bool	m_going;		// thread was timedout and going to be deleted
 #ifdef DEV_BUILD
 	ThreadId	m_tid;
 #endif
@@ -1051,6 +1256,7 @@ private:
 	static GlobalPtr<Mutex> m_mutex;
 	static int m_cntAll;
 	static int m_cntIdle;
+	static int m_cntGoing;
 	static bool shutting_down;
 };
 
@@ -1059,6 +1265,7 @@ Worker* Worker::m_idleWorkers = NULL;
 GlobalPtr<Mutex> Worker::m_mutex;
 int Worker::m_cntAll = 0;
 int Worker::m_cntIdle = 0;
+int Worker::m_cntGoing = 0;
 bool Worker::shutting_down = false;
 
 
@@ -1394,34 +1601,35 @@ void SRVR_multi_thread( rem_port* main_port, USHORT flags)
 	{
 		set_server(main_port, flags);
 
-		// We need to have this error handler as there is so much underlaying code
-		// that is depending on it being there.  The expected failure
-		// that can occur in the call paths from here is out-of-memory
-		// and it is unknown if other failures can get us here
-		// Failures can occur from set_server as well as RECEIVE
-		//
-		// Note that if a failure DOES occur, we reenter the loop and try to continue
-		// operations.  This is important as this is the main receive loop for
-		// new incoming requests, if we exit here no new requests can come to the
-		// server.
-
-		try
-		{
-			const size_t MAX_PACKET_SIZE = MAX_SSHORT;
-			const SSHORT bufSize = MIN(main_port->port_buff_size, MAX_PACKET_SIZE);
-			UCharBuffer packet_buffer;
-			UCHAR* const buffer = packet_buffer.getBuffer(bufSize);
+		const size_t MAX_PACKET_SIZE = MAX_SSHORT;
+		const SSHORT bufSize = MIN(main_port->port_buff_size, MAX_PACKET_SIZE);
+		UCharBuffer packet_buffer;
+		UCHAR* const buffer = packet_buffer.getBuffer(bufSize);
 
 #ifdef DEV_BUILD
 #ifndef WIN_NT
-			if (isatty(2))
-			{
-				fprintf(stderr, "Server started successfully\n");
-			}
+		if (isatty(2))
+		{
+			fprintf(stderr, "Server started successfully\n");
+		}
 #endif
 #endif
-			// When this loop exits, the server will no longer receive requests
-			while (true)
+
+		// When this loop exits, the server will no longer receive requests
+		while (true)
+		{
+
+			// We need to have this error handler as there is so much underlaying code
+			// that is depending on it being there.  The expected failure
+			// that can occur in the call paths from here is out-of-memory
+			// and it is unknown if other failures can get us here
+			// Failures can occur from set_server as well as RECEIVE
+			//
+			// Note that if a failure DOES occur, we reenter the loop and try to continue
+			// operations.  This is important as this is the main receive loop for
+			// new incoming requests, if we exit here no new requests can come to the
+			// server.
+			try
 			{
 				SSHORT dataSize;
 				// We have a request block - now get some information to stick into it
@@ -1454,6 +1662,17 @@ void SRVR_multi_thread( rem_port* main_port, USHORT flags)
 				// handle these bytes
 				if ((portLocked && !port->port_requests_queued.value()) || !dataSize)
 				{
+					if (port->port_flags & PORT_disconnect)
+					{
+						if (portLocked)
+						{
+							port->clearRecvQue();
+							portGuard.leave();
+						}
+						port = 0;
+						continue;
+					}
+
 					// Allocate a memory block to store the request in
 					request = alloc_request();
 
@@ -1485,6 +1704,9 @@ void SRVR_multi_thread( rem_port* main_port, USHORT flags)
 					else
 					{
 						request->req_receive.p_operation = ok ? op_dummy : op_exit;
+
+						if (port->port_server_crypt_callback)
+							port->port_server_crypt_callback->wakeup(0, NULL);
 					}
 
 					request->req_port = port;
@@ -1518,81 +1740,68 @@ void SRVR_multi_thread( rem_port* main_port, USHORT flags)
 				}
 				port = 0;
 			}
-
-			Worker::shutdown();
-
-			// All worker threads are stopped and will never run any more
-			// Disconnect remaining ports gracefully
-			rem_port* run_port = main_port;
-			while (run_port)
+			catch (const Exception& e)
 			{
-				rem_port* current_port = run_port;	// important order of operations
-				run_port = run_port->port_next;		// disconnect() can modify linked list of ports
-				if (!(current_port->port_flags & PORT_disconnect))
-					current_port->disconnect(NULL, NULL);
-			}
-		}
-		catch (const Exception& e)
-		{
-			gds__log("SRVR_multi_thread: shutting down due to unhandled exception");
-			LocalStatus ls;
-			CheckStatusWrapper status_vector(&ls);
-			e.stuffException(&status_vector);
-			iscLogStatus(NULL, &status_vector);
+				// First of all log unhandled exception
+				LocalStatus ls;
+				CheckStatusWrapper status_vector(&ls);
+				e.stuffException(&status_vector);
+				iscLogStatus("SRVR_multi_thread: unhandled exception", &status_vector);
 
-			// If we got as far as having a port allocated before the error, disconnect it
-			// gracefully.
+				// If we got as far as having a port allocated before the error, disconnect it
+				// gracefully.
 
-			if (port)
-			{
-/*
-#if defined(DEV_BUILD) && defined(DEBUG)
-				ConsolePrintf("%%ISERVER-F-NOPORT, no port in a storm\r\n");
-#endif
-*/
-				gds__log("SRVR_multi_thread: forcefully disconnecting a port");
-
-				// To handle recursion within the error handler
-				try
+				if (port)
 				{
-					// If we have a port, request really should be non-null, but just in case ...
-					if (request != NULL)
-					{
-						// Send client a real status indication of why we disconnected them
-						// Note that send_response() can post errors that wind up in this same handler
-/*
-#if defined(DEV_BUILD) && defined(DEBUG)
-						ConsolePrintf("%%ISERVER-F-NOMEM, virtual memory exhausted\r\n");
-#endif
-*/
-						port->send_response(&request->req_send, 0, 0, &status_vector, false);
-						port->disconnect(&request->req_send, &request->req_receive);
-					}
-					else
-					{
-						// Can't tell the client much, just make 'em go away.  Their side should detect
-						// a network error
+					gds__log("SRVR_multi_thread: forcefully disconnecting a port");
 
+					// Avoid errors inside handler
+					try
+					{
+						// If we have a port, request really should be non-null, but just in case ...
+						if (request != NULL)
+						{
+							// Send client a real status indication of why we disconnected them
+							// Note that send_response() can post errors that wind up in this same handler
+							port->send_response(&request->req_send, 0, 0, &status_vector, false);
+							port->disconnect(&request->req_send, &request->req_receive);
+						}
+						else
+						{
+							// Can't tell the client much, just make 'em go away.  Their side should detect
+							// a network error
+							port->disconnect(NULL, NULL);
+						}
+					}	// try
+					catch (const Exception&)
+					{
 						port->disconnect(NULL, NULL);
 					}
-					port = NULL;
 
-				}	// try
-				catch (const Exception&)
-				{
-					port->disconnect(NULL, NULL);
 					port = NULL;
 				}
-			}
 
-			// There was an error in the processing of the request, if we have allocated
-			// a request, free it up and continue.
-
-			if (request != NULL)
-			{
-				free_request(request);
-				request = NULL;
+				// There was an error in the processing of the request, if we have allocated
+				// a request, free it up and continue.
+				if (request != NULL)
+				{
+					free_request(request);
+					request = NULL;
+				}
 			}
+		}
+
+		Worker::shutdown();
+
+		// All worker threads are stopped and will never run any more
+		// Disconnect remaining ports gracefully
+		rem_port* run_port = main_port;
+		while (run_port)
+		{
+			rem_port* current_port = run_port;	// important order of operations
+			run_port = run_port->port_next;		// disconnect() can modify linked list of ports
+			if (!(current_port->port_flags & PORT_disconnect))
+				current_port->disconnect(NULL, NULL);
 		}
 
 		if (main_port->port_async_receive)
@@ -1661,13 +1870,8 @@ public:
 static void setErrorStatus(IStatus* status)
 {
 	Arg::Gds loginError(isc_login);
-#ifndef DEV_BUILD
-	if (status->getErrors()[1] == isc_missing_data_structures)
-#endif
-	{
-		loginError << Arg::StatusVector(status->getErrors());
-	}
-	status->setErrors(loginError.value());
+	if (!(status->getState() & IStatus::STATE_ERRORS))
+		status->setErrors(loginError.value());
 }
 
 static bool accept_connection(rem_port* port, P_CNCT* connect, PACKET* send)
@@ -1714,9 +1918,8 @@ static bool accept_connection(rem_port* port, P_CNCT* connect, PACKET* send)
 		protocol < end; protocol++)
 	{
 		if ((protocol->p_cnct_version == PROTOCOL_VERSION10 ||
-			 protocol->p_cnct_version == PROTOCOL_VERSION11 ||
-			 protocol->p_cnct_version == PROTOCOL_VERSION12 ||
-			 protocol->p_cnct_version == PROTOCOL_VERSION13) &&
+			 (protocol->p_cnct_version >= PROTOCOL_VERSION11 &&
+			  protocol->p_cnct_version <= PROTOCOL_VERSION16)) &&
 			 (protocol->p_cnct_architecture == arch_generic ||
 			  protocol->p_cnct_architecture == ARCHITECTURE) &&
 			protocol->p_cnct_weight >= weight)
@@ -1755,6 +1958,7 @@ static bool accept_connection(rem_port* port, P_CNCT* connect, PACKET* send)
 	if (type == ptype_lazy_send)
 		port->port_flags |= PORT_lazy;
 
+	port->port_client_arch = connect->p_cnct_client;
 
 	Firebird::ClumpletReader id(Firebird::ClumpletReader::UnTagged,
 								connect->p_cnct_user_id.cstr_address,
@@ -1779,7 +1983,7 @@ static bool accept_connection(rem_port* port, P_CNCT* connect, PACKET* send)
 		{
 			ConnectAuth* cnctAuth = FB_NEW ConnectAuth(port, id);
 			port->port_srv_auth = cnctAuth;
-			if (port->port_srv_auth->authenticate(send, ServerAuth::USE_COND_ACCEPT))
+			if (port->port_srv_auth->authenticate(send, ServerAuth::AUTH_COND_ACCEPT))
 			{
 				delete port->port_srv_auth;
 				port->port_srv_auth = NULL;
@@ -1866,6 +2070,7 @@ static bool accept_connection(rem_port* port, P_CNCT* connect, PACKET* send)
 						}
 						port->port_srv_auth_block->setPluginName(plugins->name());
 						port->port_srv_auth_block->extractPluginName(&send->p_acpd.p_acpt_plugin);
+						returnData = true;
 						break;
 
 					case IAuth::AUTH_MORE_DATA:
@@ -1887,12 +2092,27 @@ static bool accept_connection(rem_port* port, P_CNCT* connect, PACKET* send)
 		}
 	}
 
+
 	// Send off out gracious acceptance or flag rejection
 	if (!accepted)
 	{
 		HANDSHAKE_DEBUG(fprintf(stderr, "!accepted, sending reject\n"));
 		if (status.getState() & Firebird::IStatus::STATE_ERRORS)
-			port->send_response(send, 0, 0, &status, false);
+		{
+			if (status.getErrors()[1] != isc_missing_data_structures)
+			{
+				iscLogStatus("Authentication error", &status);
+				Arg::Gds loginError(isc_login_error);
+#ifdef DEV_BUILD
+				loginError << Arg::StatusVector(&status);
+#endif
+				LocalStatus tmp;
+				loginError.copyTo(&tmp);
+				port->send_response(send, 0, 0, &tmp, false);
+			}
+			else
+				port->send_response(send, 0, 0, &status, false);
+		}
 		else
 			port->send(send);
 		return false;
@@ -1908,9 +2128,11 @@ static bool accept_connection(rem_port* port, P_CNCT* connect, PACKET* send)
 	HANDSHAKE_DEBUG(fprintf(stderr, "Srv: accept_connection: accepted ud=%d protocol=%x\n", returnData, port->port_protocol));
 
 	send->p_operation = returnData ? op_accept_data : op_accept;
-	port->send(send);
 	if (send->p_acpt.p_acpt_type & pflag_compress)
 		port->initCompression();
+	port->send(send);
+	if (send->p_acpt.p_acpt_type & pflag_compress)
+		port->port_flags |= PORT_compressed;
 
 	return true;
 }
@@ -1935,9 +2157,11 @@ void ConnectAuth::accept(PACKET* send, Auth::WriterImplementation*)
 		CSTRING* const s = &send->p_acpd.p_acpt_keys;
 		authPort->extractNewKeys(s);
 		send->p_acpd.p_acpt_authenticated = 1;
-		authPort->send(send);
 		if (send->p_acpt.p_acpt_type & pflag_compress)
 			authPort->initCompression();
+		authPort->send(send);
+		if (send->p_acpt.p_acpt_type & pflag_compress)
+			authPort->port_flags |= PORT_compressed;
 	}
 }
 
@@ -1953,6 +2177,13 @@ void Rsr::checkCursor()
 {
 	if (!rsr_cursor)
 		Arg::Gds(isc_cursor_not_open).raise();
+}
+
+
+void Rsr::checkBatch()
+{
+	if (!rsr_batch)
+		Arg::Gds(isc_bad_batch_handle).raise();
 }
 
 
@@ -2078,6 +2309,20 @@ static void addClumplets(ClumpletWriter* dpb_buffer,
 
 	if (port->port_address.hasData())
 		address_record.insertString(isc_dpb_addr_endpoint, port->port_address);
+
+	int flags = 0;
+#ifdef WIRE_COMPRESS_SUPPORT
+	if (port->port_compressed)
+		flags |= isc_dpb_addr_flag_conn_compressed;
+#endif
+	if (port->port_crypt_plugin)
+	{
+		flags |= isc_dpb_addr_flag_conn_encrypted;
+		address_record.insertString(isc_dpb_addr_crypt, port->port_crypt_name);
+	}
+
+	if (flags)
+		address_record.insertInt(isc_dpb_addr_flags, flags);
 
 	// We always insert remote address descriptor as a first element
 	// of appropriate clumplet so user cannot fake it and engine may somewhat trust it.
@@ -2232,13 +2477,10 @@ void DatabaseAuth::accept(PACKET* send, Auth::WriterImplementation* authBlock)
 	const UCHAR* dpb = pb->getBuffer();
 	unsigned int dl = (ULONG) pb->getBufferLength();
 
-	if (!authPort->port_server_crypt_callback)
-	{
-		authPort->port_server_crypt_callback = FB_NEW ServerCallback(authPort);
-	}
-
 	LocalStatus ls;
 	CheckStatusWrapper status_vector(&ls);
+
+	fb_assert(authPort->port_server_crypt_callback);
 	provider->setDbCryptCallback(&status_vector, authPort->port_server_crypt_callback->getInterface());
 
 	if (!(status_vector.getState() & Firebird::IStatus::STATE_ERRORS))
@@ -2435,15 +2677,25 @@ static void cancel_operation(rem_port* port, USHORT kind)
  *	able to be canceled.
  *
  **************************************/
-	Rdb* rdb;
-	if ((port->port_flags & (PORT_async | PORT_disconnect)) || !(rdb = port->port_context))
+	if ((port->port_flags & (PORT_async | PORT_disconnect)) || !(port->port_context))
 		return;
 
-	if (rdb->rdb_iface)
+	ServAttachment iface;
+	{
+		RefMutexGuard portGuard(*port->port_cancel_sync, FB_FUNCTION);
+
+		Rdb* rdb;
+		if ((port->port_flags & PORT_disconnect) || !(rdb = port->port_context))
+			return;
+
+		iface = rdb->rdb_iface;
+	}
+
+	if (iface)
 	{
 		LocalStatus ls;
 		CheckStatusWrapper status_vector(&ls);
-		rdb->rdb_iface->cancelOperation(&status_vector, kind);
+		iface->cancelOperation(&status_vector, kind);
 	}
 }
 
@@ -2674,6 +2926,7 @@ void rem_port::disconnect(PACKET* sendL, PACKET* receiveL)
 	}
 
 	this->port_flags |= PORT_disconnect;
+	this->port_flags &= ~PORT_z_data;
 
 	if (!rdb)
 	{
@@ -2710,7 +2963,7 @@ void rem_port::disconnect(PACKET* sendL, PACKET* receiveL)
 		rdb->rdb_iface->cancelOperation(&status_vector, fb_cancel_disable);
 
 		while (rdb->rdb_requests)
-			release_request(rdb->rdb_requests);
+			release_request(rdb->rdb_requests, true);
 
 		while (rdb->rdb_sql_requests)
 			release_sql_request(rdb->rdb_sql_requests);
@@ -2734,7 +2987,11 @@ void rem_port::disconnect(PACKET* sendL, PACKET* receiveL)
 		}
 
 		rdb->rdb_iface->detach(&status_vector);
-		rdb->rdb_iface = NULL;
+
+		{	// scope
+			RefMutexGuard portGuard(*port_cancel_sync, FB_FUNCTION);
+			rdb->rdb_iface = NULL;
+		}
 
 		while (rdb->rdb_events)
 			release_event(rdb->rdb_events);
@@ -2818,8 +3075,13 @@ void rem_port::drop_database(P_RLSE* /*release*/, PACKET* sendL)
 		return;
 	}
 
-	rdb->rdb_iface = NULL;
+	{	// scope
+		RefMutexGuard portGuard(*port_cancel_sync, FB_FUNCTION);
+		rdb->rdb_iface = NULL;
+	}
+
 	port_flags |= PORT_detached;
+
 	if (port_async)
 		port_async->port_flags |= PORT_detached;
 
@@ -2827,7 +3089,7 @@ void rem_port::drop_database(P_RLSE* /*release*/, PACKET* sendL)
 		release_event(rdb->rdb_events);
 
 	while (rdb->rdb_requests)
-		release_request(rdb->rdb_requests);
+		release_request(rdb->rdb_requests, true);
 
 	while (rdb->rdb_sql_requests)
 		release_sql_request(rdb->rdb_sql_requests);
@@ -2866,7 +3128,10 @@ ISC_STATUS rem_port::end_blob(P_OP operation, P_RLSE * release, PACKET* sendL)
 		blob->rbl_iface->cancel(&status_vector);
 
 	if (!(status_vector.getState() & Firebird::IStatus::STATE_ERRORS))
+	{
+		blob->rbl_iface = NULL;
 		release_blob(blob);
+	}
 
 	return this->send_response(sendL, 0, 0, &status_vector, false);
 }
@@ -2906,10 +3171,13 @@ ISC_STATUS rem_port::end_database(P_RLSE* /*release*/, PACKET* sendL)
 			release_event(rdb->rdb_events);
 	}
 
-	rdb->rdb_iface = NULL;
+	{	// scope
+		RefMutexGuard portGuard(*port_cancel_sync, FB_FUNCTION);
+		rdb->rdb_iface = NULL;
+	}
 
 	while (rdb->rdb_requests)
-		release_request(rdb->rdb_requests);
+		release_request(rdb->rdb_requests, true);
 
 	while (rdb->rdb_sql_requests)
 		release_sql_request(rdb->rdb_sql_requests);
@@ -2945,7 +3213,10 @@ ISC_STATUS rem_port::end_request(P_RLSE * release, PACKET* sendL)
 	requestL->rrq_iface->free(&status_vector);
 
 	if (!(status_vector.getState() & Firebird::IStatus::STATE_ERRORS))
+	{
+		requestL->rrq_iface = NULL;
 		release_request(requestL);
+	}
 
 	return this->send_response(sendL, 0, 0, &status_vector, true);
 }
@@ -2971,7 +3242,12 @@ ISC_STATUS rem_port::end_statement(P_SQLFREE* free_stmt, PACKET* sendL)
 
 	if (free_stmt->p_sqlfree_option & (DSQL_drop | DSQL_unprepare | DSQL_close))
 	{
-		if (statement->rsr_cursor)
+		if (statement->rsr_batch)
+		{
+			statement->rsr_batch->release();
+			statement->rsr_batch = NULL;
+		}
+		else if (statement->rsr_cursor)
 		{
 			statement->rsr_cursor->close(&status_vector);
 			if (status_vector.getState() & Firebird::IStatus::STATE_ERRORS)
@@ -3201,6 +3477,261 @@ ISC_STATUS rem_port::execute_immediate(P_OP op, P_SQLST * exnow, PACKET* sendL)
 }
 
 
+void rem_port::batch_create(P_BATCH_CREATE* batch, PACKET* sendL)
+{
+	LocalStatus ls;
+	CheckStatusWrapper status_vector(&ls);
+	Rsr* statement;
+	getHandle(statement, batch->p_batch_statement);
+	statement->checkIface();
+
+	const ULONG blr_length = batch->p_batch_blr.cstr_length;
+	const UCHAR* blr = batch->p_batch_blr.cstr_address;
+	if (!blr)
+		(Arg::Gds(isc_random) << "Missing required format info in createBatch()").raise();	// signals internal protocol error
+	InternalMessageBuffer msgBuffer(blr_length, blr, batch->p_batch_msglen, NULL);
+
+	// Flush out any previous format information
+	// that might be hanging around from an earlier execution.
+
+	delete statement->rsr_bind_format;
+	statement->rsr_bind_format = PARSE_msg_format(blr, blr_length);
+
+	// If we know the length of the message, make sure there is a buffer
+	// large enough to hold it.
+
+	if (!(statement->rsr_format = statement->rsr_bind_format))
+		(Arg::Gds(isc_random) << "Error parsing message format in createBatch()").raise();
+
+	RMessage* message = statement->rsr_buffer;
+	if (!message || statement->rsr_format->fmt_length > statement->rsr_fmt_length)
+	{
+		RMessage* const org_message = message;
+		const ULONG org_length = message ? statement->rsr_fmt_length : 0;
+		statement->rsr_fmt_length = statement->rsr_format->fmt_length;
+		statement->rsr_buffer = message = FB_NEW RMessage(statement->rsr_fmt_length);
+		statement->rsr_message = message;
+		message->msg_next = message;
+		if (org_length)
+		{
+			// dimitr:	the original buffer might have something useful inside
+			//			(filled by a prior xdr_sql_message() call, for example),
+			//			so its contents must be preserved (see CORE-3730)
+			memcpy(message->msg_buffer, org_message->msg_buffer, org_length);
+		}
+		REMOTE_release_messages(org_message);
+	}
+
+	ClumpletWriter wrt(ClumpletReader::WideTagged, MAX_DPB_SIZE,
+		batch->p_batch_pb.cstr_address, batch->p_batch_pb.cstr_length);
+	if (wrt.getBufferLength() && (wrt.getBufferTag() != IBatch::VERSION1))
+		(Arg::Gds(isc_batch_param_version) << Arg::Num(wrt.getBufferTag()) << Arg::Num(IBatch::VERSION1)).raise();
+	statement->rsr_batch_flags = (wrt.find(IBatch::TAG_RECORD_COUNTS) && wrt.getInt()) ?
+		(1 << IBatch::TAG_RECORD_COUNTS) : 0;
+	if (wrt.find(IBatch::TAG_BLOB_POLICY) && (wrt.getInt() != IBatch::BLOB_STREAM))
+	{
+		// we always send blobs in a stream therefore change policy
+		wrt.deleteClumplet();
+		wrt.insertInt(IBatch::TAG_BLOB_POLICY, IBatch::BLOB_STREAM);
+	}
+
+	statement->rsr_batch =
+		statement->rsr_iface->createBatch(&status_vector, msgBuffer.metadata,
+			wrt.getBufferLength(), wrt.getBuffer());
+
+	statement->rsr_batch_size = 0;
+	statement->rsr_batch_stream.blobRemaining = 0;
+	if (!(status_vector.getState() & Firebird::IStatus::STATE_ERRORS))
+	{
+		if (msgBuffer.metadata)
+		{
+			statement->rsr_batch_size = msgBuffer.metadata->getAlignedLength(&status_vector);
+			check(&status_vector);
+		}
+		else
+		{
+			IMessageMetadata* m = statement->rsr_iface->getInputMetadata(&status_vector);
+			check(&status_vector);
+			statement->rsr_batch_size = m->getAlignedLength(&status_vector);
+			m->release();
+			check(&status_vector);
+		}
+
+		statement->rsr_batch_stream.alignment = statement->rsr_batch->getBlobAlignment(&status_vector);
+		check(&status_vector);
+	}
+
+	this->send_response(sendL, 0, 0, &status_vector, true);
+}
+
+void rem_port::batch_msg(P_BATCH_MSG* batch, PACKET* sendL)
+{
+	LocalStatus ls;
+	CheckStatusWrapper status_vector(&ls);
+
+	Rsr* statement;
+	getHandle(statement, batch->p_batch_statement);
+	statement->checkIface();
+	statement->checkBatch();
+
+	const ULONG count = batch->p_batch_messages;
+	const void* data = batch->p_batch_data.cstr_address;
+
+	statement->rsr_batch->add(&status_vector, count, data);
+
+	this->send_response(sendL, 0, 0, &status_vector, true);
+}
+
+
+void rem_port::batch_blob_stream(P_BATCH_BLOB* batch, PACKET* sendL)
+{
+	LocalStatus ls;
+	CheckStatusWrapper status_vector(&ls);
+
+	Rsr* statement;
+	getHandle(statement, batch->p_batch_statement);
+	statement->checkIface();
+	statement->checkBatch();
+
+	statement->rsr_batch->addBlobStream(&status_vector,
+		batch->p_batch_blob_data.cstr_length, batch->p_batch_blob_data.cstr_address);
+
+	this->send_response(sendL, 0, 0, &status_vector, true);
+}
+
+void rem_port::batch_bpb(P_BATCH_SETBPB* batch, PACKET* sendL)
+{
+	LocalStatus ls;
+	CheckStatusWrapper status_vector(&ls);
+
+	Rsr* statement;
+	getHandle(statement, batch->p_batch_statement);
+	statement->checkIface();
+	statement->checkBatch();
+
+	statement->rsr_batch->setDefaultBpb(&status_vector,
+		batch->p_batch_blob_bpb.cstr_length, batch->p_batch_blob_bpb.cstr_address);
+
+	this->send_response(sendL, 0, 0, &status_vector, true);
+}
+
+
+void rem_port::batch_regblob(P_BATCH_REGBLOB* batch, PACKET* sendL)
+{
+	LocalStatus ls;
+	CheckStatusWrapper status_vector(&ls);
+
+	Rsr* statement;
+	getHandle(statement, batch->p_batch_statement);
+	statement->checkIface();
+	statement->checkBatch();
+
+	statement->rsr_batch->registerBlob(&status_vector, &batch->p_batch_exist_id,
+		&batch->p_batch_blob_id);
+
+	this->send_response(sendL, 0, 0, &status_vector, true);
+}
+
+
+void rem_port::batch_exec(P_BATCH_EXEC* batch, PACKET* sendL)
+{
+	LocalStatus ls;
+	CheckStatusWrapper status_vector(&ls);
+
+	Rsr* statement;
+	getHandle(statement, batch->p_batch_statement);
+	statement->checkIface();
+	statement->checkBatch();
+
+	Rtr* transaction = NULL;
+	getHandle(transaction, batch->p_batch_transaction);
+
+	AutoPtr<IBatchCompletionState, SimpleDispose>
+		ics(statement->rsr_batch->execute(&status_vector, transaction->rtr_iface));
+
+	if (status_vector.getState() & IStatus::STATE_ERRORS)
+	{
+		this->send_response(sendL, 0, 0, &status_vector, false);
+		return;
+	}
+
+	bool recordCounts = statement->rsr_batch_flags & (1 << IBatch::TAG_RECORD_COUNTS);
+	P_BATCH_CS* pcs = &sendL->p_batch_cs;
+	sendL->p_operation = op_batch_cs;
+	pcs->p_batch_statement = statement->rsr_id;
+	pcs->p_batch_reccount = ics->getSize(&status_vector);
+	check(&status_vector);
+	pcs->p_batch_updates = recordCounts ? pcs->p_batch_reccount : 0;
+	pcs->p_batch_errors = pcs->p_batch_vectors = 0;
+
+	for (unsigned int pos = 0u;
+		 (pos = ics->findError(&status_vector, pos)) != IBatchCompletionState::NO_MORE_ERRORS;
+		 ++pos)
+	{
+		check(&status_vector);
+
+		LocalStatus dummy;
+		ics->getStatus(&status_vector, &dummy, pos);
+		if (status_vector.getState() & IStatus::STATE_ERRORS)
+			pcs->p_batch_errors++;
+		else
+			pcs->p_batch_vectors++;
+	}
+
+	check(&status_vector);
+
+	statement->rsr_batch_ics = ics;
+	this->send(sendL);
+}
+
+
+void rem_port::batch_rls(P_BATCH_FREE* batch, PACKET* sendL)
+{
+	LocalStatus ls;
+	CheckStatusWrapper status_vector(&ls);
+
+	Rsr* statement;
+	getHandle(statement, batch->p_batch_statement);
+	statement->checkIface();
+	statement->checkBatch();
+
+	statement->rsr_batch->release();
+	statement->rsr_batch = nullptr;
+
+	this->send_response(sendL, 0, 0, &status_vector, true);
+}
+
+
+void rem_port::replicate(P_REPLICATE* repl, PACKET* sendL)
+{
+	LocalStatus ls;
+	CheckStatusWrapper status_vector(&ls);
+
+	Rdb* rdb = this->port_context;
+	if (bad_db(&status_vector, rdb))
+	{
+		this->send_response(sendL, 0, 0, &status_vector, false);
+		return;
+	}
+
+	if (!this->port_replicator)
+		this->port_replicator = rdb->rdb_iface->createReplicator(&status_vector);
+
+	if (repl->p_repl_data.cstr_length)
+	{
+		this->port_replicator->process(&status_vector,
+			repl->p_repl_data.cstr_length, repl->p_repl_data.cstr_address);
+	}
+	else
+	{
+		this->port_replicator->close(&status_vector);
+		this->port_replicator = NULL;
+	}
+
+	this->send_response(sendL, 0, 0, &status_vector, false);
+}
+
+
 ISC_STATUS rem_port::execute_statement(P_OP op, P_SQLDATA* sqldata, PACKET* sendL)
 {
 /*****************************************
@@ -3270,7 +3801,7 @@ ISC_STATUS rem_port::execute_statement(P_OP op, P_SQLDATA* sqldata, PACKET* send
 	if (transaction)
 		tra = transaction->rtr_iface;
 
-	if (statement->rsr_cursor)
+	if (statement->rsr_cursor || statement->rsr_batch)
 	{
 		 Arg::Gds(isc_dsql_cursor_open_err).raise();
 	}
@@ -3282,6 +3813,19 @@ ISC_STATUS rem_port::execute_statement(P_OP op, P_SQLDATA* sqldata, PACKET* send
 
 	unsigned flags = statement->rsr_iface->getFlags(&status_vector);
 	check(&status_vector);
+
+	statement->rsr_iface->setTimeout(&status_vector, sqldata->p_sqldata_timeout);
+	if ((status_vector.getState() & IStatus::STATE_ERRORS) &&
+		(status_vector.getErrors()[1] == isc_interface_version_too_old))
+	{
+		if (sqldata->p_sqldata_timeout)
+		{
+			(Arg::Gds(isc_wish_list) <<
+			 Arg::Gds(isc_random) << "Timeouts not supported by selected on server provider").raise();
+		}
+	}
+	else
+		check(&status_vector);
 
 	if ((flags & IStatement::FLAG_HAS_CURSOR) && (out_msg_length == 0))
 	{
@@ -4413,6 +4957,38 @@ static bool process_packet(rem_port* port, PACKET* sendL, PACKET* receive, rem_p
 			port->start_crypt(&receive->p_crypt, sendL);
 			break;
 
+		case op_batch_create:
+			port->batch_create(&receive->p_batch_create, sendL);
+			break;
+
+		case op_batch_msg:
+			port->batch_msg(&receive->p_batch_msg, sendL);
+			break;
+
+		case op_batch_exec:
+			port->batch_exec(&receive->p_batch_exec, sendL);
+			break;
+
+		case op_batch_rls:
+			port->batch_rls(&receive->p_batch_free, sendL);
+			break;
+
+		case op_batch_blob_stream:
+			port->batch_blob_stream(&receive->p_batch_blob, sendL);
+			break;
+
+		case op_batch_regblob:
+			port->batch_regblob(&receive->p_batch_regblob, sendL);
+			break;
+
+		case op_batch_set_bpb:
+			port->batch_bpb(&receive->p_batch_setbpb, sendL);
+			break;
+
+		case op_repl_data:
+			port->replicate(&receive->p_replicate, sendL);
+			break;
+
 		///case op_insert:
 		default:
 			gds__log("SERVER/process_packet: don't understand packet type %d", receive->p_operation);
@@ -4492,7 +5068,7 @@ static bool continue_authentication(rem_port* port, PACKET* send, PACKET* receiv
 			 receive->p_operation == op_trusted_auth && port->port_protocol >= PROTOCOL_VERSION13 ||
 			 receive->p_operation == op_cont_auth && port->port_protocol < PROTOCOL_VERSION13)
 	{
-		send_error(port, send, (Arg::Gds(isc_random) << "Operation not supported for network protocol"));
+		send_error(port, send, Arg::Gds(isc_non_plugin_protocol));
 	}
 	else
 	{
@@ -4509,7 +5085,7 @@ static bool continue_authentication(rem_port* port, PACKET* send, PACKET* receiv
 				port->port_srv_auth_block->setDataForPlugin(&receive->p_auth_cont);
 			}
 
-			if (sa->authenticate(send, ServerAuth::CONT_AUTH))
+			if (sa->authenticate(send, ServerAuth::AUTH_CONTINUE))
 			{
 				delete sa;
 				port->port_srv_auth = NULL;
@@ -4640,8 +5216,8 @@ ISC_STATUS rem_port::que_events(P_EVENT * stuff, PACKET* sendL)
 	{
 		if (!event->rvnt_iface)
 		{
-			event->rvnt_destroyed = 0;
-			break;
+			if (event->rvnt_destroyed.compareExchange(1, 0))
+				break;
 		}
 	}
 
@@ -4660,10 +5236,15 @@ ISC_STATUS rem_port::que_events(P_EVENT * stuff, PACKET* sendL)
 	event->rvnt_rdb = rdb;
 
 	rem_port* asyncPort = rdb->rdb_port->port_async;
-	RefMutexGuard portGuard(*asyncPort->port_sync, FB_FUNCTION);
+	if (!asyncPort || (asyncPort->port_flags & PORT_detached))
+		Arg::Gds(isc_net_event_connect_err).copyTo(&status_vector);
+	else
+	{
+		RefMutexGuard portGuard(*asyncPort->port_sync, FB_FUNCTION);
 
-	event->rvnt_iface = rdb->rdb_iface->queEvents(&status_vector, event->rvnt_callback,
-		stuff->p_event_items.cstr_length, stuff->p_event_items.cstr_address);
+		event->rvnt_iface = rdb->rdb_iface->queEvents(&status_vector, event->rvnt_callback,
+			stuff->p_event_items.cstr_length, stuff->p_event_items.cstr_address);
+	}
 
 	return this->send_response(sendL, 0, 0, &status_vector, false);
 }
@@ -4949,7 +5530,7 @@ static void release_event( Rvnt* event)
 }
 
 
-static void release_request( Rrq* request)
+static void release_request( Rrq* request, bool rlsIface)
 {
 /**************************************
  *
@@ -4961,6 +5542,12 @@ static void release_request( Rrq* request)
  *	Release a request block.
  *
  **************************************/
+	if (rlsIface && request->rrq_iface)
+	{
+		request->rrq_iface->release();
+		request->rrq_iface = NULL;
+	}
+
 	Rdb* rdb = request->rrq_rdb;
 	rdb->rdb_port->releaseObject(request->rrq_id);
 	REMOTE_release_request(request);
@@ -4991,6 +5578,12 @@ static void release_statement( Rsr** statement)
 			transaction->rtr_cursors.remove(pos);
 		else
 			fb_assert(false);
+	}
+
+	if ((*statement)->rsr_batch)
+	{
+		(*statement)->rsr_batch->release();
+		(*statement)->rsr_batch = NULL;
 	}
 
 	delete (*statement)->rsr_select_format;
@@ -5054,6 +5647,7 @@ static void release_transaction( Rtr* transaction)
 	{
 		Rsr* const statement = transaction->rtr_cursors.pop();
 		fb_assert(statement->rsr_cursor);
+		statement->rsr_cursor->release();
 		statement->rsr_cursor = NULL;
 	}
 
@@ -5175,6 +5769,8 @@ ISC_STATUS rem_port::send_response(	PACKET*	sendL,
 	char buffer[1024];
 	char* p = buffer;
 	char* bufferEnd = p + sizeof(buffer);
+	// Set limit of status vector size since old client 2.5 and below cannot correctly handle them
+	const FB_SIZE_T limit = port_protocol < PROTOCOL_VERSION13 ? ISC_STATUS_LENGTH : 0;
 
 	for (bool sw = true; *old_vector && sw;)
 	{
@@ -5182,6 +5778,8 @@ ISC_STATUS rem_port::send_response(	PACKET*	sendL,
 		{
 		case isc_arg_warning:
 		case isc_arg_gds:
+			if (limit && new_vector.getCount() > limit - 3) // 2 for numbers and 1 reserved for isc_arg_end
+				break;
 			new_vector.push(*old_vector++);
 
 			// The status codes are converted to their offsets so that they
@@ -5198,11 +5796,15 @@ ISC_STATUS rem_port::send_response(	PACKET*	sendL,
 				switch (*old_vector)
 				{
 				case isc_arg_cstring:
+					if (limit && new_vector.getCount() > limit - 4)
+						break;
 					new_vector.push(*old_vector++);
 					// fall through ...
 
 				case isc_arg_string:
 				case isc_arg_number:
+					if (limit && new_vector.getCount() > limit - 3)
+						break;
 					new_vector.push(*old_vector++);
 					new_vector.push(*old_vector++);
 					continue;
@@ -5213,11 +5815,15 @@ ISC_STATUS rem_port::send_response(	PACKET*	sendL,
 
 		case isc_arg_interpreted:
 		case isc_arg_sql_state:
+			if (limit && new_vector.getCount() > limit - 3)
+				break;
 			new_vector.push(*old_vector++);
 			new_vector.push(*old_vector++);
 			continue;
 		}
 
+		if (limit && new_vector.getCount() > limit - 3)
+			break;
 		const int l = (p < bufferEnd) ? fb_interpret(p, bufferEnd - p, &old_vector) : 0;
 		if (l == 0)
 			break;
@@ -5360,16 +5966,13 @@ ISC_STATUS rem_port::service_attach(const char* service_name,
 	// they will be stuffed in the SPB if so.
 	REMOTE_get_timeout_params(this, spb);
 
-	if (!port_server_crypt_callback)
-	{
-		port_server_crypt_callback = FB_NEW ServerCallback(this);
-	}
-
 	DispatcherPtr provider;
 	LocalStatus ls;
 	CheckStatusWrapper status_vector(&ls);
 
+	fb_assert(port_server_crypt_callback);
 	provider->setDbCryptCallback(&status_vector, port_server_crypt_callback->getInterface());
+
 	if (!(status_vector.getState() & Firebird::IStatus::STATE_ERRORS))
 	{
 		dumpAuthBlock("rem_port::service_attach()", spb, isc_spb_auth_block);
@@ -5510,7 +6113,7 @@ void rem_port::start_crypt(P_CRYPT * crypt, PACKET* sendL)
 		PathName keyName(crypt->p_key.cstr_address, crypt->p_key.cstr_length);
 		for (unsigned k = 0; k < port_crypt_keys.getCount(); ++k)
 		{
-			if (keyName == port_crypt_keys[k]->t)
+			if (keyName == port_crypt_keys[k]->keyName)
 			{
 				key = port_crypt_keys[k];
 				break;
@@ -5524,9 +6127,7 @@ void rem_port::start_crypt(P_CRYPT * crypt, PACKET* sendL)
 
 		PathName plugName(crypt->p_plugin.cstr_address, crypt->p_plugin.cstr_length);
 		// Check it's availability
-		Remote::ParsedList plugins;
-
-		REMOTE_parseList(plugins, Config::getDefaultConfig()->getPlugins(
+		ParsedList plugins(Config::getDefaultConfig()->getPlugins(
 			IPluginManager::TYPE_WIRE_CRYPT));
 
 		bool found = false;
@@ -5553,6 +6154,12 @@ void rem_port::start_crypt(P_CRYPT * crypt, PACKET* sendL)
 		// Initialize crypt key
 		LocalStatus ls;
 		CheckStatusWrapper st(&ls);
+		const UCharBuffer* specificData = this->findSpecificData(keyName, plugName);
+		if (specificData)
+		{
+			cp.plugin()->setSpecificData(&st, keyName.c_str(), specificData->getCount(), specificData->begin());
+			check(&st, isc_wish_list);
+		}
 		cp.plugin()->setKey(&st, key);
 		check(&st);
 
@@ -5560,15 +6167,60 @@ void rem_port::start_crypt(P_CRYPT * crypt, PACKET* sendL)
 		port_crypt_plugin = cp.plugin();
 		port_crypt_plugin->addRef();
 		port_crypt_complete = true;
+		port_crypt_name = cp.name();
 
 		send_response(sendL, 0, 0, &st, false);
-		WIRECRYPT_DEBUG(fprintf(stderr, "Installed cipher %s\n", cp.name()));
+		WIRECRYPT_DEBUG(fprintf(stderr, "Srv: Installed cipher %s\n", cp.name()));
 	}
 	catch (const Exception& ex)
 	{
 		iscLogException("start_crypt:", ex);
-		disconnect();
+		disconnect(NULL, NULL);
 	}
+}
+
+
+const UCharBuffer* rem_port::findSpecificData(const PathName& type, const PathName& plugin)
+{
+	for (unsigned i = 0; i < port_known_server_keys.getCount(); ++i)
+	{
+		//KnownServerKey
+		auto& k = port_known_server_keys[i];
+		if (k.type != type)
+			continue;
+		auto* rc = k.findSpecificData(plugin);
+		if (rc)
+			return rc;
+	}
+
+	return nullptr;
+}
+
+
+void rem_port::addSpecificData(const PathName& type, const PathName& plugin, unsigned length, const void* data)
+{
+	KnownServerKey* key = nullptr;
+	for (unsigned i = 0; i < port_known_server_keys.getCount(); ++i)
+	{
+		//KnownServerKey
+		auto& k = port_known_server_keys[i];
+		if (k.type == type)
+		{
+			key = &k;
+			break;
+		}
+	}
+
+	if (!key)
+	{
+		key = &port_known_server_keys.add();
+		key->type = type;
+	}
+
+	//KnownServerKey::PluginSpecific
+	auto& p = key->specificData.add();
+	p.first = plugin;
+	memcpy(p.second.getBuffer(length), data, length);
 }
 
 
@@ -5599,6 +6251,7 @@ void set_server(rem_port* port, USHORT flags)
 	{
 		servers = server = FB_NEW srvr(servers, port, flags);
 		fb_shutdown_callback(0, shut_server, fb_shut_postproviders, 0);
+		fb_shutdown_callback(0, pre_shutdown, fb_shut_preproviders, 0);
 	}
 
 	port->port_server = server;
@@ -5888,7 +6541,7 @@ static THREAD_ENTRY_DECLARE loopThread(THREAD_ENTRY_PARAM)
 					if (!port)
 					{
 						server_req_t* next;
-						while (next = request->req_chain)
+						while ((next = request->req_chain))
 						{
 							request->req_chain = next->req_chain;
 							free_request(next);
@@ -5984,7 +6637,9 @@ SSHORT rem_port::asyncReceive(PACKET* asyncPacket, const UCHAR* buffer, SSHORT d
 		return 0;
 	}
 
-	switch (xdr_peek_long(&port_async_receive->port_receive, buffer, dataSize))
+	SLONG original_op = xdr_peek_long(&port_async_receive->port_receive, buffer, dataSize);
+
+	switch (original_op)
 	{
 	case op_cancel:
 	case op_abort_aux_connection:
@@ -6000,6 +6655,7 @@ SSHORT rem_port::asyncReceive(PACKET* asyncPacket, const UCHAR* buffer, SSHORT d
 
 		port_async_receive->clearRecvQue();
 		port_async_receive->port_receive.x_handy = 0;
+		port_async_receive->port_protocol = port_protocol;
 		memcpy(port_async_receive->port_queue.add().getBuffer(dataSize), buffer, dataSize);
 
 		// It's required, that async packets follow simple rule:
@@ -6017,13 +6673,15 @@ SSHORT rem_port::asyncReceive(PACKET* asyncPacket, const UCHAR* buffer, SSHORT d
 		break;
 	case op_abort_aux_connection:
 		if (port_async && (port_async->port_flags & PORT_connecting))
-		{
 			port_async->abort_aux_connection();
-		}
 		break;
 	case op_crypt_key_callback:
 		port_server_crypt_callback->wakeup(asyncPacket->p_cc.p_cc_data.cstr_length,
 			asyncPacket->p_cc.p_cc_data.cstr_address);
+		break;
+	case op_partial:
+		if (original_op == op_crypt_key_callback)
+			port_server_crypt_callback->wakeup(0, NULL);
 		break;
 	default:
 		fb_assert(false);
@@ -6112,6 +6770,7 @@ static void zap_packet(PACKET* packet, bool new_packet)
 Worker::Worker()
 {
 	m_active = false;
+	m_going = false;
 	m_next = m_prev = NULL;
 #ifdef DEV_BUILD
 	m_tid = getThreadId();
@@ -6126,6 +6785,8 @@ Worker::~Worker()
 	MutexLockGuard guard(m_mutex, FB_FUNCTION);
 	remove();
 	--m_cntAll;
+	if (m_going)
+		--m_cntGoing;
 }
 
 
@@ -6138,7 +6799,14 @@ bool Worker::wait(int timeout)
 	if (m_sem.tryEnter(0))
 		return true;
 
+	// don't exit last worker until server shutdown
+	if ((m_cntAll - m_cntGoing == 1) && !isShuttingDown())
+		return true;
+
 	remove();
+	m_going = true;
+	m_cntGoing++;
+
 	return false;
 }
 
@@ -6181,10 +6849,10 @@ bool Worker::wakeUp()
 		return true;
 	}
 
-	if (m_cntAll >= ports_active + ports_pending)
+	if (m_cntAll - m_cntGoing >= ports_active + ports_pending)
 		return true;
 
-	return (m_cntAll >= MAX_THREADS);
+	return (m_cntAll - m_cntGoing >= MAX_THREADS);
 }
 
 void Worker::wakeUpAll()
@@ -6291,6 +6959,12 @@ void Worker::shutdown()
 static int shut_server(const int, const int, void*)
 {
 	server_shutdown = true;
+	return 0;
+}
+
+static int pre_shutdown(const int, const int, void*)
+{
+	engine_shutdown = true;
 	return 0;
 }
 
@@ -6421,13 +7095,10 @@ void SrvAuthBlock::createPluginsItr()
 		return;
 	}
 
-	Remote::ParsedList fromClient;
-	REMOTE_parseList(fromClient, pluginList);
+	ParsedList fromClient(pluginList);
+	ParsedList onServer(port->getPortConfig()->getPlugins(IPluginManager::TYPE_AUTH_SERVER));
+	ParsedList final;
 
-	Remote::ParsedList onServer;
-	REMOTE_parseList(onServer, port->getPortConfig()->getPlugins(IPluginManager::TYPE_AUTH_SERVER));
-
-	Remote::ParsedList final;
 	for (unsigned s = 0; s < onServer.getCount(); ++s)
 	{
 		// do not expect too long lists, therefore use double loop
@@ -6479,9 +7150,9 @@ void SrvAuthBlock::createPluginsItr()
 		final.push(onServer[onServer.getCount() - 1]);
 	}
 
-	REMOTE_makeList(pluginList, final);
+	final.makeList(pluginList);
 
-	RefPtr<Config> portConf(port->getPortConfig());
+	RefPtr<const Config> portConf(port->getPortConfig());
 	plugins = FB_NEW AuthServerPlugins(IPluginManager::TYPE_AUTH_SERVER, portConf, pluginList.c_str());
 }
 
@@ -6507,18 +7178,44 @@ bool SrvAuthBlock::extractNewKeys(CSTRING* to, ULONG flags)
 	{
 		for (unsigned n = 0; n < newKeys.getCount(); ++n)
 		{
-			const PathName& t = newKeys[n]->t;
+			const PathName& t = newKeys[n]->keyName;
 			PathName plugins = knownCryptKeyTypes()[t];
 			if (plugins.hasData())
 			{
-				lastExtractedKeys.insertPath(TAG_KEY_TYPE, t);
-				lastExtractedKeys.insertPath(TAG_KEY_PLUGINS, plugins);
+				lastExtractedKeys.insertString(TAG_KEY_TYPE, t);
+				lastExtractedKeys.insertString(TAG_KEY_PLUGINS, plugins);
+
+				if (port->port_protocol < PROTOCOL_VERSION16)
+					continue;
+
+				for (CryptKeyTypeManager::SpecificPlugins sp(knownCryptKeyTypes().getSpecific(t)); sp.hasData(); sp.next())
+				{
+					PathName plugin = sp.get();
+					GetPlugins<IWireCryptPlugin> cp(IPluginManager::TYPE_WIRE_CRYPT);
+					fb_assert(cp.hasData());
+					if (cp.hasData())
+					{
+						LocalStatus ls;
+						CheckStatusWrapper st(&ls);
+						unsigned l;
+						const unsigned char* d = cp.plugin()->getSpecificData(&st, t.c_str(), &l);
+						check(&st, isc_wish_list);
+						if (d)
+						{
+							port->addSpecificData(t, plugin, l, d);
+
+							plugin += '\0';
+							plugin.append(reinterpret_cast<const char*>(d), l);
+							lastExtractedKeys.insertString(TAG_PLUGIN_SPECIFIC, plugin);
+						}
+					}
+				}
 			}
 		}
 
 		if ((flags & EXTRACT_PLUGINS_LIST) && (dataFromPlugin.getCount() == 0))
 		{
-			lastExtractedKeys.insertPath(TAG_KNOWN_PLUGINS, pluginList);
+			lastExtractedKeys.insertString(TAG_KNOWN_PLUGINS, pluginList);
 		}
 	}
 

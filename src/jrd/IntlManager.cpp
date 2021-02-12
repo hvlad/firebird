@@ -471,15 +471,19 @@ bool IntlManager::initialize()
 					ModuleLoader::Module* mod = NULL;
 					bool exists = modules->exist(filename);
 
+					ISC_STATUS_ARRAY status;
 					if (!exists)
 					{
-						mod = ModuleLoader::loadModule(filename);
-						if (!mod)
+						mod = ModuleLoader::fixAndLoadModule(status, filename);
+						if (mod)
 						{
-							ModuleLoader::doctorModuleExtension(filename);
 							exists = modules->exist(filename);
-							if (!exists)
-								mod = ModuleLoader::loadModule(filename);
+							if (exists)
+							{
+								// Module was already loaded, forget it
+								delete mod;
+								mod = nullptr;
+							}
 						}
 					}
 
@@ -491,7 +495,7 @@ bool IntlManager::initialize()
 							pfn_INTL_version versionFunction;
 							USHORT version;
 
-							if (mod->findSymbol(STRINGIZE(INTL_VERSION_ENTRYPOINT), versionFunction))
+							if (mod->findSymbol(status, STRINGIZE(INTL_VERSION_ENTRYPOINT), versionFunction))
 							{
 								version = INTL_VERSION_2;
 								versionFunction(&version);
@@ -506,14 +510,15 @@ bool IntlManager::initialize()
 									filename.c_str(), version);
 								gds__log(err_msg.c_str());
 								ok = false;
+								// Shouldn't mod be deleted here? It looks like a leak.
 							}
 							else
 								modules->put(filename, mod);
 						}
 						else
 						{
-							gds__log((string("Can't load INTL module '") +
-								filename.c_str() + "'").c_str());
+							iscLogStatus((string("Can't load INTL module '") +
+								filename.c_str() + "'").c_str(), status);
 							ok = false;
 						}
 					}
@@ -606,7 +611,7 @@ bool IntlManager::lookupCharSet(const string& charSetName, charset* cs)
 			ModuleLoader::Module* module;
 
 			if (modules->get(externalInfo.moduleName, module) && module)
-				module->findSymbol(STRINGIZE(CHARSET_ENTRYPOINT), lookupFunction);
+				module->findSymbol(NULL, STRINGIZE(CHARSET_ENTRYPOINT), lookupFunction);
 		}
 
 		if (lookupFunction && (*lookupFunction)(cs, externalInfo.name.c_str(),
@@ -641,7 +646,7 @@ bool IntlManager::lookupCollation(const string& collationName,
 			ModuleLoader::Module* module;
 
 			if (modules->get(collationExternalInfo.moduleName, module) && module)
-				module->findSymbol(STRINGIZE(TEXTTYPE_ENTRYPOINT), lookupFunction);
+				module->findSymbol(NULL, STRINGIZE(TEXTTYPE_ENTRYPOINT), lookupFunction);
 		}
 
 		if (lookupFunction &&
@@ -678,7 +683,7 @@ bool IntlManager::setupCollationAttributes(
 			ModuleLoader::Module* module;
 
 			if (modules->get(collationExternalInfo.moduleName, module) && module)
-				module->findSymbol(STRINGIZE(INTL_SETUP_ATTRIBUTES_ENTRYPOINT), attributesFunction);
+				module->findSymbol(NULL, STRINGIZE(INTL_SETUP_ATTRIBUTES_ENTRYPOINT), attributesFunction);
 		}
 
 		if (attributesFunction)

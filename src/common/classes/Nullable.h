@@ -25,7 +25,7 @@
 
 #include "firebird.h"
 #include "../common/classes/fb_string.h"
-#include "../common/classes/MetaName.h"
+#include "../jrd/constants.h"
 
 
 // Auxiliary template to build an empty value.
@@ -35,7 +35,7 @@ class NullableClear
 public:
 	static void clear(T& v)
 	{
-		v = 0;
+		v = T();
 	}
 };
 
@@ -60,15 +60,35 @@ public:
 		return nullable;
 	}
 
+	T orElse(T elseValue) const
+	{
+		return specified ? value : elseValue;
+	}
+
 	bool operator ==(const BaseNullable<T>& o) const
 	{
 		return (!specified && !o.specified) || (specified == o.specified && value == o.value);
+	}
+
+	bool operator ==(const T& o) const
+	{
+		return specified && value == o;
 	}
 
 	void operator =(const T& v)
 	{
 		this->value = v;
 		this->specified = true;
+	}
+
+	bool isUnknown() const
+	{
+		return !specified;
+	}
+
+	bool isAssigned() const
+	{
+		return specified;
 	}
 
 public:
@@ -78,26 +98,6 @@ public:
 
 
 // NullableClear specializations.
-
-template <>
-class NullableClear<Firebird::string>	// string especialization for NullableClear
-{
-public:
-	static void clear(Firebird::string& v)
-	{
-		v = "";
-	}
-};
-
-template <>
-class NullableClear<Firebird::MetaName>	// MetaName especialization for NullableClear
-{
-public:
-	static void clear(Firebird::MetaName& v)
-	{
-		v = "";
-	}
-};
 
 template <typename T>
 class NullableClear<BaseNullable<T> >
@@ -109,6 +109,15 @@ public:
 	}
 };
 
+template <>
+class NullableClear<rel_t>
+{
+public:
+	static void clear(rel_t& v)
+	{
+		v = rel_persistent;
+	}
+};
 
 // Actual Nullable template.
 template <typename T> class Nullable : public BaseNullable<T>
@@ -128,8 +137,7 @@ public:
 
 	Nullable<T>()
 	{
-		NullableClear<T>::clear(this->value);
-		this->specified = false;
+		invalidate();
 	}
 
 	void operator =(const BaseNullable<T>& o)
@@ -143,7 +151,23 @@ public:
 		this->value = v;
 		this->specified = true;
 	}
+
+	bool assignOnce(const T& v)
+	{
+		if (this->specified)
+			return false;
+
+		*this = v;
+		return true;
+	}
+
+	void invalidate()
+	{
+		NullableClear<T>::clear(this->value);
+		this->specified = false;
+	}
 };
 
+typedef Nullable<bool> TriState;
 
 #endif	// CLASSES_NULLABLE_H

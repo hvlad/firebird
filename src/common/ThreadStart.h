@@ -31,6 +31,7 @@
 #define JRD_THREADSTART_H
 
 #include "../common/ThreadData.h"
+#include "../common/classes/semaphore.h"
 
 #ifdef WIN_NT
 #include <windows.h>
@@ -56,7 +57,8 @@ typedef THREAD_ENTRY_DECLARE ThreadEntryPoint(THREAD_ENTRY_PARAM);
 
 #if defined(WIN_NT)
 typedef DWORD ThreadId;
-#elif defined(LINUX) && !defined(ANDROID)
+#elif defined(LINUX) && !defined(ANDROID) && !defined(LSB_BUILD)
+#define USE_LWP_AS_THREAD_ID
 typedef int ThreadId;
 #elif defined(USE_POSIX_THREADS)
 typedef pthread_t ThreadId;
@@ -68,13 +70,15 @@ class Thread
 {
 public:
 #ifdef WIN_NT
+	typedef DWORD InternalId;
 	typedef HANDLE Handle;
 #endif
 #ifdef USE_POSIX_THREADS
 	typedef pthread_t Handle;
+	typedef pthread_t InternalId;
 #endif
 
-	static void	start(ThreadEntryPoint* routine, void* arg, int priority_arg, Handle* p_handle = NULL);
+	static Thread start(ThreadEntryPoint* routine, void* arg, int priority_arg, Handle* p_handle = NULL);
 	static void waitForCompletion(Handle& handle);
 	static void kill(Handle& handle);
 
@@ -82,11 +86,125 @@ public:
 
 	static void sleep(unsigned milliseconds);
 	static void yield();
+
+	bool isCurrent();
+
+	Thread()
+	{
+		memset(&internalId, 0, sizeof(internalId));
+	}
+
+private:
+	Thread(InternalId iid)
+		: internalId(iid)
+	{ }
+
+	InternalId internalId;
 };
 
 inline ThreadId getThreadId()
 {
 	return Thread::getId();
 }
+
+
+#ifndef USE_POSIX_THREADS
+#define USE_FINI_SEM
+#endif
+
+template <typename TA>
+class ThreadFinishSync
+{
+public:
+	typedef void ThreadRoutine(TA);
+
+	ThreadFinishSync(Firebird::MemoryPool& pool, ThreadRoutine* routine, int priority_arg = THREAD_medium)
+		:
+#ifdef USE_FINI_SEM
+		  fini(pool),
+#else
+		  threadHandle(0),
+#endif
+		  threadRoutine(routine),
+		  threadPriority(priority_arg),
+		  closing(false)
+	{ }
+
+	void run(TA arg)
+	{
+		threadArg = arg;
+
+		Thread::start(internalRun, this, threadPriority
+#ifndef USE_FINI_SEM
+					, &threadHandle
+#endif
+			);
+	}
+
+	bool tryWait()
+	{
+		if (closing)
+		{
+			waitForCompletion();
+			return true;
+		}
+		return false;
+	}
+
+	void waitForCompletion()
+	{
+#ifdef USE_FINI_SEM
+		fini.enter();
+#else
+		if (threadHandle)
+		{
+			Thread::waitForCompletion(threadHandle);
+			threadHandle = 0;
+		}
+#endif
+	}
+
+private:
+#ifdef USE_FINI_SEM
+	Firebird::Semaphore fini;
+#else
+	Thread::Handle threadHandle;
+#endif
+
+	TA threadArg;
+	ThreadRoutine* threadRoutine;
+	int threadPriority;
+	bool closing;
+
+	static THREAD_ENTRY_DECLARE internalRun(THREAD_ENTRY_PARAM arg)
+	{
+		((ThreadFinishSync*) arg)->internalRun();
+		return 0;
+	}
+
+	void internalRun()
+	{
+		try
+		{
+			threadRoutine(threadArg);
+		}
+		catch (const Firebird::Exception& ex)
+		{
+			threadArg->exceptionHandler(ex, threadRoutine);
+		}
+
+#ifdef USE_FINI_SEM
+		try
+		{
+			fini.release();
+		}
+		catch (const Firebird::Exception& ex)
+		{
+			threadArg->exceptionHandler(ex, threadRoutine);
+		}
+#endif
+		closing = true;
+	}
+};
 
 #endif // JRD_THREADSTART_H

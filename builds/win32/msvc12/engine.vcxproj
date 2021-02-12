@@ -30,7 +30,6 @@
     <ClCompile Include="..\..\..\gen\jrd\grant.cpp" />
     <ClCompile Include="..\..\..\gen\jrd\ini.cpp" />
     <ClCompile Include="..\..\..\gen\jrd\met.cpp" />
-    <ClCompile Include="..\..\..\gen\jrd\pcmet.cpp" />
     <ClCompile Include="..\..\..\gen\jrd\scl.cpp" />
     <ClCompile Include="..\..\..\gen\utilities\gstat\dba.cpp" />
     <ClCompile Include="..\..\..\src\dsql\AggNodes.cpp" />
@@ -38,6 +37,7 @@
     <ClCompile Include="..\..\..\src\dsql\BoolNodes.cpp" />
     <ClCompile Include="..\..\..\src\dsql\ddl.cpp" />
     <ClCompile Include="..\..\..\src\dsql\dsql.cpp" />
+    <ClCompile Include="..\..\..\src\dsql\DsqlBatch.cpp" />
     <ClCompile Include="..\..\..\src\dsql\DsqlCompilerScratch.cpp" />
     <ClCompile Include="..\..\..\src\dsql\DsqlCursor.cpp" />
     <ClCompile Include="..\..\..\src\dsql\DSqlDataTypeUtil.cpp" />
@@ -60,7 +60,9 @@
     <ClCompile Include="..\..\..\src\jrd\builtin.cpp" />
     <ClCompile Include="..\..\..\src\jrd\cch.cpp" />
     <ClCompile Include="..\..\..\src\jrd\cmp.cpp" />
+    <ClCompile Include="..\..\..\src\jrd\Coercion.cpp" />
     <ClCompile Include="..\..\..\src\jrd\Collation.cpp" />
+    <ClCompile Include="..\..\..\src\jrd\ConfigTable.cpp" />
     <ClCompile Include="..\..\..\src\jrd\CryptoManager.cpp" />
     <ClCompile Include="..\..\..\src\jrd\cvt.cpp" />
     <ClCompile Include="..\..\..\src\jrd\cvt2.cpp" />
@@ -131,6 +133,13 @@
     <ClCompile Include="..\..\..\src\jrd\recsrc\Union.cpp" />
     <ClCompile Include="..\..\..\src\jrd\recsrc\VirtualTableScan.cpp" />
     <ClCompile Include="..\..\..\src\jrd\recsrc\WindowedStream.cpp" />
+    <ClCompile Include="..\..\..\src\jrd\replication\Applier.cpp" />
+    <ClCompile Include="..\..\..\src\jrd\replication\ChangeLog.cpp" />
+    <ClCompile Include="..\..\..\src\jrd\replication\Config.cpp" />
+    <ClCompile Include="..\..\..\src\jrd\replication\Manager.cpp" />
+    <ClCompile Include="..\..\..\src\jrd\replication\Publisher.cpp" />
+    <ClCompile Include="..\..\..\src\jrd\replication\Replicator.cpp" />
+    <ClCompile Include="..\..\..\src\jrd\replication\Utils.cpp" />
     <ClCompile Include="..\..\..\src\jrd\Relation.cpp" />
     <ClCompile Include="..\..\..\src\jrd\ResultSet.cpp" />
     <ClCompile Include="..\..\..\src\jrd\rlck.cpp" />
@@ -143,9 +152,10 @@
     <ClCompile Include="..\..\..\src\jrd\sort.cpp" />
     <ClCompile Include="..\..\..\src\jrd\sqz.cpp" />
     <ClCompile Include="..\..\..\src\jrd\svc.cpp" />
-    <ClCompile Include="..\..\..\src\jrd\svc_tab.cpp" />
     <ClCompile Include="..\..\..\src\jrd\SysFunction.cpp" />
+    <ClCompile Include="..\..\..\src\jrd\SystemPackages.cpp" />
     <ClCompile Include="..\..\..\src\jrd\TempSpace.cpp" />
+    <ClCompile Include="..\..\..\src\jrd\TimeZone.cpp" />
     <ClCompile Include="..\..\..\src\jrd\tpc.cpp" />
     <ClCompile Include="..\..\..\src\jrd\tra.cpp" />
     <ClCompile Include="..\..\..\src\jrd\trace\TraceCmdLine.cpp" />
@@ -171,6 +181,7 @@
     <ClInclude Include="..\..\..\src\dsql\DdlNodes.h" />
     <ClInclude Include="..\..\..\src\dsql\ddl_proto.h" />
     <ClInclude Include="..\..\..\src\dsql\dsql.h" />
+    <ClInclude Include="..\..\..\src\dsql\DsqlBatch.h" />
     <ClInclude Include="..\..\..\src\dsql\DsqlCompilerScratch.h" />
     <ClInclude Include="..\..\..\src\dsql\DsqlCursor.h" />
     <ClInclude Include="..\..\..\src\dsql\DSqlDataTypeUtil.h" />
@@ -209,7 +220,9 @@
     <ClInclude Include="..\..\..\src\jrd\cch.h" />
     <ClInclude Include="..\..\..\src\jrd\cch_proto.h" />
     <ClInclude Include="..\..\..\src\jrd\cmp_proto.h" />
+    <ClInclude Include="..\..\..\src\jrd\Coercion.h" />
     <ClInclude Include="..\..\..\src\jrd\Collation.h" />
+    <ClInclude Include="..\..\..\src\jrd\ConfigTable.h" />
     <ClInclude Include="..\..\..\src\jrd\constants.h" />
     <ClInclude Include="..\..\..\src\jrd\CryptoManager.h" />
     <ClInclude Include="..\..\..\src\jrd\cvt2_proto.h" />
@@ -289,7 +302,6 @@
     <ClInclude Include="..\..\..\src\jrd\pag.h" />
     <ClInclude Include="..\..\..\src\jrd\pag_proto.h" />
     <ClInclude Include="..\..\..\src\jrd\par_proto.h" />
-    <ClInclude Include="..\..\..\src\jrd\pcmet_proto.h" />
     <ClInclude Include="..\..\..\src\jrd\PreparedStatement.h" />
     <ClInclude Include="..\..\..\src\jrd\que.h" />
     <ClInclude Include="..\..\..\src\jrd\RandomGenerator.h" />
@@ -318,10 +330,11 @@
     <ClInclude Include="..\..\..\src\jrd\sqz.h" />
     <ClInclude Include="..\..\..\src\jrd\status.h" />
     <ClInclude Include="..\..\..\src\jrd\svc.h" />
-    <ClInclude Include="..\..\..\src\jrd\svc_tab.h" />
     <ClInclude Include="..\..\..\src\jrd\svc_undoc.h" />
     <ClInclude Include="..\..\..\src\jrd\SysFunction.h" />
+    <ClInclude Include="..\..\..\src\jrd\SystemPackages.h" />
     <ClInclude Include="..\..\..\src\jrd\TempSpace.h" />
+    <ClInclude Include="..\..\..\src\jrd\TimeZone.h" />
     <ClInclude Include="..\..\..\src\jrd\tpc_proto.h" />
     <ClInclude Include="..\..\..\src\jrd\tra.h" />
     <ClInclude Include="..\..\..\src\jrd\trace\TraceConfigStorage.h" />
@@ -358,7 +371,6 @@
     <None Include="..\..\..\src\jrd\grant.epp" />
     <None Include="..\..\..\src\jrd\ini.epp" />
     <None Include="..\..\..\src\jrd\met.epp" />
-    <None Include="..\..\..\src\jrd\pcmet.epp" />
     <None Include="..\..\..\src\jrd\scl.epp" />
     <None Include="..\..\..\src\utilities\gstat\dba.epp" />
     <None Include="..\defs\plugin.def" />
@@ -470,10 +482,10 @@
     <CodeAnalysisRuleSet Condition="'$(Configuration)|$(Platform)'=='Release|x64'">AllRules.ruleset</CodeAnalysisRuleSet>
     <CodeAnalysisRules Condition="'$(Configuration)|$(Platform)'=='Release|x64'" />
     <CodeAnalysisRuleAssemblies Condition="'$(Configuration)|$(Platform)'=='Release|x64'" />
-    <TargetName Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">engine12</TargetName>
-    <TargetName Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">engine12</TargetName>
-    <TargetName Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">engine12</TargetName>
-    <TargetName Condition="'$(Configuration)|$(Platform)'=='Release|x64'">engine12</TargetName>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">engine13</TargetName>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">engine13</TargetName>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">engine13</TargetName>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='Release|x64'">engine13</TargetName>
     <OutDir Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">..\..\..\temp\$(PlatformName)\$(Configuration)\firebird\plugins\</OutDir>
     <OutDir Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">..\..\..\temp\$(PlatformName)\$(Configuration)\firebird\plugins\</OutDir>
     <OutDir Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">..\..\..\temp\$(PlatformName)\$(Configuration)\firebird\plugins\</OutDir>
@@ -486,10 +498,6 @@
       <PreprocessorDefinitions>WIN32;_DEBUG;_WINDOWS;_LIB;SUPERSERVER;DEV_BUILD;NAMESPACE=Vulcan;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <DebugInformationFormat>EditAndContinue</DebugInformationFormat>
     </ClCompile>
-    <ResourceCompile>
-      <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <Culture>0x0419</Culture>
-    </ResourceCompile>
     <Link>
       <AdditionalDependencies>mpr.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>../../../extern/icu/$(Platform)/release/lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
@@ -506,10 +514,6 @@
       <AdditionalIncludeDirectories>../../../src/include;../../../src/include/gen;../../../extern/icu/include;../../../src/vulcan;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>WIN32;_DEBUG;_WINDOWS;_LIB;SUPERSERVER;DEV_BUILD;NAMESPACE=Vulcan;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
-    <ResourceCompile>
-      <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <Culture>0x0419</Culture>
-    </ResourceCompile>
     <Link>
       <AdditionalDependencies>mpr.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>../../../extern/icu/$(Platform)/release/lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
@@ -527,10 +531,6 @@
       <PrecompiledHeader>
       </PrecompiledHeader>
     </ClCompile>
-    <ResourceCompile>
-      <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <Culture>0x0419</Culture>
-    </ResourceCompile>
     <Link>
       <AdditionalDependencies>mpr.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>../../../extern/icu/$(Platform)/$(Configuration)/lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
@@ -552,10 +552,6 @@
       <PrecompiledHeader>
       </PrecompiledHeader>
     </ClCompile>
-    <ResourceCompile>
-      <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <Culture>0x0419</Culture>
-    </ResourceCompile>
     <Link>
       <AdditionalDependencies>mpr.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>../../../extern/icu/$(Platform)/$(Configuration)/lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>

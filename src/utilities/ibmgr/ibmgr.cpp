@@ -42,7 +42,7 @@
 #ifdef HAVE_PWD_H
 #include <pwd.h>
 #endif
-#include "../jrd/ibase.h"
+#include "ibase.h"
 #include "../utilities/ibmgr/ibmgr.h"
 #include "../utilities/ibmgr/ibmgrswi.h"
 #include "../jrd/license.h"
@@ -131,7 +131,7 @@ int CLIB_ROUTINE main( int argc, char **argv)
 		!strcmp(pw->pw_name, INTERBASE_USER_NAME) ||
 		!strcmp(pw->pw_name, INTERBASE_USER_SHORT))
 	{
-		strcpy(ibmgr_data.user, SYSDBA_USER_NAME);
+		strcpy(ibmgr_data.user, DBA_USER_NAME);
 	}
 	else
 		copy_str_upper(ibmgr_data.user, pw->pw_name);
@@ -882,7 +882,7 @@ static SSHORT parse_cmd_line( int argc, TEXT** argv, bool zapPasswd)
 	switch (ibmgr_data.operation)
 	{
 	case OP_SHUT:
-		if (strcmp(ibmgr_data.user, SYSDBA_USER_NAME))
+		if (strcmp(ibmgr_data.user, DBA_USER_NAME))
 		{
 			SRVRMGR_msg_get(MSG_NOPERM, msg);
 			fprintf(OUTFILE, "%s\n", msg);
@@ -906,7 +906,7 @@ static SSHORT parse_cmd_line( int argc, TEXT** argv, bool zapPasswd)
 				strcmp(ibmgr_data.real_user, FIREBIRD_USER_NAME) &&
 				strcmp(ibmgr_data.real_user, INTERBASE_USER_NAME) &&
 				strcmp(ibmgr_data.real_user, INTERBASE_USER_SHORT)) ||
-			strcmp(ibmgr_data.user, SYSDBA_USER_NAME))
+			strcmp(ibmgr_data.user, DBA_USER_NAME))
 		{
 			SRVRMGR_msg_get(MSG_NOPERM, msg);
 			fprintf(OUTFILE, "%s\n", msg);

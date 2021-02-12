@@ -24,10 +24,11 @@
 #include "../common/classes/array.h"
 #include "../common/classes/alloc.h"
 #include "../common/classes/BlrReader.h"
-#include "../common/classes/MetaName.h"
-#include "../common/classes/QualifiedName.h"
+#include "../jrd/MetaName.h"
+#include "../jrd/QualifiedName.h"
 #include "../common/classes/NestConst.h"
 #include "../common/MsgMetadata.h"
+#include "../common/classes/Nullable.h"
 
 namespace Jrd
 {
@@ -37,6 +38,7 @@ namespace Jrd
 	class Lock;
 	class Format;
 	class Parameter;
+	class UserId;
 
 	class Routine : public Firebird::PermanentStorage
 	{
@@ -59,7 +61,8 @@ namespace Jrd
 			  useCount(0),
 			  intUseCount(0),
 			  alterCount(0),
-			  existenceLock(NULL)
+			  existenceLock(NULL),
+			  invoker(NULL)
 		{
 		}
 
@@ -78,11 +81,12 @@ namespace Jrd
 															// so dfw.epp:modify_procedure() can flip procedure body without
 															// invalidating procedure pointers from other parts of metadata cache
 		static const USHORT FLAG_CHECK_EXISTENCE	= 16;	// Existence lock released
+		static const USHORT FLAG_RELOAD		 		= 32;	// Recompile before execution
 
 		static const USHORT MAX_ALTER_COUNT = 64;	// Number of times an in-cache routine can be altered
 
 		static Firebird::MsgMetadata* createMetadata(
-			const Firebird::Array<NestConst<Parameter> >& parameters);
+			const Firebird::Array<NestConst<Parameter> >& parameters, bool isExtern);
 		static Format* createFormat(MemoryPool& pool, Firebird::IMessageMetadata* params, bool addEof);
 
 	public:
@@ -94,14 +98,14 @@ namespace Jrd
 
 		void setId(USHORT value) { id = value; }
 
-		const Firebird::QualifiedName& getName() const { return name; }
-		void setName(const Firebird::QualifiedName& value) { name = value; }
+		const QualifiedName& getName() const { return name; }
+		void setName(const QualifiedName& value) { name = value; }
 
-		const Firebird::MetaName& getSecurityName() const { return securityName; }
-		void setSecurityName(const Firebird::MetaName& value) { securityName = value; }
+		const MetaName& getSecurityName() const { return securityName; }
+		void setSecurityName(const MetaName& value) { securityName = value; }
 
 		/*const*/ JrdStatement* getStatement() const { return statement; }
-		void setStatement(JrdStatement* value) { statement = value; }
+		void setStatement(JrdStatement* value);
 
 		bool isSubRoutine() const { return subRoutine; }
 		void setSubRoutine(bool value) { subRoutine = value; }
@@ -111,6 +115,8 @@ namespace Jrd
 
 		bool isDefined() const { return defined; }
 		void setDefined(bool value) { defined = value; }
+
+		void checkReload(thread_db* tdbb);
 
 		USHORT getDefaultCount() const { return defaultCount; }
 		void setDefaultCount(USHORT value) { defaultCount = value; }
@@ -127,7 +133,7 @@ namespace Jrd
 		const Firebird::Array<NestConst<Parameter> >& getOutputFields() const { return outputFields; }
 		Firebird::Array<NestConst<Parameter> >& getOutputFields() { return outputFields; }
 
-		void parseBlr(thread_db* tdbb, CompilerScratch* csb, bid* blob_id);
+		void parseBlr(thread_db* tdbb, CompilerScratch* csb, bid* blob_id, bid* blobDbg);
 		void parseMessages(thread_db* tdbb, CompilerScratch* csb, Firebird::BlrReader blrReader);
 
 		bool isUsed() const
@@ -147,6 +153,7 @@ namespace Jrd
 		void release(thread_db* tdbb);
 		void releaseStatement(thread_db* tdbb);
 		void remove(thread_db* tdbb);
+		virtual void releaseExternal() {};
 
 	public:
 		virtual int getObjectType() const = 0;
@@ -156,8 +163,8 @@ namespace Jrd
 
 	private:
 		USHORT id;							// routine ID
-		Firebird::QualifiedName name;		// routine name
-		Firebird::MetaName securityName;	// security class name
+		QualifiedName name;					// routine name
+		MetaName securityName;				// security class name
 		JrdStatement* statement;			// compiled routine statement
 		bool subRoutine;					// Is this a subroutine?
 		bool implemented;					// Is the packaged routine missing the body/entrypoint?
@@ -168,6 +175,10 @@ namespace Jrd
 		Firebird::Array<NestConst<Parameter> > inputFields;		// array of field blocks
 		Firebird::Array<NestConst<Parameter> > outputFields;	// array of field blocks
 
+	protected:
+
+		virtual bool reload(thread_db* tdbb) = 0;
+
 	public:
 		USHORT flags;
 		USHORT useCount;		// requests compiled with routine
@@ -177,6 +188,9 @@ namespace Jrd
 								// (it will usually be 0)
 		USHORT alterCount;		// No. of times the routine was altered
 		Lock* existenceLock;	// existence lock, if any
+
+		MetaName owner;
+		Jrd::UserId* invoker;		// Invoker ID
 	};
 }
 

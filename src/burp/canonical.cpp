@@ -42,14 +42,14 @@
 #include "../common/xdr_proto.h"
 #include "../common/gdsassert.h"
 #include "../common/StatusHolder.h"
+#include "../common/status.h"
 #include "fb_types.h"
 
-// TMN: Currently we can't include remote/remote.h because we'd get
-// conflicting blk_t definitions (we are gonna fix this, in due time).
 
+using Firebird::FbLocalStatus;
 
-static bool_t burp_getbytes(XDR*, SCHAR *, u_int);
-static bool_t burp_putbytes(XDR*, const SCHAR*, u_int);
+static bool_t burp_getbytes(XDR*, SCHAR *, unsigned);
+static bool_t burp_putbytes(XDR*, const SCHAR*, unsigned);
 static bool_t expand_buffer(XDR*);
 static int xdr_init(XDR*, lstring*, enum xdr_op);
 static bool_t xdr_slice(XDR*, lstring*, /*USHORT,*/ const UCHAR*);
@@ -60,10 +60,10 @@ static xdr_t::xdr_ops burp_ops =
 	burp_putbytes
 };
 
-const int increment = 1024;
+const unsigned increment = 1024;
 
 
-ULONG CAN_encode_decode(burp_rel* relation, lstring* buffer, UCHAR* data, bool_t direction)
+ULONG CAN_encode_decode(burp_rel* relation, lstring* buffer, UCHAR* data, bool direction, bool useMissingOffset)
 {
 /**************************************
  *
@@ -136,24 +136,55 @@ ULONG CAN_encode_decode(burp_rel* relation, lstring* buffer, UCHAR* data, bool_t
 			break;
 
 		case dtype_short:
-			if (!xdr_short(xdrs, (SSHORT *) p))
+			if (!xdr_short(xdrs, (SSHORT*) p))
 				return FALSE;
 			break;
 
 		case dtype_long:
 		case dtype_sql_time:
 		case dtype_sql_date:
-			if (!xdr_long(xdrs, (SLONG *) p))
+			if (!xdr_long(xdrs, (SLONG*) p))
+				return FALSE;
+			break;
+
+		case dtype_sql_time_tz:
+			if (!xdr_long(xdrs, (SLONG*) p))
+				return FALSE;
+			if (!xdr_short(xdrs, (SSHORT*) (p + sizeof(SLONG))))
+				return FALSE;
+			break;
+
+		case dtype_ex_time_tz:
+			if (!xdr_long(xdrs, (SLONG*) p))
+				return FALSE;
+			if (!xdr_short(xdrs, (SSHORT*) (p + sizeof(SLONG))))
+				return FALSE;
+			if (!xdr_short(xdrs, (SSHORT*) (p + sizeof(SLONG) + sizeof(SSHORT))))
 				return FALSE;
 			break;
 
 		case dtype_real:
-			if (!xdr_float(xdrs, (float *) p))
+			if (!xdr_float(xdrs, (float*) p))
 				return FALSE;
 			break;
 
 		case dtype_double:
-			if (!xdr_double(xdrs, (double *) p))
+			if (!xdr_double(xdrs, (double*) p))
+				return FALSE;
+			break;
+
+		case dtype_dec64:
+			if (!xdr_dec64(xdrs, (Firebird::Decimal64*) p))
+				return FALSE;
+			break;
+
+		case dtype_dec128:
+			if (!xdr_dec128(xdrs, (Firebird::Decimal128*) p))
+				return FALSE;
+			break;
+
+		case dtype_int128:
+			if (!xdr_int128(xdrs, (Firebird::Int128*) p))
 				return FALSE;
 			break;
 
@@ -161,6 +192,26 @@ ULONG CAN_encode_decode(burp_rel* relation, lstring* buffer, UCHAR* data, bool_t
 			if (!xdr_long(xdrs, &((SLONG*) p)[0]))
 				return FALSE;
 			if (!xdr_long(xdrs, &((SLONG*) p)[1]))
+				return FALSE;
+			break;
+
+		case dtype_timestamp_tz:
+			if (!xdr_long(xdrs, (SLONG*) p))
+				return FALSE;
+			if (!xdr_long(xdrs, &((SLONG*) p)[1]))
+				return FALSE;
+			if (!xdr_short(xdrs, (SSHORT*) (p + sizeof(SLONG) + sizeof(SLONG))))
+				return FALSE;
+			break;
+
+		case dtype_ex_timestamp_tz:
+			if (!xdr_long(xdrs, (SLONG*) p))
+				return FALSE;
+			if (!xdr_long(xdrs, &((SLONG*) p)[1]))
+				return FALSE;
+			if (!xdr_short(xdrs, (SSHORT*) (p + sizeof(SLONG) + sizeof(SLONG))))
+				return FALSE;
+			if (!xdr_short(xdrs, (SSHORT*) (p + sizeof(SLONG) + sizeof(SLONG) + sizeof(SSHORT))))
 				return FALSE;
 			break;
 
@@ -192,17 +243,21 @@ ULONG CAN_encode_decode(burp_rel* relation, lstring* buffer, UCHAR* data, bool_t
 	{
 		if (field->fld_flags & FLD_computed)
 			continue;
-		offset = FB_ALIGN(offset, sizeof(SSHORT));
-		UCHAR* p = data + offset;
+		UCHAR* p = data + field->fld_missing_offset;
+		if (!useMissingOffset)
+		{
+			offset = FB_ALIGN(offset, sizeof(SSHORT));
+			p = data + offset;
+			offset += sizeof(SSHORT);
+		}
 		if (!xdr_short(xdrs, (SSHORT*) p))
 			return FALSE;
-		offset += sizeof(SSHORT);
 	}
 	return (xdrs->x_private - xdrs->x_base);
 }
 
 
-ULONG CAN_slice(lstring* buffer, lstring* slice, bool_t direction, /*USHORT sdl_length,*/ UCHAR* sdl)
+ULONG CAN_slice(lstring* buffer, lstring* slice, bool direction, UCHAR* sdl)
 {
 /**************************************
  *
@@ -224,7 +279,7 @@ ULONG CAN_slice(lstring* buffer, lstring* slice, bool_t direction, /*USHORT sdl_
 }
 
 
-static bool_t burp_getbytes(XDR* xdrs, SCHAR* buff, u_int bytecount)
+static bool_t burp_getbytes(XDR* xdrs, SCHAR* buff, unsigned bytecount)
 {
 /**************************************
  *
@@ -237,29 +292,29 @@ static bool_t burp_getbytes(XDR* xdrs, SCHAR* buff, u_int bytecount)
  *
  **************************************/
 
-	if (bytecount && xdrs->x_handy >= (int) bytecount)
+	if (bytecount && xdrs->x_handy >= bytecount)
 	{
+		memcpy(buff, xdrs->x_private, bytecount);
+		xdrs->x_private += bytecount;
 		xdrs->x_handy -= bytecount;
-		do {
-			*buff++ = *xdrs->x_private++;
-		} while (--bytecount);
+
 		return TRUE;
 	}
 
-	while (bytecount)
+	while (bytecount--)
 	{
-		if (!xdrs->x_handy && !expand_buffer(xdrs))
+		if (xdrs->x_handy == 0 && !expand_buffer(xdrs))
 			return FALSE;
+
 		*buff++ = *xdrs->x_private++;
 		--xdrs->x_handy;
-		--bytecount;
 	}
 
 	return TRUE;
 }
 
 
-static bool_t burp_putbytes(XDR* xdrs, const SCHAR* buff, u_int bytecount)
+static bool_t burp_putbytes(XDR* xdrs, const SCHAR* buff, unsigned bytecount)
 {
 /**************************************
  *
@@ -272,24 +327,22 @@ static bool_t burp_putbytes(XDR* xdrs, const SCHAR* buff, u_int bytecount)
  *
  **************************************/
 
-	if (bytecount && xdrs->x_handy >= (int) bytecount)
+	if (bytecount && xdrs->x_handy >= bytecount)
 	{
+		memcpy(xdrs->x_private, buff, bytecount);
+		xdrs->x_private += bytecount;
 		xdrs->x_handy -= bytecount;
-		do {
-			*xdrs->x_private++ = *buff++;
-		} while (--bytecount);
+
 		return TRUE;
 	}
 
-	while (bytecount)
+	while (bytecount--)
 	{
-		if (xdrs->x_handy <= 0 && !expand_buffer(xdrs))
-		{
+		if (xdrs->x_handy == 0 && !expand_buffer(xdrs))
 			return FALSE;
-		}
-		--xdrs->x_handy;
+
 		*xdrs->x_private++ = *buff++;
-		--bytecount;
+		--xdrs->x_handy;
 	}
 
 	return TRUE;
@@ -311,22 +364,20 @@ static bool_t expand_buffer(XDR* xdrs)
  *
  **************************************/
 	lstring* buffer = (lstring*) xdrs->x_public;
-	const SSHORT length = (xdrs->x_private - xdrs->x_base) + xdrs->x_handy + increment;
-	buffer->lstr_allocated = buffer->lstr_length = length;
+	const unsigned usedLength = xdrs->x_private - xdrs->x_base;
+	const unsigned length = usedLength + xdrs->x_handy + increment;
 
 	caddr_t new_buf = (caddr_t) BURP_alloc(length);
 
-	caddr_t p = new_buf;
-	for (caddr_t q = xdrs->x_base; q < xdrs->x_private; *p++ = *q++)
-		;
+	buffer->lstr_allocated = buffer->lstr_length = length;
+	buffer->lstr_address = (UCHAR *) new_buf;
+	memcpy(new_buf, xdrs->x_base, usedLength);
 
 	BURP_free(xdrs->x_base);
 
+	xdrs->x_private = new_buf + usedLength;
 	xdrs->x_base = new_buf;
-	xdrs->x_private = p;
 	xdrs->x_handy += increment;
-
-	buffer->lstr_address = (UCHAR *) new_buf;
 
 	return TRUE;
 }
@@ -411,8 +462,7 @@ static bool_t xdr_slice(XDR* xdrs, lstring* slice, /*USHORT sdl_length,*/ const 
 
 	sdl_info info;
 	{
-		Firebird::LocalStatus ls;
-		Firebird::CheckStatusWrapper s(&ls);
+		FbLocalStatus s;
 		if (SDL_info(&s, sdl, &info, 0))
 			return FALSE;
 	}

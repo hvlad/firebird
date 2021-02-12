@@ -165,7 +165,7 @@ namespace Jrd
 	}
 
 
-	FPTR_INT Module::lookup(const char* module, const char* name, DatabaseModules& interest)
+	FPTR_INT Module::lookup(const char* module, const char* name, Database* dbb)
 	{
 		// Try to find loadable module
 		Module m = lookupModule(module);
@@ -178,12 +178,7 @@ namespace Jrd
 		terminate_at_space(symbol, name);
 		void* rc = m.lookupSymbol(symbol);
 		if (rc)
-		{
-			if (!interest.exist(m))
-			{
-				interest.add(m);
-			}
-		}
+			dbb->registerModule(m);
 
 		return (FPTR_INT)rc;
 	}
@@ -254,7 +249,7 @@ namespace Jrd
 															 Arg::Str(initialModule));
 			}
 
-			ModuleLoader::Module* mlm = ModuleLoader::loadModule(fixedModule);
+			ModuleLoader::Module* mlm = ModuleLoader::loadModule(NULL, fixedModule);
 			if (mlm)
 			{
 				im = FB_NEW_POOL(*getDefaultMemoryPool())
@@ -268,11 +263,20 @@ namespace Jrd
 		return Module();
 	}
 
+	Module::~Module()
+	{
+		if (interMod)
+		{
+			Firebird::MutexLockGuard lg(modulesMutex, FB_FUNCTION);
+			interMod = NULL;	// This makes RefPtr call release()
+		}
+	}
+
 	Module::InternalModule::~InternalModule()
 	{
-		delete handle;
+		fb_assert(modulesMutex->locked());
 
-		Firebird::MutexLockGuard lg(modulesMutex, FB_FUNCTION);
+		delete handle;
 
 		for (FB_SIZE_T m = 0; m < loadedModules().getCount(); m++)
 		{

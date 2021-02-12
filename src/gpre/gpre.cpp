@@ -59,6 +59,7 @@
 #include "../gpre/gpre_meta.h"
 #include "../gpre/msc_proto.h"
 #include "../gpre/par_proto.h"
+#include "../common/os/os_utils.h"
 #include "../common/utils_proto.h"
 #include "../common/classes/TempFile.h"
 #include "../common/classes/Switches.h"
@@ -387,7 +388,8 @@ int main(int argc, char* argv[])
 	TEXT spare_file_name[MAXPATHLEN];
 	if (gpreGlob.sw_language == lang_undef)
 		for (const ext_table_t* ext_tab = dml_ext_table;
-			gpreGlob.sw_language = ext_tab->ext_language; ext_tab++)
+			 (gpreGlob.sw_language = ext_tab->ext_language);
+			 ext_tab++)
 		{
 			strcpy(spare_file_name, file_name);
 			if (!file_rename(spare_file_name, ext_tab->in, NULL))
@@ -399,11 +401,12 @@ int main(int argc, char* argv[])
 
 	if (gpreGlob.sw_language == lang_undef)
 		for (const ext_table_t* ext_tab = dml_ext_table;
-			gpreGlob.sw_language = ext_tab->ext_language; ext_tab++)
+			 (gpreGlob.sw_language = ext_tab->ext_language);
+			 ext_tab++)
 		{
 			strcpy(spare_file_name, file_name);
 			if (file_rename(spare_file_name, ext_tab->in, NULL) &&
-				(input_file = fopen(spare_file_name, FOPEN_READ_TYPE)))
+				(input_file = os_utils::fopen(spare_file_name, FOPEN_READ_TYPE)))
 			{
 				file_name = spare_file_name;
 				break;
@@ -432,11 +435,11 @@ int main(int argc, char* argv[])
 		while (ext_tab->ext_language != gpreGlob.sw_language)
 			ext_tab++;
 		const bool renamed = file_rename(spare_file_name, ext_tab->in, NULL);
-		if (renamed && (input_file = fopen(spare_file_name, FOPEN_READ_TYPE)))
+		if (renamed && (input_file = os_utils::fopen(spare_file_name, FOPEN_READ_TYPE)))
 		{
 			file_name = spare_file_name;
 		}
-		else if (!(input_file = fopen(file_name, FOPEN_READ_TYPE)))
+		else if (!(input_file = os_utils::fopen(file_name, FOPEN_READ_TYPE)))
 		{
 			if (renamed) {
 				fprintf(stderr, "gpre: can't open %s or %s\n", file_name, spare_file_name);
@@ -798,7 +801,7 @@ int main(int argc, char* argv[])
 		{
 			out_file_name = spare_out_file_name;
 			strcpy(spare_out_file_name, file_name);
-			if (renamed = file_rename(spare_out_file_name, out_src_ext_tab->in, out_src_ext_tab->out))
+			if ((renamed = file_rename(spare_out_file_name, out_src_ext_tab->in, out_src_ext_tab->out)))
 			{
 				explicitt = false;
 			}
@@ -828,7 +831,7 @@ int main(int argc, char* argv[])
 			fprintf(stderr, "gpre: output file %s would duplicate input\n", out_file_name);
 			CPR_exit(FINI_ERROR);
 		}
-		if ((gpreGlob.out_file = fopen(out_file_name, FOPEN_WRITE_TYPE)) == NULL)
+		if ((gpreGlob.out_file = os_utils::fopen(out_file_name, FOPEN_WRITE_TYPE)) == NULL)
 		{
 			fprintf(stderr, "gpre: can't open output file %s\n", out_file_name);
 			CPR_exit(FINI_ERROR);
@@ -841,7 +844,7 @@ int main(int argc, char* argv[])
 
 	try {
 		SLONG end_position = 0;
-		while (end_position = compile_module(end_position, filename_array[3]))
+		while ((end_position = compile_module(end_position, filename_array[3])))
 			; // empty loop body
 	}	// try
 	catch (const Firebird::Exception&) {}  // fall through to the cleanup code
@@ -1312,7 +1315,7 @@ static SLONG compile_module( SLONG start_position, const TEXT* base_directory)
 
 	const Firebird::PathName filename = Firebird::TempFile::create(SCRATCH);
 	strcpy(trace_file_name, filename.c_str());
-	trace_file = fopen(trace_file_name, "w+b");
+	trace_file = os_utils::fopen(trace_file_name, "w+b");
 #ifdef UNIX
 	unlink(trace_file_name);
 #endif
@@ -2482,7 +2485,9 @@ static void pass2( SLONG start_position)
 	SLONG column = 0;
 
 	SSHORT comment_start_len = static_cast<SSHORT>(strlen(comment_start));
+#if defined(GPRE_COBOL)
 	SSHORT to_skip = 0;
+#endif
 
 	// Dump text until the start of the next action, then process the action.
 
@@ -2549,7 +2554,9 @@ static void pass2( SLONG start_position)
 				{
 					fputc('\n', gpreGlob.out_file);
 					fputs(comment_start, gpreGlob.out_file);
+#if defined(GPRE_COBOL)
 					to_skip = (column < 7) ? comment_start_len - column : 0;
+#endif
 					column = 0;
 				}
 				break;
@@ -2594,7 +2601,9 @@ static void pass2( SLONG start_position)
 						(gpreGlob.sw_language == lang_cobol))
 					{
 						fputs(comment_start, gpreGlob.out_file);
+#if defined(GPRE_COBOL)
 						to_skip = (column < 7) ? comment_start_len - column : 0;
+#endif
 						column = 0;
 					}
 				}
@@ -2632,7 +2641,9 @@ static void pass2( SLONG start_position)
 		if (sw_lines)
 			line_pending = true;
 		column = 0;
+#if defined(GPRE_COBOL)
 		to_skip = 0;
+#endif
 	}
 
 	// We're out of actions -- dump the remaining text to the output stream.

@@ -68,12 +68,13 @@
 
 #ifdef __cplusplus
 #include "../common/common.h"
-//#include "fb_exception.h"
 #endif
 
-#ifndef NULL
-#define NULL            0L
+#ifdef NULL
+#undef NULL
 #endif
+
+#define NULL nullptr
 
 #if defined(WIN_NT)
 #define TRUSTED_AUTH

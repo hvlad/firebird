@@ -46,6 +46,15 @@ public:
 	}
 };
 
+template <>
+inline void SimpleDelete<FILE>::clear(FILE* f)
+{
+	if (f) {
+		fclose(f);
+	}
+}
+
+
 template <typename What>
 class ArrayDelete
 {
@@ -55,6 +64,7 @@ public:
 		delete[] ptr;
 	}
 };
+
 
 template <typename T>
 class SimpleRelease
@@ -84,24 +94,24 @@ public:
 };
 
 
-template <typename Where, typename Clear = SimpleDelete<Where> >
+template <typename Where, template <typename W> class Clear = SimpleDelete >
 class AutoPtr
 {
 private:
 	Where* ptr;
 public:
-	AutoPtr<Where, Clear>(Where* v = NULL)
+	AutoPtr(Where* v = NULL)
 		: ptr(v)
 	{}
 
 	~AutoPtr()
 	{
-		Clear::clear(ptr);
+		Clear<Where>::clear(ptr);
 	}
 
-	AutoPtr<Where, Clear>& operator= (Where* v)
+	AutoPtr& operator= (Where* v)
 	{
-		Clear::clear(ptr);
+		Clear<Where>::clear(ptr);
 		ptr = v;
 		return *this;
 	}
@@ -157,14 +167,34 @@ public:
 	{
 		if (v != ptr)
 		{
-			Clear::clear(ptr);
+			Clear<Where>::clear(ptr);
 			ptr = v;
 		}
 	}
 
 private:
-	AutoPtr<Where, Clear>(AutoPtr<Where, Clear>&);
-	void operator=(AutoPtr<Where, Clear>&);
+	AutoPtr(AutoPtr&);
+	void operator=(AutoPtr&);
+};
+
+
+template <typename Where>
+class AutoDispose : public AutoPtr<Where, SimpleDispose>
+{
+public:
+	AutoDispose(Where* v = nullptr)
+		: AutoPtr<Where, SimpleDispose>(v)
+	{ }
+};
+
+
+template <typename Where>
+class AutoRelease : public AutoPtr<Where, SimpleRelease>
+{
+public:
+	AutoRelease(Where* v = nullptr)
+		: AutoPtr<Where, SimpleRelease>(v)
+	{ }
 };
 
 
@@ -256,19 +286,6 @@ private:
 	T2* pointer;
 	Setter setter;
 	T oldValue;
-};
-
-
-// One more typical class for AutoPtr cleanup
-class FileClose
-{
-public:
-	static void clear(FILE *f)
-	{
-		if (f) {
-			fclose(f);
-		}
-	}
 };
 
 

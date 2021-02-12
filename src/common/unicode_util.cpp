@@ -31,12 +31,14 @@
 #include "../common/isc_proto.h"
 #include "../common/CharSet.h"
 #include "../common/IntlUtil.h"
+#include "../common/TimeZoneUtil.h"
 #include "../common/gdsassert.h"
 #include "../common/classes/auto.h"
 #include "../common/classes/GenericMap.h"
 #include "../common/classes/init.h"
 #include "../common/classes/objects_array.h"
 #include "../common/classes/rwlock.h"
+#include "../common/config/config.h"
 #include "../common/StatusHolder.h"
 #include "../common/os/path_utils.h"
 
@@ -50,9 +52,6 @@
 #	include <unicode/utf_old.h>
 #endif
 
-// The next major ICU version after 4.8 is 49.
-#define ICU_NEW_VERSION_MEANING	49
-
 
 using namespace Firebird;
 
@@ -61,16 +60,11 @@ namespace {
 const char* const inTemplate = "icuin%s.dll";
 const char* const ucTemplate = "icuuc%s.dll";
 #elif defined(DARWIN)
-//const char* const inTemplate = "/Library/Frameworks/Firebird.framework/Versions/A/Libraries/libicui18n.dylib";
-//const char* const ucTemplate = "/Library/Frameworks/Firebird.framework/versions/A/Libraries/libicuuc.dylib";
-const char* const inTemplate = "libicui18n.dylib";
-const char* const ucTemplate = "libicuuc.dylib";
+const char* const inTemplate = "lib/libicui18n.%s.dylib";
+const char* const ucTemplate = "lib/libicuuc.%s.dylib";
 #elif defined(HPUX)
 const char* const inTemplate = "libicui18n.sl.%s";
 const char* const ucTemplate = "libicuuc.sl.%s";
-#elif defined(ANDROID)
-const char* const inTemplate = "libicui18n.so";
-const char* const ucTemplate = "libicuuc.so";
 #else
 const char* const inTemplate = "libicui18n.so.%s";
 const char* const ucTemplate = "libicuuc.so.%s";
@@ -90,39 +84,116 @@ public:
 	{
 	}
 
-	template <typename T> void getEntryPoint(const char* name, ModuleLoader::Module* module, T& ptr)
+	void initialize(ModuleLoader::Module* module);
+
+	template <typename T> void getEntryPoint(const char* name, ModuleLoader::Module* module, T& ptr,
+		bool optional = false)
 	{
-		// ICU has several schemas for entries names
-		const char* patterns[] =
+		// System-wide ICU have no version number at entries names
+		if (!majorVersion)
 		{
-			"%s_%d", "%s_%d_%d", "%s_%d%d", "%s", NULL
-		};
-
-		string symbol;
-
-		for (const char** p = patterns; *p; ++p)
-		{
-			symbol.printf(*p, name, majorVersion, minorVersion);
-			module->findSymbol(symbol, ptr);
-			if (ptr)
+			if (module->findSymbol(NULL, name, ptr))
 				return;
 		}
+		else
+		{
+			// ICU has several schemas for entries names
+			const char* patterns[] =
+			{
+				"%s_%d", "%s_%d_%d", "%s_%d%d", "%s", NULL
+			};
 
-		(Arg::Gds(isc_random) << "Missing entrypoint in ICU library" <<
-		 Arg::Gds(isc_random) << name).raise();
+			string symbol;
+
+			for (const char** p = patterns; *p; ++p)
+			{
+				symbol.printf(*p, name, majorVersion, minorVersion);
+				if (module->findSymbol(NULL, symbol, ptr))
+					return;
+			}
+		}
+
+		if (!optional)
+			(Arg::Gds(isc_icu_entrypoint) << name).raise();
 	}
 
 	int majorVersion;
 	int minorVersion;
-
-	void (U_EXPORT2 *uInit)(UErrorCode* status);
-	void (U_EXPORT2 *uSetDataDirectory)(const char* directory);
 };
+
+void BaseICU::initialize(ModuleLoader::Module* module)
+{
+	void (U_EXPORT2 *uInit)(UErrorCode* status);
+	void (U_EXPORT2 *uSetTimeZoneFilesDirectory)(const char* path, UErrorCode* status);
+	void (U_EXPORT2 *uSetDataDirectory)(const char* directory);
+
+	getEntryPoint("u_init", module, uInit, true);
+	getEntryPoint("u_setTimeZoneFilesDirectory", module, uSetTimeZoneFilesDirectory, true);
+	getEntryPoint("u_setDataDirectory", module, uSetDataDirectory, true);
+
+#if defined(WIN_NT) || defined(DARWIN) || defined(ANDROID)
+	if (uSetDataDirectory)
+	{
+		// call uSetDataDirectory only if .dat file is exists at same folder
+		// as the loaded module
+
+		PathName path, file, fullName;
+		PathUtils::splitLastComponent(path, file, module->fileName);
+
+#ifdef WIN_NT
+		// icuucXX.dll -> icudtXX.dll
+		file.replace(3, 2, "dt");
+
+		// icudtXX.dll -> icudtXXl.dat
+		const FB_SIZE_T pos = file.find_last_of('.');
+		file.erase(pos);
+		file.append("l.dat");
+#else
+		// libicuuc.so.XX -> icudtXX
+		const FB_SIZE_T pos = file.find_last_of('.');
+		if (pos > 0 && pos != file.npos)
+		{
+			file.replace(0, pos + 1, "icudt");
+		}
+
+		// icudtXX -> icudtXXl.dat
+		file += "l.dat";
+#endif
+
+		PathUtils::concatPath(fullName, path, file);
+
+		if (PathUtils::canAccess(fullName, 0))
+			uSetDataDirectory(path.c_str());
+	}
+#endif
+
+	if (uInit)
+	{
+		UErrorCode status = U_ZERO_ERROR;
+		uInit(&status);
+		if (status != U_ZERO_ERROR)
+		{
+			string diag;
+			diag.printf("u_init() error %d", status);
+			(Arg::Gds(isc_random) << diag).raise();
+		}
+	}
+
+	// ICU's u_setTimeZoneFilesDirectory is an internal API, but we try to use
+	// it because internally set ICU_TIMEZONE_FILES_DIR envvar in Windows is not
+	// safe. See comments in fb_utils::setenv.
+	if (uSetTimeZoneFilesDirectory && TimeZoneUtil::getTzDataPath().hasData())
+	{
+		UErrorCode status = U_ZERO_ERROR;
+		uSetTimeZoneFilesDirectory(TimeZoneUtil::getTzDataPath().c_str(), &status);
+	}
+}
+
 }
 
 namespace Jrd {
 
-static void formatFilename(PathName& filename, const char* templateName,
+static ModuleLoader::Module* formatAndLoad(const char* templateName,
 	int majorVersion, int minorVersion);
 
 
@@ -161,10 +232,17 @@ public:
 		{
 			ciAiTransCacheMutex.leave();
 
-			UErrorCode errorCode = U_ZERO_ERROR;
 			// Fix for CORE-4136. Was "Any-Upper; NFD; [:Nonspacing Mark:] Remove; NFC".
-			ret = utransOpen("NFD; [:Nonspacing Mark:] Remove; NFC",
-				UTRANS_FORWARD, NULL, 0, NULL, &errorCode);
+			// Also see CORE-4739.
+			static const auto RULE = (const UChar*)
+				u"::NFD; ::[:Nonspacing Mark:] Remove; ::NFC;"
+				" \\u00d0 > D;"		// LATIN CAPITAL LETTER ETH' (U+00D0), iceland
+				" \\u00d8 > O;"		// LATIN CAPITAL LETTER O WITH STROKE' (U+00D8), used in danish & iceland alphabets;
+				" \\u013f > L;"		// LATIN CAPITAL LETTER L WITH MIDDLE DOT' (U+013F), catalone (valencian)
+				" \\u0141 > L;";	// LATIN CAPITAL LETTER L WITH STROKE' (U+0141), polish
+
+			UErrorCode errorCode = U_ZERO_ERROR;
+			ret = utransOpenU((const UChar*) u"FbNormalizer", -1, UTRANS_FORWARD, RULE, -1, NULL, &errorCode);
 		}
 
 		return ret;
@@ -205,8 +283,9 @@ public:
 	void (U_EXPORT2 *ucolGetVersion)(const UCollator* coll, UVersionInfo info);
 
 	void (U_EXPORT2 *utransClose)(UTransliterator* trans);
-	UTransliterator* (U_EXPORT2 *utransOpen)(
-		const char* id,
+	UTransliterator* (U_EXPORT2 *utransOpenU)(
+		const UChar* id,
+		int32_t idLength,
 		UTransDirection dir,
 		const UChar* rules,         /* may be Null */
 		int32_t rulesLength,        /* -1 if null-terminated */
@@ -230,21 +309,12 @@ private:
 	ImplementConversionICU(int aMajorVersion, int aMinorVersion)
 		: BaseICU(aMajorVersion, aMinorVersion)
 	{
-		PathName filename;
-		formatFilename(filename, ucTemplate, aMajorVersion, aMinorVersion);
-
-		module = ModuleLoader::fixAndLoadModule(filename);
+		module = formatAndLoad(ucTemplate, aMajorVersion, aMinorVersion);
 		if (!module)
 			return;
 
-		try
-		{
-			getEntryPoint("u_init", module, uInit);
-		}
-		catch (const status_exception&)
-		{ }
+		initialize(module);
 
-		getEntryPoint("u_setDataDirectory", module, uSetDataDirectory);
 		getEntryPoint("ucnv_open", module, ucnv_open);
 		getEntryPoint("ucnv_close", module, ucnv_close);
 		getEntryPoint("ucnv_fromUChars", module, ucnv_fromUChars);
@@ -264,26 +334,23 @@ private:
 		getEntryPoint("ucnv_setFromUCallBack", module, ucnv_setFromUCallBack);
 		getEntryPoint("ucnv_setToUCallBack", module, ucnv_setToUCallBack);
 
-#ifdef WIN_NT
-		if (uSetDataDirectory)
-		{
-			PathName path, file;
-			PathUtils::splitLastComponent(path, file, module->fileName);
-			uSetDataDirectory(path.c_str());
-		}
-#endif
+		getEntryPoint("u_strcmp", module, ustrcmp);
 
-		if (uInit)
-		{
-			UErrorCode status = U_ZERO_ERROR;
-			uInit(&status);
-			if (status != U_ZERO_ERROR)
-			{
-				string diag;
-				diag.printf("u_init() error %d", status);
-				(Arg::Gds(isc_random) << diag).raise();
-			}
-		}
+		inModule = formatAndLoad(inTemplate, aMajorVersion, aMinorVersion);
+		if (!inModule)
+			return;
+
+		getEntryPoint("ucal_getTZDataVersion", inModule, ucalGetTZDataVersion);
+		getEntryPoint("ucal_getDefaultTimeZone", inModule, ucalGetDefaultTimeZone);
+		getEntryPoint("ucal_open", inModule, ucalOpen);
+		getEntryPoint("ucal_close", inModule, ucalClose);
+		getEntryPoint("ucal_setAttribute", inModule, ucalSetAttribute);
+		getEntryPoint("ucal_setMillis", inModule, ucalSetMillis);
+		getEntryPoint("ucal_get", inModule, ucalGet);
+		getEntryPoint("ucal_setDateTime", inModule, ucalSetDateTime);
+
+		getEntryPoint("ucal_getNow", inModule, ucalGetNow);
+		getEntryPoint("ucal_getTimeZoneTransitionDate", inModule, ucalGetTimeZoneTransitionDate);
 	}
 
 public:
@@ -309,6 +376,7 @@ public:
 
 private:
 	AutoPtr<ModuleLoader::Module> module;
+	AutoPtr<ModuleLoader::Module> inModule;
 };
 
 static ImplementConversionICU* convIcu = NULL;
@@ -343,16 +411,56 @@ static const char* const COLL_30_VERSION = "41.128.4.4";	// ICU 3.0 collator ver
 static GlobalPtr<UnicodeUtil::ICUModules> icuModules;
 
 
-static void formatFilename(PathName& filename, const char* templateName,
+static ModuleLoader::Module* formatAndLoad(const char* templateName,
 	int majorVersion, int minorVersion)
 {
-	string s;
-	if (majorVersion >= ICU_NEW_VERSION_MEANING)
-		s.printf("%d", majorVersion);
-	else
-		s.printf("%d%d", majorVersion, minorVersion);
+#ifdef ANDROID
+	static ModuleLoader::Module* dat = ModuleLoader::loadModule(NULL,
+		fb_utils::getPrefix(Firebird::IConfigManager::DIR_LIB, "libicudata.so"));
 
-	filename.printf(templateName, s.c_str());
+	Firebird::PathName newName = fb_utils::getPrefix(Firebird::IConfigManager::DIR_LIB, templateName);
+	templateName = newName.c_str();
+#endif
+
+	ModuleLoader::Module* module = nullptr;
+
+	// System-wide ICU have no version number at file names
+	if (!majorVersion)
+	{
+		PathName filename;
+		filename.printf(templateName, "");
+		module = ModuleLoader::fixAndLoadModule(NULL, filename);
+	}
+	else
+	{
+		// ICU has several schemas for placing version into file name
+		const char* patterns[] =
+		{
+			"%d_%d", "%d%d", NULL
+		};
+
+		PathName s, filename;
+		for (const char** p = patterns; *p; ++p)
+		{
+			s.printf(*p, majorVersion, minorVersion);
+			filename.printf(templateName, s.c_str());
+
+			module = ModuleLoader::fixAndLoadModule(NULL, filename);
+			if (module)
+				break;
+		}
+
+		// There is no sence to try pattern "%d" for different minor versions
+		if (!module && minorVersion == 0)
+		{
+			s.printf("%d", majorVersion);
+			filename.printf(templateName, s.c_str());
+
+			module = ModuleLoader::fixAndLoadModule(NULL, filename);
+		}
+	}
+
+	return module;
 }
 
 
@@ -951,6 +1059,37 @@ INTL_BOOL UnicodeUtil::utf32WellFormed(ULONG len, const ULONG* str, ULONG* offen
 	return true;	// well-formed
 }
 
+void UnicodeUtil::utf8Normalize(UCharBuffer& data)
+{
+	ICU* icu = loadICU("", "");
+
+	HalfStaticArray<USHORT, BUFFER_MEDIUM> utf16Buffer(data.getCount());
+	USHORT errCode;
+	ULONG errPosition;
+	ULONG utf16BufferLen = utf8ToUtf16(data.getCount(), data.begin(), data.getCount() * sizeof(USHORT),
+		utf16Buffer.getBuffer(data.getCount()), &errCode, &errPosition);
+
+	UTransliterator* trans = icu->getCiAiTransliterator();
+
+	if (trans)
+	{
+		const int32_t capacity = utf16Buffer.getCount() * sizeof(USHORT);
+		int32_t len = utf16BufferLen / sizeof(USHORT);
+		int32_t limit = len;
+
+		UErrorCode errorCode = U_ZERO_ERROR;
+		icu->utransTransUChars(trans, reinterpret_cast<UChar*>(utf16Buffer.begin()),
+			&len, capacity, 0, &limit, &errorCode);
+		icu->releaseCiAiTransliterator(trans);
+
+		len = utf16ToUtf8(utf16BufferLen, utf16Buffer.begin(),
+			len * 4, data.getBuffer(len * 4, false),
+			&errCode, &errPosition);
+
+		data.shrink(len);
+	}
+}
+
 UnicodeUtil::ICU* UnicodeUtil::loadICU(const string& icuVersion, const string& configInfo)
 {
 	ObjectsArray<string> versions;
@@ -975,17 +1114,14 @@ UnicodeUtil::ICU* UnicodeUtil::loadICU(const string& icuVersion, const string& c
 			continue;
 
 		string configVersion;
-
-		if (majorVersion >= ICU_NEW_VERSION_MEANING)
+		configVersion.printf("%d.%d", majorVersion, minorVersion);
+		if (version != configVersion)
 		{
 			minorVersion = 0;
 			configVersion.printf("%d", majorVersion);
+			if (version != configVersion)
+				continue;
 		}
-		else
-			configVersion.printf("%d.%d", majorVersion, minorVersion);
-
-		if (version != configVersion)
-			continue;
 
 		ReadLockGuard readGuard(icuModules->lock, "UnicodeUtil::loadICU");
 
@@ -993,41 +1129,28 @@ UnicodeUtil::ICU* UnicodeUtil::loadICU(const string& icuVersion, const string& c
 		if (icuModules->modules.get(version, icu))
 			return icu;
 
-		PathName filename;
-		formatFilename(filename, ucTemplate, majorVersion, minorVersion);
-
 		icu = FB_NEW_POOL(*getDefaultMemoryPool()) ICU(majorVersion, minorVersion);
 
-		icu->ucModule = ModuleLoader::fixAndLoadModule(filename);
-
+		icu->ucModule = formatAndLoad(ucTemplate, majorVersion, minorVersion);
 		if (!icu->ucModule)
 		{
-			gds__log("failed to load module %s", filename.c_str());
+			gds__log("failed to load UC icu module version %s", configVersion.c_str());
 			delete icu;
 			continue;
 		}
 
-		formatFilename(filename, inTemplate, majorVersion, minorVersion);
-
-		icu->inModule = ModuleLoader::fixAndLoadModule(filename);
-
+		icu->inModule = formatAndLoad(inTemplate, majorVersion, minorVersion);
 		if (!icu->inModule)
 		{
-			gds__log("failed to load module %s", filename.c_str());
+			gds__log("failed to load IN icu module version %s", configVersion.c_str());
 			delete icu;
 			continue;
 		}
 
 		try
 		{
-			icu->getEntryPoint("u_init", icu->ucModule, icu->uInit);
-		}
-		catch (const status_exception&)
-		{ }
+			icu->initialize(icu->ucModule);
 
-		try
-		{
-			icu->getEntryPoint("u_setDataDirectory", icu->ucModule, icu->uSetDataDirectory);
 			icu->getEntryPoint("u_versionToString", icu->ucModule, icu->uVersionToString);
 			icu->getEntryPoint("uloc_countAvailable", icu->ucModule, icu->ulocCountAvailable);
 			icu->getEntryPoint("uloc_getAvailable", icu->ucModule, icu->ulocGetAvailable);
@@ -1043,7 +1166,7 @@ UnicodeUtil::ICU* UnicodeUtil::loadICU(const string& icuVersion, const string& c
 			icu->getEntryPoint("ucol_setAttribute", icu->inModule, icu->ucolSetAttribute);
 			icu->getEntryPoint("ucol_strcoll", icu->inModule, icu->ucolStrColl);
 			icu->getEntryPoint("ucol_getVersion", icu->inModule, icu->ucolGetVersion);
-			icu->getEntryPoint("utrans_open", icu->inModule, icu->utransOpen);
+			icu->getEntryPoint("utrans_openU", icu->inModule, icu->utransOpenU);
 			icu->getEntryPoint("utrans_close", icu->inModule, icu->utransClose);
 			icu->getEntryPoint("utrans_transUChars", icu->inModule, icu->utransTransUChars);
 		}
@@ -1054,27 +1177,7 @@ UnicodeUtil::ICU* UnicodeUtil::loadICU(const string& icuVersion, const string& c
 			continue;
 		}
 
-#ifdef WIN_NT
-		if (icu->uSetDataDirectory)
-		{
-			PathName path, file;
-			PathUtils::splitLastComponent(path, file, icu->ucModule->fileName);
-			icu->uSetDataDirectory(path.c_str());
-		}
-#endif
-
 		UErrorCode status = U_ZERO_ERROR;
-
-		if (icu->uInit)
-		{
-			icu->uInit(&status);
-			if (status != U_ZERO_ERROR)
-			{
-				gds__log("u_init() error %d", status);
-				delete icu;
-				continue;
-			}
-		}
 
 		UCollator* collator = icu->ucolOpen("", &status);
 		if (!collator)
@@ -1124,11 +1227,20 @@ UnicodeUtil::ConversionICU& UnicodeUtil::getConversionICU()
 	}
 
 	// Try "favorite" (distributed on windows) version first
-	const int favMaj = 5;
-	const int favMin = 2;
+	const int favMaj = 63;
+	const int favMin = 0;
 	try
 	{
 		if ((convIcu = ImplementConversionICU::create(favMaj, favMin)))
+			return *convIcu;
+	}
+	catch (const Exception&)
+	{ }
+
+	// Try system-wide version
+	try
+	{
+		if ((convIcu = ImplementConversionICU::create(0, 0)))
 			return *convIcu;
 	}
 	catch (const Exception&)
@@ -1138,37 +1250,56 @@ UnicodeUtil::ConversionICU& UnicodeUtil::getConversionICU()
 	LocalStatus ls;
 	CheckStatusWrapper lastError(&ls);
 	string version;
-	const int majorArray[] = {5, 4, 3, 6, 0};
 
-	for (const int* major = majorArray; *major; ++major)
+	// According to http://userguide.icu-project.org/design#TOC-Version-Numbers-in-ICU
+	// we using two ranges of version numbers: 3.0 - 4.8 and 49 - 79.
+	// Note 1: the most current version for now is 64, thus it is seems as enough to
+	// limit upper bound by value of 79. It should be enlarged when necessary in the
+	// future.
+	// Note 2: the required function ucal_getTZDataVersion() is available since 3.8.
+
+	for (int major = 79; major >= 3;)
 	{
-		for (int minor = 20; minor--; ) // from 19 down to 0
+		int minor = 0;
+		if (major == 4)
+			minor = 8;
+		else if (major <= 4)
+			minor = 9;
+
+		for (; minor >= 0; --minor)
 		{
-			if ((*major == favMaj) && (minor == favMin))
+			if ((major == favMaj) && (minor == favMin))
 			{
 				continue;
 			}
 
 			try
 			{
-				if ((convIcu = ImplementConversionICU::create(*major, minor)))
+				if ((convIcu = ImplementConversionICU::create(major, minor)))
 					return *convIcu;
 			}
 			catch (const Exception& ex)
 			{
 				ex.stuffException(&lastError);
-				version.printf("Error loading ICU library version %d.%d", *major, minor);
+				version.printf("Error loading ICU library version %d.%d", major, minor);
 			}
 		}
+
+		if (major == 49)
+			major = 4;
+		else
+			major--;
 	}
+
+	Arg::Gds err(isc_icu_library);
 
 	if (lastError.getState() & Firebird::IStatus::STATE_ERRORS)
 	{
-		(Arg::Gds(isc_random) << "Could not find acceptable ICU library"
-			 << Arg::StatusVector(lastError.getErrors())).raise();
+		err << Arg::StatusVector(lastError.getErrors()) <<
+			   Arg::Gds(isc_random) << Arg::Str(version);
 	}
-	else
-		(Arg::Gds(isc_random) << "Could not find acceptable ICU library").raise();
+
+	err.raise();
 
 	// compiler warning silencer
 	return *convIcu;
@@ -1180,7 +1311,7 @@ string UnicodeUtil::getDefaultIcuVersion()
 	string rc;
 	UnicodeUtil::ConversionICU& icu(UnicodeUtil::getConversionICU());
 
-	if (icu.vMajor >= ICU_NEW_VERSION_MEANING)
+	if (icu.vMajor >= 10 && icu.vMinor == 0)
 		rc.printf("%d", icu.vMajor);
 	else
 		rc.printf("%d.%d", icu.vMajor, icu.vMinor);
@@ -1327,7 +1458,7 @@ UnicodeUtil::Utf16Collation* UnicodeUtil::Utf16Collation::create(
 		icu->ucolSetAttribute(compareCollator, UCOL_STRENGTH, UCOL_IDENTICAL, &status);
 		icu->ucolSetAttribute(sortCollator, UCOL_STRENGTH, UCOL_IDENTICAL, &status);
 
-		tt->texttype_flags = TEXTTYPE_UNSORTED_UNIQUE;
+		tt->texttype_flags |= TEXTTYPE_UNSORTED_UNIQUE;
 	}
 	else
 	{
@@ -1424,8 +1555,10 @@ USHORT UnicodeUtil::Utf16Collation::stringToKey(USHORT srcLen, const USHORT* src
 				UChar str[10];
 				UErrorCode status = U_ZERO_ERROR;
 				int len = icu->usetGetItem(contractions, i, NULL, NULL, str, sizeof(str), &status);
+				if (len < 0)
+					fatal_exception::raiseFmt("uset_getItem() error %d", status);
 
-				if (len > srcLenLong)
+				if (unsigned(len) > srcLenLong)		// safe cast - sign checked
 					len = srcLenLong;
 				else
 					--len;

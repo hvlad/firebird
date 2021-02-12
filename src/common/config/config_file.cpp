@@ -109,7 +109,7 @@ public:
 	}
 
 private:
-	AutoPtr<FILE, FileClose> file;
+	AutoPtr<FILE> file;
 	Firebird::PathName fileName;
 	unsigned int l;
 };
@@ -275,11 +275,12 @@ ConfigFile::Stream::~Stream()
  *	Parse line, taking quotes into account
  */
 
-ConfigFile::LineType ConfigFile::parseLine(const char* fileName, const String& input, Parameter& par)
+ConfigFile::LineType ConfigFile::parseLine(const char* fileName, const String& inputPar, Parameter& par)
 {
 	int inString = 0;
 	String::size_type valStart = 0;
 	String::size_type eol = String::npos;
+	String input = inputPar;
 	bool hasSub = false;
 	const char* include = "include";
 	const unsigned incLen = static_cast<unsigned>(strlen(include));
@@ -346,7 +347,12 @@ ConfigFile::LineType ConfigFile::parseLine(const char* fileName, const String& i
 
 		case '{':
 		case '}':
-			if (flags & HAS_SUB_CONF)
+			if (n < input.length() - 1 && input[n + 1] == input[n])
+			{
+				input.erase(n, 1);
+				break;
+			}
+			else if (flags & HAS_SUB_CONF)
 			{
 				if (inString != 1)
 				{
@@ -409,6 +415,9 @@ ConfigFile::LineType ConfigFile::parseLine(const char* fileName, const String& i
 
 bool ConfigFile::macroParse(String& value, const char* fileName) const
 {
+	if (flags & CUSTOM_MACROS)
+		return true;
+
 	String::size_type subFrom;
 
 	while ((subFrom = value.find("$(")) != String::npos)
@@ -424,9 +433,9 @@ bool ConfigFile::macroParse(String& value, const char* fileName) const
 			}
 			++subTo;
 
-			// Avoid double slashes in pathnames
-			PathUtils::setDirIterator(value.begin());
-			PathUtils::setDirIterator(macro.begin());
+			// Avoid incorrect slashes in pathnames
+			PathUtils::fixupSeparators(value.begin());
+			PathUtils::fixupSeparators(macro.begin());
 
 			if (subFrom > 0 && value[subFrom - 1] == PathUtils::dir_sep &&
 				macro.length() > 0 && macro[0] == PathUtils::dir_sep)
@@ -482,9 +491,9 @@ bool ConfigFile::translate(const char* fileName, const String& from, String& to)
 			TEXT temp[MAXPATHLEN];
 			const int n = readlink(fileName, temp, sizeof(temp));
 
-			if (n != -1 && unsigned(n) < sizeof(temp))
+			if (n != -1)
 			{
-				tempPath = temp;
+				tempPath.assign(temp, n);
 
 				if (PathUtils::isRelative(tempPath))
 				{
@@ -616,6 +625,7 @@ void ConfigFile::parse(Stream* stream)
 
 		switch (parseLine(streamName, inputLine, current))
 		{
+		case LINE_END_SUB:
 		case LINE_BAD:
 			badLine(streamName, inputLine);
 			return;
@@ -643,16 +653,35 @@ void ConfigFile::parse(Stream* stream)
 
 			{ // subconf scope
 				SubStream subStream(stream->getFileName());
+				int level = 1;
 				while (getLine(stream, inputLine, line))
 				{
 					switch(parseLine(streamName, inputLine, current))
 					{
-					case LINE_END_SUB:
-						if (current.value.hasData())
-							subStream.putLine(current.value, line);
-						break;
+					case LINE_START_SUB:
+						fb_assert(level > 0);
+						level++;
+						subStream.putLine(inputLine, line);
+						continue;
 
-					//case LINE_START_SUB:	will be ignored at next level. Ignore here?
+					case LINE_END_SUB:
+						level--;
+						if (level > 0)
+						{
+							subStream.putLine(inputLine, line);
+							continue;
+						}
+						else if (level == 0)
+						{
+							if (current.value.hasData())
+								subStream.putLine(current.value, line);
+							break;
+						}
+						else // level < 0 impossible
+						{
+							fb_assert(false);
+						}
+
 					case LINE_BAD:
 						badLine(streamName, inputLine);
 						return;
@@ -664,8 +693,11 @@ void ConfigFile::parse(Stream* stream)
 					break;
 				}
 
+				if (level > 0)
+					badLine(streamName, "< missed closing bracket '}' >");
+
 				previous->sub = FB_NEW_POOL(getPool())
-					ConfigFile(getPool(), &subStream, flags & ~HAS_SUB_CONF);
+					ConfigFile(getPool(), &subStream, flags);
 			}
 			break;
 		}
@@ -684,6 +716,9 @@ void ConfigFile::parse(Stream* stream)
 
 void ConfigFile::include(const char* currentFileName, const PathName& parPath)
 {
+#ifdef DEBUG_INCLUDES
+	fprintf(stderr, "include into %s file(s) %s\n", currentFileName, parPath.c_str());
+#endif
 	// We should better limit include depth
 	AutoSetRestore<unsigned> depth(&includeLimit, includeLimit + 1);
 	if (includeLimit > INCLUDE_LIMIT)
@@ -695,19 +730,15 @@ void ConfigFile::include(const char* currentFileName, const PathName& parPath)
 	PathName path;
 	if (PathUtils::isRelative(parPath))
 	{
-		PathName curPath;
-		PathUtils::splitLastComponent(curPath, path /*dummy*/, currentFileName);
-		PathUtils::concatPath(path, curPath, parPath);
+		PathName dummy;
+		PathUtils::splitLastComponent(path, dummy, currentFileName);
 	}
-	else
-	{
-		path = parPath;
-	}
+	PathUtils::concatPath(path, path, parPath);
 
 	// split path into components
 	PathName pathPrefix;
 	PathUtils::splitPrefix(path, pathPrefix);
-	PathName savedPath(path);		// Expect no *? in prefix
+	bool hadWildCards = hasWildCards(path);		// Expect no *? in prefix
 	FilesArray components;
 	while (path.hasData())
 	{
@@ -726,7 +757,7 @@ void ConfigFile::include(const char* currentFileName, const PathName& parPath)
 	if (!wildCards(currentFileName, pathPrefix, components))
 	{
 		// no matches found - check for presence of wild symbols in path
-		if (!hasWildCards(savedPath))
+		if (!hadWildCards)
 		{
 			(Arg::Gds(isc_conf_include) << currentFileName << parPath << Arg::Gds(isc_include_miss)).raise();
 		}
@@ -746,10 +777,11 @@ bool ConfigFile::wildCards(const char* currentFileName, const PathName& pathPref
 	// Any change in directory can cause config change
 	PathName prefix(pathPrefix);
 	if(!pathPrefix.hasData())
-		prefix = ".";
+		prefix = PathUtils::curr_dir_link;
 
 	bool found = false;
 	PathName next(components.pop());
+	bool mustBeDir = components.hasData();
 
 #ifdef DEBUG_INCLUDES
 	fprintf(stderr, "wildCards: prefix=%s next=%s left=%d\n",
@@ -761,9 +793,9 @@ bool ConfigFile::wildCards(const char* currentFileName, const PathName& pathPref
 	{
 		PathName name;
 		const PathName fileName = list.getFileName();
-		if (fileName == ".")
+		if (fileName == PathUtils::curr_dir_link || fileName == PathUtils::up_dir_link)
 			continue;
-		if (fileName[0] == '.' && next[0] != '.')
+		if (mustBeDir && !list.isDirectory())
 			continue;
 		PathUtils::concatPath(name, pathPrefix, fileName);
 
@@ -773,11 +805,15 @@ bool ConfigFile::wildCards(const char* currentFileName, const PathName& pathPref
 #endif
 
 		if (filesCache)
-			filesCache->addFile(name);
-
-		if (components.hasData())	// should be directory
 		{
-			found = found || wildCards(currentFileName, name, components);
+			bool added = filesCache->addFile(name);
+			if (!mustBeDir && !added)
+				continue; // Prevent loops in includes
+		}
+
+		if (mustBeDir)	// should be directory
+		{
+			found = wildCards(currentFileName, name, components) || found;
 		}
 		else
 		{
@@ -789,6 +825,8 @@ bool ConfigFile::wildCards(const char* currentFileName, const PathName& pathPref
 			}
 		}
 	}
+	// Return component back to allow use it for next path as well
+	components.push(next);
 
 	return found;
 }

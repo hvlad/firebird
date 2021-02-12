@@ -196,6 +196,9 @@
 #undef HAVE_MKSTEMP
 #undef HAVE_LLRINT
 #undef HAVE_LOCALTIME_R
+#define HAVE_LOCALTIME_S
+#undef HAVE_CTIME_R
+#define HAVE_CTIME_S
 #undef HAVE_GMTIME_R
 #undef HAVE_SYS_SELECT_H
 
@@ -207,6 +210,11 @@
 #define isnan _isnan
 #endif
 
+#if !defined(HAS_NOEXCEPT)
+#if defined(_MSC_FULL_VER) && _MSC_FULL_VER >= 190023026
+#define HAS_NOEXCEPT
+#endif
+#endif
 
 /* Types */
 #undef HAVE_SOCKLEN_T
@@ -330,7 +338,7 @@
 #define FB_SAMPLEDIR ""
 #define FB_SBINDIR ""
 #define FB_SECDBDIR ""
-#define FB_UDFDIR ""
+#define FB_TZDATADIR ""
 
 #define FB_LOGFILENAME "firebird.log"
 

@@ -332,7 +332,7 @@ void SDW_check(thread_db* tdbb)
 		{
 			Lock temp_lock(tdbb, sizeof(SLONG), LCK_update_shadow);
 			Lock* lock = &temp_lock;
-			lock->lck_key.lck_long = -1;
+			lock->setKey(-1);
 
 			LCK_lock(tdbb, lock, LCK_EX, LCK_NO_WAIT);
 			if (lock->lck_physical == LCK_EX)
@@ -572,7 +572,7 @@ void SDW_get_shadows(thread_db* tdbb)
 
 		WIN window(HEADER_PAGE_NUMBER);
 		const header_page* header = (header_page*) CCH_FETCH(tdbb, &window, LCK_read, pag_header);
-		lock->lck_key.lck_long = header->hdr_shadow_count;
+		lock->setKey(header->hdr_shadow_count);
 		LCK_lock(tdbb, lock, LCK_SR, LCK_WAIT);
 		CCH_RELEASE(tdbb, &window);
 	}
@@ -623,7 +623,7 @@ void SDW_init(thread_db* tdbb, bool activate, bool delete_files)
 	WIN window(HEADER_PAGE_NUMBER);
 
 	header = (header_page*) CCH_FETCH(tdbb, &window, LCK_read, pag_header);
-	lock->lck_key.lck_long = header->hdr_shadow_count;
+	lock->setKey(header->hdr_shadow_count);
 	LCK_lock(tdbb, lock, LCK_SR, LCK_WAIT);
 	CCH_RELEASE(tdbb, &window);
 
@@ -720,13 +720,13 @@ void SDW_notify(thread_db* tdbb)
 
 	if (lock->lck_physical == LCK_SR)
 	{
-		if (lock->lck_key.lck_long != header->hdr_shadow_count)
+		if (lock->getKey() != header->hdr_shadow_count)
 			BUGCHECK(162);		// msg 162 shadow lock not synchronized properly
 		LCK_convert(tdbb, lock, LCK_EX, LCK_WAIT);
 	}
 	else
 	{
-		lock->lck_key.lck_long = header->hdr_shadow_count;
+		lock->setKey(header->hdr_shadow_count);
 		LCK_lock(tdbb, lock, LCK_EX, LCK_WAIT);
 	}
 
@@ -735,7 +735,7 @@ void SDW_notify(thread_db* tdbb)
 	// now get a shared lock on the incremented shadow count to ensure that
 	// we will get notification of the next shadow add
 
-	lock->lck_key.lck_long = ++header->hdr_shadow_count;
+	lock->setKey(++header->hdr_shadow_count);
 	LCK_lock(tdbb, lock, LCK_SR, LCK_WAIT);
 
 	CCH_RELEASE(tdbb, &window);
@@ -775,7 +775,7 @@ bool SDW_rollover_to_shadow(thread_db* tdbb, jrd_file* file, const bool inAst)
 	{
 		update_lock = FB_NEW_RPT(*tdbb->getDefaultPool(), 0)
 			Lock(tdbb, sizeof(SLONG), LCK_update_shadow);
-		update_lock->lck_key.lck_long = -1;
+		update_lock->setKey(-1);
 
 		LCK_lock(tdbb, update_lock, LCK_EX, LCK_NO_WAIT);
 

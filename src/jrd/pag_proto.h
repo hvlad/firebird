@@ -44,14 +44,12 @@ bool	PAG_add_header_entry(Jrd::thread_db* tdbb, Ods::header_page*, USHORT, USHOR
 //void	PAG_attach_temp_pages(Jrd::thread_db*, USHORT pageSpaceID);
 bool	PAG_replace_entry_first(Jrd::thread_db* tdbb, Ods::header_page*, USHORT, USHORT, const UCHAR*);
 Ods::pag*	PAG_allocate(Jrd::thread_db* tdbb, Jrd::win*);
-Ods::pag*	PAG_allocate_pages(Jrd::thread_db* tdbb, Jrd::win* window, int cntAlloc, bool aligned);
+Ods::pag*	PAG_allocate_pages(Jrd::thread_db* tdbb, Jrd::win* window, unsigned cntAlloc, bool aligned);
 AttNumber	PAG_attachment_id(Jrd::thread_db*);
 bool	PAG_delete_clump_entry(Jrd::thread_db* tdbb, USHORT);
 void	PAG_format_header(Jrd::thread_db*);
 void	PAG_format_pip(Jrd::thread_db*, Jrd::PageSpace& pageSpace);
-#ifdef NOT_USED_OR_REPLACED
-bool	PAG_get_clump(Jrd::thread_db* tdbb, SLONG, USHORT, USHORT*, UCHAR*);
-#endif
+bool	PAG_get_clump(Jrd::thread_db*, USHORT, USHORT*, UCHAR*);
 void	PAG_header(Jrd::thread_db*, bool);
 void	PAG_header_init(Jrd::thread_db*);
 void	PAG_init(Jrd::thread_db*);
@@ -60,23 +58,16 @@ SLONG	PAG_last_page(Jrd::thread_db* tdbb);
 void	PAG_release_page(Jrd::thread_db* tdbb, const Jrd::PageNumber&, const Jrd::PageNumber&);
 void	PAG_release_pages(Jrd::thread_db* tdbb, USHORT pageSpaceID, int cntRelease,
 			const ULONG* pgNums, const ULONG prior_page);
+void	PAG_set_db_guid(Jrd::thread_db* tdbb, const Firebird::Guid&);
 void	PAG_set_force_write(Jrd::thread_db* tdbb, bool);
 void	PAG_set_no_reserve(Jrd::thread_db* tdbb, bool);
 void	PAG_set_db_readonly(Jrd::thread_db* tdbb, bool);
+void	PAG_set_db_replica(Jrd::thread_db* tdbb, ReplicaMode);
 void	PAG_set_db_SQL_dialect(Jrd::thread_db* tdbb, SSHORT);
 void	PAG_set_page_buffers(Jrd::thread_db* tdbb, ULONG);
 void	PAG_set_page_scn(Jrd::thread_db* tdbb, Jrd::win* window);
-void	PAG_sweep_interval(Jrd::thread_db* tdbb, SLONG);
-
-namespace Jrd {
-	class PageCountCallback
-	{
-	public:
-//		PageCountCallback() { }
-		virtual void newPage(Jrd::thread_db*, const SLONG, Ods::pag*) = 0;
-		virtual ~PageCountCallback() { }
-	};
-}
-ULONG	PAG_page_count(Jrd::thread_db*, Jrd::PageCountCallback*);
+void	PAG_set_repl_sequence(Jrd::thread_db* tdbb, FB_UINT64);
+void	PAG_set_sweep_interval(Jrd::thread_db* tdbb, SLONG);
+ULONG	PAG_page_count(Jrd::thread_db*);
 
 #endif // JRD_PAG_PROTO_H

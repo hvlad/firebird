@@ -49,7 +49,6 @@ public:
 			loadAPI();
 	}
 
-	virtual void jrdAttachmentEnd(Jrd::thread_db* /*tdbb*/, Jrd::Attachment* /*att*/) {}
 	virtual void getRemoteError(const Jrd::FbStatusVector* status, Firebird::string& err) const;
 
 protected:
@@ -187,9 +186,9 @@ public:
 	virtual ISC_STATUS ISC_EXPORT isc_database_info(Jrd::FbStatusVector*,
 										isc_db_handle*,
 										short,
-										const char*,
+										const unsigned char*,
 										short,
-										char*);
+										unsigned char*);
 
 	virtual void ISC_EXPORT isc_decode_date(const ISC_QUAD*,
 								void*);
@@ -289,9 +288,9 @@ public:
 	virtual ISC_STATUS ISC_EXPORT isc_dsql_sql_info(Jrd::FbStatusVector*,
 										isc_stmt_handle*,
 										short,
-										const char*,
+										const unsigned char*,
 										short,
-										char*);
+										unsigned char*);
 
 	virtual void ISC_EXPORT isc_encode_date(const void*,
 								ISC_QUAD*);
@@ -439,7 +438,7 @@ public:
 										   unsigned short,
 										   char*);
 
-	virtual ISC_LONG ISC_EXPORT isc_vax_integer(const char*,
+	virtual ISC_LONG ISC_EXPORT isc_vax_integer(const unsigned char*,
 									short);
 
 	virtual ISC_INT64 ISC_EXPORT isc_portable_integer(const unsigned char*,
@@ -482,6 +481,13 @@ public:
 	virtual ISC_STATUS ISC_EXPORT fb_cancel_operation(Jrd::FbStatusVector*,
 											isc_db_handle*,
 											USHORT);
+
+	virtual ISC_STATUS ISC_EXPORT fb_database_crypt_callback(Jrd::FbStatusVector*,
+											void*);
+
+	virtual ISC_STATUS API_ROUTINE fb_dsql_set_timeout(Jrd::FbStatusVector*,
+										isc_stmt_handle*,
+										ULONG);
 };
 
 
@@ -491,7 +497,8 @@ public:
 	explicit FBProvider(const char* prvName) :
 		IscProvider(prvName)
 	{
-		m_flags = (prvMultyStmts | prvMultyTrans | prvTrustedAuth);
+	    // Assume that winsspi auth plugin is enabled in configuration
+		m_flags = prvTrustedAuth;
 	}
 
 protected:
@@ -510,15 +517,16 @@ protected:
 public:
 	FB_API_HANDLE& getAPIHandle() { return m_handle; }
 
-	virtual void attach(Jrd::thread_db* tdbb, const Firebird::PathName& dbName,
-		const Firebird::string& user, const Firebird::string& pwd,
-		const Firebird::string& role);
+	virtual void attach(Jrd::thread_db* tdbb);
 
-	virtual bool cancelExecution();
+	virtual bool cancelExecution(bool forced);
+	virtual bool resetSession(Jrd::thread_db* tdbb);
 
 	virtual bool isAvailable(Jrd::thread_db* tdbb, TraScope traScope) const;
 
 	virtual bool isConnected() const { return (m_handle != 0); }
+
+	virtual bool validate(Jrd::thread_db* tdbb);
 
 	virtual Blob* createBlob();
 
@@ -549,6 +557,9 @@ protected:
 
 	virtual ~IscTransaction() {}
 
+	virtual void generateTPB(Jrd::thread_db* tdbb, Firebird::ClumpletWriter& tpb,
+		TraModes traMode, bool readOnly, bool wait, int lockTimeout) const;
+
 	virtual void doStart(Jrd::FbStatusVector* status, Jrd::thread_db* tdbb, Firebird::ClumpletWriter& tpb);
 	virtual void doPrepare(Jrd::FbStatusVector* status, Jrd::thread_db* tdbb, int info_len, const char* info);
 	virtual void doCommit(Jrd::FbStatusVector* status, Jrd::thread_db* tdbb, bool retain);
@@ -573,13 +584,14 @@ protected:
 
 protected:
 	virtual void doPrepare(Jrd::thread_db* tdbb, const Firebird::string& sql);
+	virtual void doSetTimeout(Jrd::thread_db* tdbb, unsigned int timeout);
 	virtual void doExecute(Jrd::thread_db* tdbb);
 	virtual void doOpen(Jrd::thread_db* tdbb);
 	virtual bool doFetch(Jrd::thread_db* tdbb);
 	virtual void doClose(Jrd::thread_db* tdbb, bool drop);
 
 	virtual void doSetInParams(Jrd::thread_db* tdbb, unsigned int count,
-		const Firebird::MetaName* const* names, const NestConst<Jrd::ValueExprNode>* params);
+		const Firebird::MetaString* const* names, const NestConst<Jrd::ValueExprNode>* params);
 
 	IscTransaction* getIscTransaction() { return (IscTransaction*) m_transaction; }
 

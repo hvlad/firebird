@@ -22,7 +22,7 @@
 #include "../dsql/AggNodes.h"
 #include "../dsql/ExprNodes.h"
 #include "../jrd/jrd.h"
-#include "../jrd/blr.h"
+#include "firebird/impl/blr.h"
 #include "../jrd/btr.h"
 #include "../jrd/exe.h"
 #include "../jrd/tra.h"
@@ -48,7 +48,7 @@ using namespace Jrd;
 namespace Jrd {
 
 
-static RegisterNode<AggNode> regAggNode(blr_agg_function);
+static RegisterNode<AggNode> regAggNode({blr_agg_function});
 
 AggNode::Factory* AggNode::factories = NULL;
 
@@ -56,13 +56,12 @@ AggNode::AggNode(MemoryPool& pool, const AggInfo& aAggInfo, bool aDistinct, bool
 			ValueExprNode* aArg)
 	: TypedNode<ValueExprNode, ExprNode::TYPE_AGGREGATE>(pool),
 	  aggInfo(aAggInfo),
-	  distinct(aDistinct),
-	  dialect1(aDialect1),
 	  arg(aArg),
 	  asb(NULL),
+	  distinct(aDistinct),
+	  dialect1(aDialect1),
 	  indexed(false)
 {
-	addChildNode(arg, arg);
 }
 
 DmlNode* AggNode::parse(thread_db* tdbb, MemoryPool& pool, CompilerScratch* csb, const UCHAR /*blrOp*/)
@@ -86,7 +85,10 @@ DmlNode* AggNode::parse(thread_db* tdbb, MemoryPool& pool, CompilerScratch* csb,
 
 	const UCHAR count = csb->csb_blr_reader.getByte();
 
-	if (count != node->jrdChildNodes.getCount())
+	NodeRefsHolder holder(pool);
+	node->getChildren(holder, false);
+
+	if (count != holder.refs.getCount())
 		PAR_error(csb, Arg::Gds(isc_funmismat) << name);
 
 	node->parseArgs(tdbb, csb, count);
@@ -146,8 +148,11 @@ bool AggNode::dsqlAggregateFinder(AggregateFinder& visitor)
 		AutoSetRestore<USHORT> autoDeepestLevel(&visitor.deepestLevel, 0);
 		AutoSetRestore<bool> autoIgnoreSubSelects(&visitor.ignoreSubSelects, true);
 
-		for (NodeRef** i = dsqlChildNodes.begin(); i != dsqlChildNodes.end(); ++i)
-			visitor.visit((*i)->getExpr());
+		NodeRefsHolder holder(visitor.getPool());
+		getChildren(holder, true);
+
+		for (auto i : holder.refs)
+			visitor.visit(*i);
 
 		localDeepestLevel = visitor.deepestLevel;
 	}
@@ -175,8 +180,11 @@ bool AggNode::dsqlAggregateFinder(AggregateFinder& visitor)
 
 		AutoSetRestore<USHORT> autoDeepestLevel(&visitor.deepestLevel, localDeepestLevel);
 
-		for (NodeRef** i = dsqlChildNodes.begin(); i != dsqlChildNodes.end(); ++i)
-			aggregate |= visitor.visit((*i)->getExpr());
+		NodeRefsHolder holder(visitor.getPool());
+		getChildren(holder, true);
+
+		for (auto i : holder.refs)
+			aggregate |= visitor.visit(*i);
 	}
 
 	return aggregate;
@@ -188,10 +196,13 @@ bool AggNode::dsqlAggregate2Finder(Aggregate2Finder& visitor)
 		return false;
 
 	bool found = false;
-	FieldFinder fieldFinder(visitor.checkScopeLevel, visitor.matchType);
+	FieldFinder fieldFinder(visitor.getPool(), visitor.checkScopeLevel, visitor.matchType);
 
-	for (NodeRef** i = dsqlChildNodes.begin(); i != dsqlChildNodes.end(); ++i)
-		found |= fieldFinder.visit((*i)->getExpr());
+	NodeRefsHolder holder(visitor.getPool());
+	getChildren(holder, true);
+
+	for (auto i : holder.refs)
+		found |= fieldFinder.visit(*i);
 
 	if (!fieldFinder.getField())
 	{
@@ -234,14 +245,17 @@ bool AggNode::dsqlInvalidReferenceFinder(InvalidReferenceFinder& visitor)
 
 	if (!visitor.insideHigherMap)
 	{
-		for (NodeRef** i = dsqlChildNodes.begin(); i != dsqlChildNodes.end(); ++i)
+		NodeRefsHolder holder(visitor.dsqlScratch->getPool());
+		getChildren(holder, true);
+
+		for (auto i : holder.refs)
 		{
 			// If there's another aggregate with the same scope_level or
 			// an higher one then it's a invalid aggregate, because
 			// aggregate-functions from the same context can't
 			// be part of each other.
-			if (Aggregate2Finder::find(visitor.context->ctx_scope_level,
-					FIELD_MATCH_TYPE_EQUAL, false, (*i)->getExpr()))
+			if (Aggregate2Finder::find(visitor.dsqlScratch->getPool(), visitor.context->ctx_scope_level,
+					FIELD_MATCH_TYPE_EQUAL, false, *i))
 			{
 				// Nested aggregate functions are not allowed
 				ERRD_post(Arg::Gds(isc_sqlerr) << Arg::Num(-104) <<
@@ -260,31 +274,34 @@ bool AggNode::dsqlSubSelectFinder(SubSelectFinder& /*visitor*/)
 
 ValueExprNode* AggNode::dsqlFieldRemapper(FieldRemapper& visitor)
 {
-	AggregateFinder aggFinder(visitor.dsqlScratch, false);
+	AggregateFinder aggFinder(visitor.getPool(), visitor.dsqlScratch, false);
 	aggFinder.deepestLevel = visitor.dsqlScratch->scopeLevel;
 	aggFinder.currentLevel = visitor.currentLevel;
 
 	if (dsqlAggregateFinder(aggFinder))
 	{
 		if (!visitor.window && visitor.dsqlScratch->scopeLevel == aggFinder.deepestLevel)
-		{
-			return PASS1_post_map(visitor.dsqlScratch, this,
-				visitor.context, visitor.partitionNode, visitor.orderNode);
-		}
+			return PASS1_post_map(visitor.dsqlScratch, this, visitor.context, visitor.windowNode);
 	}
 
-	for (NodeRef** i = dsqlChildNodes.begin(); i != dsqlChildNodes.end(); ++i)
-		(*i)->remap(visitor);
+	NodeRefsHolder holder(visitor.getPool());
+	getChildren(holder, true);
+
+	for (auto i : holder.refs)
+	{
+		if (*i)
+			*i = (*i)->dsqlFieldRemapper(visitor);
+	}
 
 	return this;
 }
 
-bool AggNode::dsqlMatch(const ExprNode* other, bool ignoreMapCast) const
+bool AggNode::dsqlMatch(DsqlCompilerScratch* dsqlScratch, const ExprNode* other, bool ignoreMapCast) const
 {
-	if (!ExprNode::dsqlMatch(other, ignoreMapCast))
+	if (!ExprNode::dsqlMatch(dsqlScratch, other, ignoreMapCast))
 		return false;
 
-	const AggNode* o = other->as<AggNode>();
+	const AggNode* o = nodeAs<AggNode>(other);
 	fb_assert(o);
 
 	// ASF: We compare name address. That should be ok, as we have only one AggInfo instance
@@ -300,6 +317,9 @@ void AggNode::setParameterName(dsql_par* parameter) const
 
 void AggNode::genBlr(DsqlCompilerScratch* dsqlScratch)
 {
+	NodeRefsHolder holder(dsqlScratch->getPool());
+	getChildren(holder, true);
+
 	if (aggInfo.blr)	// Is this a standard aggregate function?
 		dsqlScratch->appendUChar((distinct ? aggInfo.distinctBlr : aggInfo.blr));
 	else	// This is a new window function.
@@ -309,19 +329,19 @@ void AggNode::genBlr(DsqlCompilerScratch* dsqlScratch)
 
 		unsigned count = 0;
 
-		for (NodeRef** i = dsqlChildNodes.begin(); i != dsqlChildNodes.end(); ++i)
+		for (auto i : holder.refs)
 		{
-			if (**i)
+			if (*i)
 				++count;
 		}
 
 		dsqlScratch->appendUChar(UCHAR(count));
 	}
 
-	for (NodeRef** i = dsqlChildNodes.begin(); i != dsqlChildNodes.end(); ++i)
+	for (auto i : holder.refs)
 	{
-		if (**i)
-			GEN_expr(dsqlScratch, (*i)->getExpr());
+		if (*i)
+			GEN_expr(dsqlScratch, *i);
 	}
 }
 
@@ -331,7 +351,7 @@ AggNode* AggNode::pass2(thread_db* tdbb, CompilerScratch* csb)
 
 	dsc desc;
 	getDesc(tdbb, csb, &desc);
-	impureOffset = CMP_impure(csb, sizeof(impure_value_ex));
+	impureOffset = csb->allocImpure<impure_value_ex>();
 
 	return this;
 }
@@ -388,7 +408,7 @@ bool AggNode::aggPass(thread_db* tdbb, jrd_req* request) const
 				to.dsc_sub_type = 0;
 				to.dsc_scale = 0;
 				to.dsc_ttype() = ttype_sort_key;
-				to.dsc_length = asb->keyItems[0].skd_length;
+				to.dsc_length = asb->keyItems[0].getSkdLength();
 				to.dsc_address = data;
 				INTL_string_to_key(tdbb, INTL_TEXT_TO_INDEX(desc->getTextType()),
 					desc, &to, INTL_KEY_UNIQUE);
@@ -396,7 +416,7 @@ bool AggNode::aggPass(thread_db* tdbb, jrd_req* request) const
 
 			dsc toDesc = asb->desc;
 			toDesc.dsc_address = data +
-				(asb->intl ? asb->keyItems[1].skd_offset : 0);
+				(asb->intl ? asb->keyItems[1].getSkdOffset() : 0);
 			MOV_move(tdbb, desc, &toDesc);
 
 			// dimitr:	Here we add a monotonically increasing value to the sort record.
@@ -458,7 +478,7 @@ dsc* AggNode::execute(thread_db* tdbb, jrd_req* request) const
 				break;
 			}
 
-			desc.dsc_address = data + (asb->intl ? asb->keyItems[1].skd_offset : 0);
+			desc.dsc_address = data + (asb->intl ? asb->keyItems[1].getSkdOffset() : 0);
 
 			aggPass(tdbb, request, &desc);
 		}
@@ -477,7 +497,6 @@ AvgAggNode::AvgAggNode(MemoryPool& pool, bool aDistinct, bool aDialect1, ValueEx
 	: AggNode(pool, avgAggInfo, aDistinct, aDialect1, aArg),
 	  tempImpure(0)
 {
-	dsqlCompatDialectVerb = "avg";
 }
 
 DmlNode* AvgAggNode::parse(thread_db* tdbb, MemoryPool& pool, CompilerScratch* csb, const UCHAR blrOp)
@@ -491,13 +510,17 @@ DmlNode* AvgAggNode::parse(thread_db* tdbb, MemoryPool& pool, CompilerScratch* c
 
 void AvgAggNode::make(DsqlCompilerScratch* dsqlScratch, dsc* desc)
 {
-	MAKE_desc(dsqlScratch, desc, arg);
-	desc->setNullable(true);
+	DsqlDescMaker::fromNode(dsqlScratch, desc, arg, true);
 
 	if (desc->isNull())
 		return;
 
-	if (dialect1)
+	if (DTYPE_IS_DECFLOAT(desc->dsc_dtype))
+	{
+		desc->dsc_dtype = dtype_dec128;
+		desc->dsc_length = sizeof(Decimal128);
+	}
+	else if (dialect1)
 	{
 		if (!DTYPE_IS_NUMERIC(desc->dsc_dtype) && !DTYPE_IS_TEXT(desc->dsc_dtype))
 		{
@@ -517,6 +540,11 @@ void AvgAggNode::make(DsqlCompilerScratch* dsqlScratch, dsc* desc)
 			ERRD_post(Arg::Gds(isc_expression_eval_err) <<
 					  Arg::Gds(isc_dsql_agg2_wrongarg) << Arg::Str("AVG"));
 		}
+		else if (desc->dsc_dtype == dtype_int64 || desc->dsc_dtype == dtype_int128)
+		{
+			desc->dsc_dtype = dtype_int128;
+			desc->dsc_length = sizeof(Int128);
+		}
 		else if (DTYPE_IS_EXACT(desc->dsc_dtype))
 		{
 			desc->dsc_dtype = dtype_int64;
@@ -534,6 +562,17 @@ void AvgAggNode::getDesc(thread_db* tdbb, CompilerScratch* csb, dsc* desc)
 {
 	arg->getDesc(tdbb, csb, desc);
 
+	if (DTYPE_IS_DECFLOAT(desc->dsc_dtype))
+	{
+		desc->dsc_dtype = dtype_dec128;
+		desc->dsc_length = sizeof(Decimal128);
+		desc->dsc_scale = 0;
+		desc->dsc_sub_type = 0;
+		desc->dsc_flags = 0;
+		nodFlags |= FLAG_DECFLOAT;
+		return;
+	}
+
 	if (dialect1)
 	{
 		if (!(DTYPE_IS_NUMERIC(desc->dsc_dtype) || DTYPE_IS_TEXT(desc->dsc_dtype)))
@@ -550,18 +589,23 @@ void AvgAggNode::getDesc(thread_db* tdbb, CompilerScratch* csb, dsc* desc)
 		return;
 	}
 
-	// In V6, the average of an exact type is computed in SINT64, rather than double as in prior
-	// releases.
 	switch (desc->dsc_dtype)
 	{
 		case dtype_short:
 		case dtype_long:
-		case dtype_int64:
 			desc->dsc_dtype = dtype_int64;
 			desc->dsc_length = sizeof(SINT64);
-			desc->dsc_sub_type = 0;
 			desc->dsc_flags = 0;
 			nodScale = desc->dsc_scale;
+			break;
+
+		case dtype_int64:
+		case dtype_int128:
+			desc->dsc_dtype = dtype_int128;
+			desc->dsc_length = sizeof(Int128);
+			desc->dsc_flags = 0;
+			nodScale = desc->dsc_scale;
+			nodFlags |= FLAG_INT128;
 			break;
 
 		case dtype_unknown:
@@ -604,11 +648,11 @@ AggNode* AvgAggNode::pass2(thread_db* tdbb, CompilerScratch* csb)
 {
 	AggNode::pass2(tdbb, csb);
 
-	if (dialect1)
+	if (dialect1 && !(nodFlags & FLAG_DECFLOAT))
 		nodFlags |= FLAG_DOUBLE;
 
 	// We need a second descriptor in the impure area for AVG.
-	tempImpure = CMP_impure(csb, sizeof(impure_value_ex));
+	tempImpure = csb->allocImpure<impure_value_ex>();
 
 	return this;
 }
@@ -641,15 +685,15 @@ void AvgAggNode::aggInit(thread_db* tdbb, jrd_req* request) const
 	}
 }
 
-void AvgAggNode::aggPass(thread_db* /*tdbb*/, jrd_req* request, dsc* desc) const
+void AvgAggNode::aggPass(thread_db* tdbb, jrd_req* request, dsc* desc) const
 {
 	impure_value_ex* impure = request->getImpure<impure_value_ex>(impureOffset);
 	++impure->vlux_count;
 
 	if (dialect1)
-		ArithmeticNode::add(desc, impure, this, blr_add);
+		ArithmeticNode::add(tdbb, desc, impure, this, blr_add);
 	else
-		ArithmeticNode::add2(desc, impure, this, blr_add);
+		ArithmeticNode::add2(tdbb, desc, impure, this, blr_add);
 }
 
 dsc* AvgAggNode::aggExecute(thread_db* tdbb, jrd_req* request) const
@@ -662,15 +706,30 @@ dsc* AvgAggNode::aggExecute(thread_db* tdbb, jrd_req* request) const
 	dsc temp;
 	SINT64 i;
 	double d;
+	Decimal128 dec;
+	Int128 i128;
 
 	if (!dialect1 && impure->vlu_desc.dsc_dtype == dtype_int64)
 	{
 		i = *((SINT64*) impure->vlu_desc.dsc_address) / impure->vlux_count;
 		temp.makeInt64(impure->vlu_desc.dsc_scale, &i);
 	}
+	else if (!dialect1 && impure->vlu_desc.dsc_dtype == dtype_int128)
+	{
+		i128.set(impure->vlux_count, 0);
+		i128 = ((Int128*) impure->vlu_desc.dsc_address)->div(i128, 0);
+		temp.makeInt128(impure->vlu_desc.dsc_scale, &i128);
+	}
+	else if (DTYPE_IS_DECFLOAT(impure->vlu_desc.dsc_dtype))
+	{
+		DecimalStatus decSt = tdbb->getAttachment()->att_dec_status;
+		dec.set(impure->vlux_count, decSt, 0);
+		dec = MOV_get_dec128(tdbb, &impure->vlu_desc).div(decSt, dec);
+		temp.makeDecimal128(&dec);
+	}
 	else
 	{
-		d = MOV_get_double(&impure->vlu_desc) / impure->vlux_count;
+		d = MOV_get_double(tdbb, &impure->vlu_desc) / impure->vlux_count;
 		temp.makeDouble(&d);
 	}
 
@@ -682,7 +741,7 @@ dsc* AvgAggNode::aggExecute(thread_db* tdbb, jrd_req* request) const
 
 AggNode* AvgAggNode::dsqlCopy(DsqlCompilerScratch* dsqlScratch) /*const*/
 {
-	return FB_NEW_POOL(getPool()) AvgAggNode(getPool(), distinct, dialect1,
+	return FB_NEW_POOL(dsqlScratch->getPool()) AvgAggNode(dsqlScratch->getPool(), distinct, dialect1,
 		doDsqlPass(dsqlScratch, arg));
 }
 
@@ -697,7 +756,6 @@ ListAggNode::ListAggNode(MemoryPool& pool, bool aDistinct, ValueExprNode* aArg,
 	: AggNode(pool, listAggInfo, aDistinct, false, aArg),
 	  delimiter(aDelimiter)
 {
-	addChildNode(delimiter, delimiter);
 }
 
 DmlNode* ListAggNode::parse(thread_db* tdbb, MemoryPool& pool, CompilerScratch* csb, const UCHAR blrOp)
@@ -711,16 +769,16 @@ DmlNode* ListAggNode::parse(thread_db* tdbb, MemoryPool& pool, CompilerScratch* 
 
 void ListAggNode::make(DsqlCompilerScratch* dsqlScratch, dsc* desc)
 {
-	MAKE_desc(dsqlScratch, desc, arg);
+	DsqlDescMaker::fromNode(dsqlScratch, desc, arg);
 	desc->makeBlob(desc->getBlobSubType(), desc->getTextType());
 	desc->setNullable(true);
 }
 
 bool ListAggNode::setParameterType(DsqlCompilerScratch* dsqlScratch,
-	const dsc* desc, bool forceVarChar)
+	std::function<void (dsc*)> makeDesc, bool forceVarChar)
 {
-	return PASS1_set_parameter_type(dsqlScratch, arg, desc, forceVarChar) |
-		PASS1_set_parameter_type(dsqlScratch, delimiter, desc, forceVarChar);
+	return PASS1_set_parameter_type(dsqlScratch, arg, makeDesc, forceVarChar) |
+		PASS1_set_parameter_type(dsqlScratch, delimiter, makeDesc, forceVarChar);
 }
 
 void ListAggNode::getDesc(thread_db* tdbb, CompilerScratch* csb, dsc* desc)
@@ -818,15 +876,28 @@ dsc* ListAggNode::aggExecute(thread_db* tdbb, jrd_req* request) const
 
 AggNode* ListAggNode::dsqlCopy(DsqlCompilerScratch* dsqlScratch) /*const*/
 {
-	return FB_NEW_POOL(getPool()) ListAggNode(getPool(), distinct,
+	thread_db* tdbb = JRD_get_thread_data();
+
+	AggNode* node = FB_NEW_POOL(dsqlScratch->getPool()) ListAggNode(dsqlScratch->getPool(), distinct,
 		doDsqlPass(dsqlScratch, arg), doDsqlPass(dsqlScratch, delimiter));
+
+	dsc argDesc;
+	node->arg->make(dsqlScratch, &argDesc);
+
+	CharSet* charSet = INTL_charset_lookup(tdbb, argDesc.getCharSet());
+
+	node->setParameterType(dsqlScratch,
+		[&] (dsc* desc) { desc->makeText(charSet->maxBytesPerChar(), argDesc.getCharSet()); },
+		false);
+
+	return node;
 }
 
 
 //--------------------
 
 
-static RegisterNode<CountAggNode> regCountAggNodeLegacy(blr_agg_count);
+static RegisterNode<CountAggNode> regCountAggNodeLegacy({blr_agg_count});
 
 static AggNode::Register<CountAggNode> countAggInfo("COUNT", blr_agg_count2, blr_agg_count_distinct);
 
@@ -916,7 +987,7 @@ dsc* CountAggNode::aggExecute(thread_db* /*tdbb*/, jrd_req* request) const
 
 AggNode* CountAggNode::dsqlCopy(DsqlCompilerScratch* dsqlScratch) /*const*/
 {
-	return FB_NEW_POOL(getPool()) CountAggNode(getPool(), distinct, dialect1,
+	return FB_NEW_POOL(dsqlScratch->getPool()) CountAggNode(dsqlScratch->getPool(), distinct, dialect1,
 		doDsqlPass(dsqlScratch, arg));
 }
 
@@ -929,7 +1000,6 @@ static AggNode::Register<SumAggNode> sumAggInfo("SUM", blr_agg_total, blr_agg_to
 SumAggNode::SumAggNode(MemoryPool& pool, bool aDistinct, bool aDialect1, ValueExprNode* aArg)
 	: AggNode(pool, sumAggInfo, aDistinct, aDialect1, aArg)
 {
-	dsqlCompatDialectVerb = "sum";
 }
 
 DmlNode* SumAggNode::parse(thread_db* tdbb, MemoryPool& pool, CompilerScratch* csb, const UCHAR blrOp)
@@ -944,13 +1014,17 @@ DmlNode* SumAggNode::parse(thread_db* tdbb, MemoryPool& pool, CompilerScratch* c
 
 void SumAggNode::make(DsqlCompilerScratch* dsqlScratch, dsc* desc)
 {
-	MAKE_desc(dsqlScratch, desc, arg);
-	desc->setNullable(true);
+	DsqlDescMaker::fromNode(dsqlScratch, desc, arg, true);
 
 	if (desc->isNull())
 		return;
 
-	if (dialect1)
+	if (DTYPE_IS_DECFLOAT(desc->dsc_dtype))
+	{
+		desc->dsc_dtype = dtype_dec128;
+		desc->dsc_length = sizeof(Decimal128);
+	}
+	else if (dialect1)
 	{
 		if (!DTYPE_IS_NUMERIC(desc->dsc_dtype) && !DTYPE_IS_TEXT(desc->dsc_dtype))
 		{
@@ -980,6 +1054,11 @@ void SumAggNode::make(DsqlCompilerScratch* dsqlScratch, dsc* desc)
 			ERRD_post(Arg::Gds(isc_expression_eval_err) <<
 					  Arg::Gds(isc_dsql_agg2_wrongarg) << Arg::Str("SUM"));
 		}
+		else if (desc->dsc_dtype == dtype_int64 || desc->dsc_dtype == dtype_int128)
+		{
+			desc->dsc_dtype = dtype_int128;
+			desc->dsc_length = sizeof(Int128);
+		}
 		else if (DTYPE_IS_EXACT(desc->dsc_dtype))
 		{
 			desc->dsc_dtype = dtype_int64;
@@ -997,6 +1076,16 @@ void SumAggNode::getDesc(thread_db* tdbb, CompilerScratch* csb, dsc* desc)
 {
 	arg->getDesc(tdbb, csb, desc);
 
+	if (DTYPE_IS_DECFLOAT(desc->dsc_dtype))
+	{
+		desc->dsc_dtype = dtype_dec128;
+		desc->dsc_length = sizeof(Decimal128);
+		desc->dsc_sub_type = 0;
+		desc->dsc_flags = 0;
+		nodFlags |= FLAG_DECFLOAT;
+		return;
+	}
+
 	if (dialect1)
 	{
 		switch (desc->dsc_dtype)
@@ -1005,7 +1094,6 @@ void SumAggNode::getDesc(thread_db* tdbb, CompilerScratch* csb, dsc* desc)
 				desc->dsc_dtype = dtype_long;
 				desc->dsc_length = sizeof(SLONG);
 				nodScale = desc->dsc_scale;
-				desc->dsc_sub_type = 0;
 				desc->dsc_flags = 0;
 				return;
 
@@ -1051,11 +1139,19 @@ void SumAggNode::getDesc(thread_db* tdbb, CompilerScratch* csb, dsc* desc)
 		{
 			case dtype_short:
 			case dtype_long:
-			case dtype_int64:
 				desc->dsc_dtype = dtype_int64;
 				desc->dsc_length = sizeof(SINT64);
 				nodScale = desc->dsc_scale;
 				desc->dsc_flags = 0;
+				return;
+
+			case dtype_int64:
+			case dtype_int128:
+				desc->dsc_dtype = dtype_int128;
+				desc->dsc_length = sizeof(Int128);
+				desc->dsc_flags = 0;
+				nodScale = desc->dsc_scale;
+				nodFlags |= FLAG_INT128;
 				return;
 
 			case dtype_unknown:
@@ -1130,15 +1226,15 @@ void SumAggNode::aggInit(thread_db* tdbb, jrd_req* request) const
 	}
 }
 
-void SumAggNode::aggPass(thread_db* /*tdbb*/, jrd_req* request, dsc* desc) const
+void SumAggNode::aggPass(thread_db* tdbb, jrd_req* request, dsc* desc) const
 {
 	impure_value_ex* impure = request->getImpure<impure_value_ex>(impureOffset);
 	++impure->vlux_count;
 
 	if (dialect1)
-		ArithmeticNode::add(desc, impure, this, blr_add);
+		ArithmeticNode::add(tdbb, desc, impure, this, blr_add);
 	else
-		ArithmeticNode::add2(desc, impure, this, blr_add);
+		ArithmeticNode::add2(tdbb, desc, impure, this, blr_add);
 }
 
 dsc* SumAggNode::aggExecute(thread_db* /*tdbb*/, jrd_req* request) const
@@ -1153,7 +1249,7 @@ dsc* SumAggNode::aggExecute(thread_db* /*tdbb*/, jrd_req* request) const
 
 AggNode* SumAggNode::dsqlCopy(DsqlCompilerScratch* dsqlScratch) /*const*/
 {
-	return FB_NEW_POOL(getPool()) SumAggNode(getPool(), distinct, dialect1,
+	return FB_NEW_POOL(dsqlScratch->getPool()) SumAggNode(dsqlScratch->getPool(), distinct, dialect1,
 		doDsqlPass(dsqlScratch, arg));
 }
 
@@ -1180,8 +1276,7 @@ DmlNode* MaxMinAggNode::parse(thread_db* tdbb, MemoryPool& pool, CompilerScratch
 
 void MaxMinAggNode::make(DsqlCompilerScratch* dsqlScratch, dsc* desc)
 {
-	MAKE_desc(dsqlScratch, desc, arg);
-	desc->setNullable(true);
+	DsqlDescMaker::fromNode(dsqlScratch, desc, arg, true);
 }
 
 void MaxMinAggNode::getDesc(thread_db* tdbb, CompilerScratch* csb, dsc* desc)
@@ -1218,15 +1313,15 @@ void MaxMinAggNode::aggInit(thread_db* tdbb, jrd_req* request) const
 void MaxMinAggNode::aggPass(thread_db* tdbb, jrd_req* request, dsc* desc) const
 {
 	impure_value_ex* impure = request->getImpure<impure_value_ex>(impureOffset);
-
 	++impure->vlux_count;
+
 	if (!impure->vlu_desc.dsc_dtype)
 	{
 		EVL_make_value(tdbb, desc, impure);
 		return;
 	}
 
-	const int result = MOV_compare(desc, &impure->vlu_desc);
+	const int result = MOV_compare(tdbb, desc, &impure->vlu_desc);
 
 	if ((type == TYPE_MAX && result > 0) || (type == TYPE_MIN && result < 0))
 		EVL_make_value(tdbb, desc, impure);
@@ -1244,7 +1339,8 @@ dsc* MaxMinAggNode::aggExecute(thread_db* /*tdbb*/, jrd_req* request) const
 
 AggNode* MaxMinAggNode::dsqlCopy(DsqlCompilerScratch* dsqlScratch) /*const*/
 {
-	return FB_NEW_POOL(getPool()) MaxMinAggNode(getPool(), type, doDsqlPass(dsqlScratch, arg));
+	return FB_NEW_POOL(dsqlScratch->getPool()) MaxMinAggNode(dsqlScratch->getPool(),
+		type, doDsqlPass(dsqlScratch, arg));
 }
 
 
@@ -1279,13 +1375,31 @@ void StdDevAggNode::parseArgs(thread_db* tdbb, CompilerScratch* csb, unsigned /*
 
 void StdDevAggNode::make(DsqlCompilerScratch* dsqlScratch, dsc* desc)
 {
-	desc->makeDouble();
-	desc->setNullable(true);
+	DsqlDescMaker::fromNode(dsqlScratch, desc, arg, true);
+
+	if (desc->isNull())
+		return;
+
+	if (desc->isDecOrInt128())
+		desc->makeDecimal128();
+	else
+		desc->makeDouble();
 }
 
 void StdDevAggNode::getDesc(thread_db* tdbb, CompilerScratch* csb, dsc* desc)
 {
-	desc->makeDouble();
+	arg->getDesc(tdbb, csb, desc);
+
+	if (desc->isDecOrInt128())
+	{
+		desc->makeDecimal128();
+		nodFlags |= FLAG_DECFLOAT;
+	}
+	else
+	{
+		desc->makeDouble();
+		nodFlags |= FLAG_DOUBLE;
+	}
 }
 
 ValueExprNode* StdDevAggNode::copy(thread_db* tdbb, NodeCopier& copier) const
@@ -1300,7 +1414,7 @@ AggNode* StdDevAggNode::pass2(thread_db* tdbb, CompilerScratch* csb)
 {
 	AggNode::pass2(tdbb, csb);
 
-	impure2Offset = CMP_impure(csb, sizeof(StdDevImpure));
+	impure2Offset = csb->allocImpure<StdDevImpure>();
 
 	return this;
 }
@@ -1320,10 +1434,18 @@ void StdDevAggNode::aggInit(thread_db* tdbb, jrd_req* request) const
 	AggNode::aggInit(tdbb, request);
 
 	impure_value_ex* impure = request->getImpure<impure_value_ex>(impureOffset);
-	impure->make_double(0);
-
 	StdDevImpure* impure2 = request->getImpure<StdDevImpure>(impure2Offset);
-	impure2->x = impure2->x2 = 0.0;
+
+	if (nodFlags & FLAG_DECFLOAT)
+	{
+		impure->make_decimal128(CDecimal128(0));
+		impure2->dec.x = impure2->dec.x2 = CDecimal128(0);
+	}
+	else
+	{
+		impure->make_double(0);
+		impure2->dbl.x = impure2->dbl.x2 = 0.0;
+	}
 }
 
 void StdDevAggNode::aggPass(thread_db* tdbb, jrd_req* request, dsc* desc) const
@@ -1331,11 +1453,22 @@ void StdDevAggNode::aggPass(thread_db* tdbb, jrd_req* request, dsc* desc) const
 	impure_value_ex* impure = request->getImpure<impure_value_ex>(impureOffset);
 	++impure->vlux_count;
 
-	const double d = MOV_get_double(desc);
-
 	StdDevImpure* impure2 = request->getImpure<StdDevImpure>(impure2Offset);
-	impure2->x += d;
-	impure2->x2 += d * d;
+	if (nodFlags & FLAG_DECFLOAT)
+	{
+		DecimalStatus decSt = tdbb->getAttachment()->att_dec_status;
+		const Decimal128 d = MOV_get_dec128(tdbb, desc);
+
+		impure2->dec.x = impure2->dec.x.add(decSt, d);
+		impure2->dec.x2 = impure2->dec.x2.fma(decSt, d, d);
+	}
+	else
+	{
+		const double d = MOV_get_double(tdbb, desc);
+
+		impure2->dbl.x += d;
+		impure2->dbl.x2 += d * d;
+	}
 }
 
 dsc* StdDevAggNode::aggExecute(thread_db* tdbb, jrd_req* request) const
@@ -1343,6 +1476,12 @@ dsc* StdDevAggNode::aggExecute(thread_db* tdbb, jrd_req* request) const
 	impure_value_ex* impure = request->getImpure<impure_value_ex>(impureOffset);
 	StdDevImpure* impure2 = request->getImpure<StdDevImpure>(impure2Offset);
 	double d;
+	Decimal128 dec;
+
+	DecimalStatus decSt = tdbb->getAttachment()->att_dec_status;
+	Decimal128 cnt;
+	if (nodFlags & FLAG_DECFLOAT)
+		cnt.set(impure->vlux_count, decSt, 0);
 
 	switch (type)
 	{
@@ -1351,11 +1490,25 @@ dsc* StdDevAggNode::aggExecute(thread_db* tdbb, jrd_req* request) const
 			if (impure->vlux_count < 2)
 				return NULL;
 
-			d = (impure2->x2 - impure2->x * impure2->x / impure->vlux_count) /
-				(impure->vlux_count - 1);
+			if (nodFlags & FLAG_DECFLOAT)
+			{
+				Decimal128 cntMinus1;
+				cntMinus1.set(impure->vlux_count - 1, decSt, 0);
+				dec = impure2->dec.x.mul(decSt, impure2->dec.x).div(decSt, cnt);
+				dec = impure2->dec.x2.sub(decSt, dec);
+				dec = dec.div(decSt, cntMinus1);
 
-			if (type == TYPE_STDDEV_SAMP)
-				d = sqrt(d);
+				if (type == TYPE_STDDEV_SAMP)
+					dec = dec.sqrt(decSt);
+			}
+			else
+			{
+				d = (impure2->dbl.x2 - impure2->dbl.x * impure2->dbl.x / impure->vlux_count) /
+					(impure->vlux_count - 1);
+
+				if (type == TYPE_STDDEV_SAMP)
+					d = sqrt(d);
+			}
 			break;
 
 		case TYPE_STDDEV_POP:
@@ -1363,24 +1516,40 @@ dsc* StdDevAggNode::aggExecute(thread_db* tdbb, jrd_req* request) const
 			if (impure->vlux_count == 0)
 				return NULL;
 
-			d = (impure2->x2 - impure2->x * impure2->x / impure->vlux_count) /
-				impure->vlux_count;
+			if (nodFlags & FLAG_DECFLOAT)
+			{
+				dec = impure2->dec.x.mul(decSt, impure2->dec.x).div(decSt, cnt);
+				dec = impure2->dec.x2.sub(decSt, dec);
+				dec = dec.div(decSt, cnt);
 
-			if (type == TYPE_STDDEV_POP)
-				d = sqrt(d);
+				if (type == TYPE_STDDEV_SAMP)
+					dec = dec.sqrt(decSt);
+			}
+			else
+			{
+				d = (impure2->dbl.x2 - impure2->dbl.x * impure2->dbl.x / impure->vlux_count) /
+					impure->vlux_count;
+
+				if (type == TYPE_STDDEV_POP)
+					d = sqrt(d);
+			}
 			break;
 	}
 
 	dsc temp;
-	temp.makeDouble(&d);
-	EVL_make_value(tdbb, &temp, impure);
+	if (nodFlags & FLAG_DECFLOAT)
+		temp.makeDecimal128(&dec);
+	else
+		temp.makeDouble(&d);
 
+	EVL_make_value(tdbb, &temp, impure);
 	return &impure->vlu_desc;
 }
 
 AggNode* StdDevAggNode::dsqlCopy(DsqlCompilerScratch* dsqlScratch) /*const*/
 {
-	return FB_NEW_POOL(getPool()) StdDevAggNode(getPool(), type, doDsqlPass(dsqlScratch, arg));
+	return FB_NEW_POOL(dsqlScratch->getPool()) StdDevAggNode(dsqlScratch->getPool(),
+		type, doDsqlPass(dsqlScratch, arg));
 }
 
 
@@ -1404,7 +1573,6 @@ CorrAggNode::CorrAggNode(MemoryPool& pool, CorrType aType, ValueExprNode* aArg, 
 	  arg2(aArg2),
 	  impure2Offset(0)
 {
-	addChildNode(arg2, arg2);
 }
 
 void CorrAggNode::parseArgs(thread_db* tdbb, CompilerScratch* csb, unsigned /*count*/)
@@ -1415,13 +1583,31 @@ void CorrAggNode::parseArgs(thread_db* tdbb, CompilerScratch* csb, unsigned /*co
 
 void CorrAggNode::make(DsqlCompilerScratch* dsqlScratch, dsc* desc)
 {
-	desc->makeDouble();
-	desc->setNullable(true);
+	DsqlDescMaker::fromNode(dsqlScratch, desc, arg, true);
+
+	if (desc->isNull())
+		return;
+
+	if (desc->isDecOrInt128())
+		desc->makeDecimal128();
+	else
+		desc->makeDouble();
 }
 
 void CorrAggNode::getDesc(thread_db* tdbb, CompilerScratch* csb, dsc* desc)
 {
-	desc->makeDouble();
+	arg->getDesc(tdbb, csb, desc);
+
+	if (desc->isDecOrInt128())
+	{
+		desc->makeDecimal128();
+		nodFlags |= FLAG_DECFLOAT;
+	}
+	else
+	{
+		desc->makeDouble();
+		nodFlags |= FLAG_DOUBLE;
+	}
 }
 
 ValueExprNode* CorrAggNode::copy(thread_db* tdbb, NodeCopier& copier) const
@@ -1437,7 +1623,7 @@ AggNode* CorrAggNode::pass2(thread_db* tdbb, CompilerScratch* csb)
 {
 	AggNode::pass2(tdbb, csb);
 
-	impure2Offset = CMP_impure(csb, sizeof(CorrImpure));
+	impure2Offset = csb->allocImpure<CorrImpure>();
 
 	return this;
 }
@@ -1457,14 +1643,24 @@ void CorrAggNode::aggInit(thread_db* tdbb, jrd_req* request) const
 	AggNode::aggInit(tdbb, request);
 
 	impure_value_ex* impure = request->getImpure<impure_value_ex>(impureOffset);
-	impure->make_double(0);
-
 	CorrImpure* impure2 = request->getImpure<CorrImpure>(impure2Offset);
-	impure2->x = impure2->x2 = impure2->y = impure2->y2 = impure2->xy = 0.0;
+
+	if (nodFlags & FLAG_DECFLOAT)
+	{
+		impure->make_decimal128(CDecimal128(0));
+		impure2->dec.x = impure2->dec.x2 = impure2->dec.y = impure2->dec.y2 = impure2->dec.xy = CDecimal128(0);
+	}
+	else
+	{
+		impure->make_double(0);
+		impure2->dbl.x = impure2->dbl.x2 = impure2->dbl.y = impure2->dbl.y2 = impure2->dbl.xy = 0.0;
+	}
 }
 
 bool CorrAggNode::aggPass(thread_db* tdbb, jrd_req* request) const
 {
+	impure_value_ex* impure = request->getImpure<impure_value_ex>(impureOffset);
+
 	dsc* desc = NULL;
 	dsc* desc2 = NULL;
 
@@ -1476,18 +1672,31 @@ bool CorrAggNode::aggPass(thread_db* tdbb, jrd_req* request) const
 	if (request->req_flags & req_null)
 		return false;
 
-	impure_value_ex* impure = request->getImpure<impure_value_ex>(impureOffset);
 	++impure->vlux_count;
-
-	const double y = MOV_get_double(desc);
-	const double x = MOV_get_double(desc2);
-
 	CorrImpure* impure2 = request->getImpure<CorrImpure>(impure2Offset);
-	impure2->x += x;
-	impure2->x2 += x * x;
-	impure2->y += y;
-	impure2->y2 += y * y;
-	impure2->xy += x * y;
+
+	if (nodFlags & FLAG_DECFLOAT)
+	{
+		const Decimal128 y = MOV_get_dec128(tdbb, desc);
+		const Decimal128 x = MOV_get_dec128(tdbb, desc2);
+
+		DecimalStatus decSt = tdbb->getAttachment()->att_dec_status;
+		impure2->dec.x = impure2->dec.x.add(decSt, x);
+		impure2->dec.x2 = impure2->dec.x2.fma(decSt, x, x);
+		impure2->dec.y = impure2->dec.y.add(decSt, y);
+		impure2->dec.y2 = impure2->dec.y2.fma(decSt, y, y);
+		impure2->dec.xy = impure2->dec.xy.fma(decSt, x, y);
+	}
+	else
+	{
+		const double y = MOV_get_double(tdbb, desc);
+		const double x = MOV_get_double(tdbb, desc2);
+		impure2->dbl.x += x;
+		impure2->dbl.x2 += x * x;
+		impure2->dbl.y += y;
+		impure2->dbl.y2 += y * y;
+		impure2->dbl.xy += x * y;
+	}
 
 	return true;
 }
@@ -1502,19 +1711,43 @@ dsc* CorrAggNode::aggExecute(thread_db* tdbb, jrd_req* request) const
 	impure_value_ex* impure = request->getImpure<impure_value_ex>(impureOffset);
 	CorrImpure* impure2 = request->getImpure<CorrImpure>(impure2Offset);
 	double d;
+	Decimal128 dec;
+
+	DecimalStatus decSt = tdbb->getAttachment()->att_dec_status;
+	Decimal128 cnt;
+	if (nodFlags & FLAG_DECFLOAT)
+		cnt.set(impure->vlux_count, decSt, 0);
 
 	switch (type)
 	{
 		case TYPE_COVAR_SAMP:
 			if (impure->vlux_count < 2)
 				return NULL;
-			d = (impure2->xy - impure2->y * impure2->x / impure->vlux_count) / (impure->vlux_count - 1);
+
+			if (nodFlags & FLAG_DECFLOAT)
+			{
+				Decimal128 cntMinus1;
+				cntMinus1.set(impure->vlux_count - 1, decSt, 0);
+				dec = impure2->dec.x.mul(decSt, impure2->dec.y).div(decSt, cnt);
+				dec = impure2->dec.xy.sub(decSt, dec);
+				dec = dec.div(decSt, cntMinus1);
+			}
+			else
+				d = (impure2->dbl.xy - impure2->dbl.y * impure2->dbl.x / impure->vlux_count) / (impure->vlux_count - 1);
 			break;
 
 		case TYPE_COVAR_POP:
 			if (impure->vlux_count == 0)
 				return NULL;
-			d = (impure2->xy - impure2->y * impure2->x / impure->vlux_count) / impure->vlux_count;
+
+			if (nodFlags & FLAG_DECFLOAT)
+			{
+				dec = impure2->dec.x.mul(decSt, impure2->dec.y).div(decSt, cnt);
+				dec = impure2->dec.xy.sub(decSt, dec);
+				dec = dec.div(decSt, cnt);
+			}
+			else
+				d = (impure2->dbl.xy - impure2->dbl.y * impure2->dbl.x / impure->vlux_count) / impure->vlux_count;
 			break;
 
 		case TYPE_CORR:
@@ -1523,24 +1756,51 @@ dsc* CorrAggNode::aggExecute(thread_db* tdbb, jrd_req* request) const
 			if (impure->vlux_count == 0)
 				return NULL;
 
-			const double covarPop = (impure2->xy - impure2->y * impure2->x / impure->vlux_count) /
-				impure->vlux_count;
-			const double varPopX = (impure2->x2 - impure2->x * impure2->x / impure->vlux_count) /
-				impure->vlux_count;
-			const double varPopY = (impure2->y2 - impure2->y * impure2->y / impure->vlux_count) /
-				impure->vlux_count;
-			const double divisor = sqrt(varPopX) * sqrt(varPopY);
+			if (nodFlags & FLAG_DECFLOAT)
+			{
+				dec = impure2->dec.x.mul(decSt, impure2->dec.y).div(decSt, cnt);
+				dec = impure2->dec.xy.sub(decSt, dec);
+				const Decimal128 covarPop = dec.div(decSt, cnt);
 
-			if (divisor == 0.0)
-				return NULL;
+				dec = impure2->dec.x.mul(decSt, impure2->dec.x).div(decSt, cnt);
+				dec = impure2->dec.x2.sub(decSt, dec);
+				const Decimal128 varPopX = dec.div(decSt, cnt);
 
-			d = covarPop / divisor;
+				dec = impure2->dec.y.mul(decSt, impure2->dec.y).div(decSt, cnt);
+				dec = impure2->dec.y2.sub(decSt, dec);
+				const Decimal128 varPopY = dec.div(decSt, cnt);
+
+				const Decimal128 divisor = varPopX.sqrt(decSt).mul(decSt, varPopY.sqrt(decSt));
+
+				if (divisor.compare(decSt, CDecimal128(0)) == 0)
+					return NULL;
+
+				dec = covarPop.div(decSt, divisor);
+			}
+			else
+			{
+				const double covarPop = (impure2->dbl.xy - impure2->dbl.y * impure2->dbl.x / impure->vlux_count) /
+					impure->vlux_count;
+				const double varPopX = (impure2->dbl.x2 - impure2->dbl.x * impure2->dbl.x / impure->vlux_count) /
+					impure->vlux_count;
+				const double varPopY = (impure2->dbl.y2 - impure2->dbl.y * impure2->dbl.y / impure->vlux_count) /
+					impure->vlux_count;
+				const double divisor = sqrt(varPopX) * sqrt(varPopY);
+
+				if (divisor == 0.0)
+					return NULL;
+
+				d = covarPop / divisor;
+			}
 			break;
 		}
 	}
 
 	dsc temp;
-	temp.makeDouble(&d);
+	if (nodFlags & FLAG_DECFLOAT)
+		temp.makeDecimal128(&dec);
+	else
+		temp.makeDouble(&d);
 
 	EVL_make_value(tdbb, &temp, impure);
 
@@ -1549,7 +1809,7 @@ dsc* CorrAggNode::aggExecute(thread_db* tdbb, jrd_req* request) const
 
 AggNode* CorrAggNode::dsqlCopy(DsqlCompilerScratch* dsqlScratch) /*const*/
 {
-	return FB_NEW_POOL(getPool()) CorrAggNode(getPool(), type,
+	return FB_NEW_POOL(dsqlScratch->getPool()) CorrAggNode(dsqlScratch->getPool(), type,
 		doDsqlPass(dsqlScratch, arg), doDsqlPass(dsqlScratch, arg2));
 }
 
@@ -1589,7 +1849,6 @@ RegrAggNode::RegrAggNode(MemoryPool& pool, RegrType aType, ValueExprNode* aArg, 
 	  arg2(aArg2),
 	  impure2Offset(0)
 {
-	addChildNode(arg2, arg2);
 }
 
 void RegrAggNode::parseArgs(thread_db* tdbb, CompilerScratch* csb, unsigned /*count*/)
@@ -1600,13 +1859,31 @@ void RegrAggNode::parseArgs(thread_db* tdbb, CompilerScratch* csb, unsigned /*co
 
 void RegrAggNode::make(DsqlCompilerScratch* dsqlScratch, dsc* desc)
 {
-	desc->makeDouble();
-	desc->setNullable(true);
+	DsqlDescMaker::fromNode(dsqlScratch, desc, arg, true);
+
+	if (desc->isNull())
+		return;
+
+	if (desc->isDecOrInt128())
+		desc->makeDecimal128();
+	else
+		desc->makeDouble();
 }
 
 void RegrAggNode::getDesc(thread_db* tdbb, CompilerScratch* csb, dsc* desc)
 {
-	desc->makeDouble();
+	arg->getDesc(tdbb, csb, desc);
+
+	if (desc->isDecOrInt128())
+	{
+		desc->makeDecimal128();
+		nodFlags |= FLAG_DECFLOAT;
+	}
+	else
+	{
+		desc->makeDouble();
+		nodFlags |= FLAG_DOUBLE;
+	}
 }
 
 ValueExprNode* RegrAggNode::copy(thread_db* tdbb, NodeCopier& copier) const
@@ -1622,7 +1899,7 @@ AggNode* RegrAggNode::pass2(thread_db* tdbb, CompilerScratch* csb)
 {
 	AggNode::pass2(tdbb, csb);
 
-	impure2Offset = CMP_impure(csb, sizeof(RegrImpure));
+	impure2Offset = csb->allocImpure<RegrImpure>();
 
 	return this;
 }
@@ -1642,14 +1919,24 @@ void RegrAggNode::aggInit(thread_db* tdbb, jrd_req* request) const
 	AggNode::aggInit(tdbb, request);
 
 	impure_value_ex* impure = request->getImpure<impure_value_ex>(impureOffset);
-	impure->make_double(0);
-
 	RegrImpure* impure2 = request->getImpure<RegrImpure>(impure2Offset);
-	impure2->x = impure2->x2 = impure2->y = impure2->y2 = impure2->xy = 0.0;
+
+	if (nodFlags & FLAG_DECFLOAT)
+	{
+		impure->make_decimal128(CDecimal128(0));
+		impure2->dec.x = impure2->dec.x2 = impure2->dec.y = impure2->dec.y2 = impure2->dec.xy = CDecimal128(0);
+	}
+	else
+	{
+		impure->make_double(0);
+		impure2->dbl.x = impure2->dbl.x2 = impure2->dbl.y = impure2->dbl.y2 = impure2->dbl.xy = 0.0;
+	}
 }
 
 bool RegrAggNode::aggPass(thread_db* tdbb, jrd_req* request) const
 {
+	impure_value_ex* impure = request->getImpure<impure_value_ex>(impureOffset);
+
 	dsc* desc = NULL;
 	dsc* desc2 = NULL;
 
@@ -1661,18 +1948,32 @@ bool RegrAggNode::aggPass(thread_db* tdbb, jrd_req* request) const
 	if (request->req_flags & req_null)
 		return false;
 
-	impure_value_ex* impure = request->getImpure<impure_value_ex>(impureOffset);
 	++impure->vlux_count;
-
-	const double y = MOV_get_double(desc);
-	const double x = MOV_get_double(desc2);
-
 	RegrImpure* impure2 = request->getImpure<RegrImpure>(impure2Offset);
-	impure2->x += x;
-	impure2->x2 += x * x;
-	impure2->y += y;
-	impure2->y2 += y * y;
-	impure2->xy += x * y;
+
+	if (nodFlags & FLAG_DECFLOAT)
+	{
+		const Decimal128 y = MOV_get_dec128(tdbb, desc);
+		const Decimal128 x = MOV_get_dec128(tdbb, desc2);
+
+		DecimalStatus decSt = tdbb->getAttachment()->att_dec_status;
+		impure2->dec.x = impure2->dec.x.add(decSt, x);
+		impure2->dec.x2 = impure2->dec.x2.fma(decSt, x, x);
+		impure2->dec.y = impure2->dec.y.add(decSt, y);
+		impure2->dec.y2 = impure2->dec.y2.fma(decSt, y, y);
+		impure2->dec.xy = impure2->dec.xy.fma(decSt, x, y);
+	}
+	else
+	{
+		const double y = MOV_get_double(tdbb, desc);
+		const double x = MOV_get_double(tdbb, desc2);
+
+		impure2->dbl.x += x;
+		impure2->dbl.x2 += x * x;
+		impure2->dbl.y += y;
+		impure2->dbl.y2 += y * y;
+		impure2->dbl.xy += x * y;
+	}
 
 	return true;
 }
@@ -1686,80 +1987,154 @@ dsc* RegrAggNode::aggExecute(thread_db* tdbb, jrd_req* request) const
 {
 	impure_value_ex* impure = request->getImpure<impure_value_ex>(impureOffset);
 	RegrImpure* impure2 = request->getImpure<RegrImpure>(impure2Offset);
+	dsc temp;
 
 	if (impure->vlux_count == 0)
 		return NULL;
 
-	const double varPopX = (impure2->x2 - impure2->x * impure2->x / impure->vlux_count) / impure->vlux_count;
-	const double varPopY = (impure2->y2 - impure2->y * impure2->y / impure->vlux_count) / impure->vlux_count;
-	const double covarPop = (impure2->xy - impure2->y * impure2->x / impure->vlux_count) / impure->vlux_count;
-	const double avgX = impure2->x / impure->vlux_count;
-	const double avgY = impure2->y / impure->vlux_count;
-	const double slope = covarPop / varPopX;
-	const double sq = sqrt(varPopX) * sqrt(varPopY);
-	const double corr = covarPop / sq;
-
-	double d;
-
-	switch (type)
+	if (nodFlags & FLAG_DECFLOAT)
 	{
-		case TYPE_REGR_AVGX:
-			d = avgX;
-			break;
+		DecimalStatus decSt = tdbb->getAttachment()->att_dec_status;
+		Decimal128 cnt;
+		cnt.set(impure->vlux_count, decSt, 0);
+		DecimalStatus safeDivide = decSt;
+		safeDivide.decExtFlag &= ~DEC_Division_by_zero;
 
-		case TYPE_REGR_AVGY:
-			d = avgY;
-			break;
+		const Decimal128 sxx = impure2->dec.x2.sub(decSt, impure2->dec.x.mul(decSt, impure2->dec.x).div(decSt, cnt));
+		const Decimal128 syy = impure2->dec.y2.sub(decSt, impure2->dec.y.mul(decSt, impure2->dec.y).div(decSt, cnt));
+		const Decimal128 sxy = impure2->dec.xy.sub(decSt, impure2->dec.x.mul(decSt, impure2->dec.y).div(decSt, cnt));
+		const Decimal128 varPopX = sxx.div(decSt, cnt);
+		const Decimal128 varPopY = syy.div(decSt, cnt);
+		const Decimal128 covarPop = sxy.div(decSt, cnt);
+		const Decimal128 avgX = impure2->dec.x.div(decSt, cnt);
+		const Decimal128 avgY = impure2->dec.y.div(decSt, cnt);
+		const Decimal128 slope = covarPop.div(safeDivide, varPopX);
+		const Decimal128 sq = varPopX.sqrt(decSt).mul(decSt, varPopY.sqrt(decSt));
+		const Decimal128 corr = covarPop.div(safeDivide, sq);
 
-		case TYPE_REGR_INTERCEPT:
-			if (varPopX == 0.0)
-				return NULL;
-			else
-				d = avgY - slope * avgX;
-			break;
+		Decimal128 d;
 
-		case TYPE_REGR_R2:
-			if (varPopX == 0.0)
-				return NULL;
-			else if (varPopY == 0.0)
-				d = 1.0;
-			else if (sq == 0.0)
-				return NULL;
-			else
-				d = corr * corr;
-			break;
+		switch (type)
+		{
+			case TYPE_REGR_AVGX:
+				d = avgX;
+				break;
 
-		case TYPE_REGR_SLOPE:
-			if (varPopX == 0.0)
-				return NULL;
-			else
-				d = covarPop / varPopX;
-			break;
+			case TYPE_REGR_AVGY:
+				d = avgY;
+				break;
 
-		case TYPE_REGR_SXX:
-			d = impure->vlux_count * varPopX;
-			break;
+			case TYPE_REGR_INTERCEPT:
+				if (varPopX.compare(decSt, CDecimal128(0)) == 0)
+					return NULL;
+				else
+					d = avgY.sub(decSt, slope.mul(decSt, avgX));
+				break;
 
-		case TYPE_REGR_SXY:
-			d = impure->vlux_count * covarPop;
-			break;
+			case TYPE_REGR_R2:
+				if (varPopX.compare(decSt, CDecimal128(0)) == 0)
+					return NULL;
+				else if (varPopY.compare(decSt, CDecimal128(0)) == 0)
+					d.set(1, decSt, 0);
+				else if (sq.compare(decSt, CDecimal128(0)) == 0)
+					return NULL;
+				else
+					d = corr.mul(decSt, corr);
+				break;
 
-		case TYPE_REGR_SYY:
-			d = impure->vlux_count * varPopY;
-			break;
+			case TYPE_REGR_SLOPE:
+				if (varPopX.compare(decSt, CDecimal128(0)) == 0)
+					return NULL;
+				else
+					d = slope;
+				break;
+
+			case TYPE_REGR_SXX:
+				d = sxx;
+				break;
+
+			case TYPE_REGR_SXY:
+				d = sxy;
+				break;
+
+			case TYPE_REGR_SYY:
+				d = syy;
+				break;
+		}
+
+		temp.makeDecimal128(&d);
+	}
+	else
+	{
+		const double varPopX = (impure2->dbl.x2 - impure2->dbl.x * impure2->dbl.x / impure->vlux_count) / impure->vlux_count;
+		const double varPopY = (impure2->dbl.y2 - impure2->dbl.y * impure2->dbl.y / impure->vlux_count) / impure->vlux_count;
+		const double covarPop = (impure2->dbl.xy - impure2->dbl.y * impure2->dbl.x / impure->vlux_count) / impure->vlux_count;
+		const double avgX = impure2->dbl.x / impure->vlux_count;
+		const double avgY = impure2->dbl.y / impure->vlux_count;
+		const double slope = covarPop / varPopX;
+		const double sq = sqrt(varPopX) * sqrt(varPopY);
+		const double corr = covarPop / sq;
+
+		double d;
+
+		switch (type)
+		{
+			case TYPE_REGR_AVGX:
+				d = avgX;
+				break;
+
+			case TYPE_REGR_AVGY:
+				d = avgY;
+				break;
+
+			case TYPE_REGR_INTERCEPT:
+				if (varPopX == 0.0)
+					return NULL;
+				else
+					d = avgY - slope * avgX;
+				break;
+
+			case TYPE_REGR_R2:
+				if (varPopX == 0.0)
+					return NULL;
+				else if (varPopY == 0.0)
+					d = 1.0;
+				else if (sq == 0.0)
+					return NULL;
+				else
+					d = corr * corr;
+				break;
+
+			case TYPE_REGR_SLOPE:
+				if (varPopX == 0.0)
+					return NULL;
+				else
+					d = covarPop / varPopX;
+				break;
+
+			case TYPE_REGR_SXX:
+				d = impure->vlux_count * varPopX;
+				break;
+
+			case TYPE_REGR_SXY:
+				d = impure->vlux_count * covarPop;
+				break;
+
+			case TYPE_REGR_SYY:
+				d = impure->vlux_count * varPopY;
+				break;
+		}
+
+		temp.makeDouble(&d);
 	}
 
-	dsc temp;
-	temp.makeDouble(&d);
-
 	EVL_make_value(tdbb, &temp, impure);
-
 	return &impure->vlu_desc;
 }
 
 AggNode* RegrAggNode::dsqlCopy(DsqlCompilerScratch* dsqlScratch) /*const*/
 {
-	return FB_NEW_POOL(getPool()) RegrAggNode(getPool(), type,
+	return FB_NEW_POOL(dsqlScratch->getPool()) RegrAggNode(dsqlScratch->getPool(), type,
 		doDsqlPass(dsqlScratch, arg), doDsqlPass(dsqlScratch, arg2));
 }
 
@@ -1773,7 +2148,6 @@ RegrCountAggNode::RegrCountAggNode(MemoryPool& pool, ValueExprNode* aArg, ValueE
 	: AggNode(pool, regrCountAggInfo, false, false, aArg),
 	  arg2(aArg2)
 {
-	addChildNode(arg2, arg2);
 }
 
 void RegrCountAggNode::parseArgs(thread_db* tdbb, CompilerScratch* csb, unsigned /*count*/)
@@ -1820,6 +2194,8 @@ void RegrCountAggNode::aggInit(thread_db* tdbb, jrd_req* request) const
 
 bool RegrCountAggNode::aggPass(thread_db* tdbb, jrd_req* request) const
 {
+	impure_value_ex* impure = request->getImpure<impure_value_ex>(impureOffset);
+
 	dsc* desc = EVL_expr(tdbb, request, arg);
 	if (request->req_flags & req_null)
 		return false;
@@ -1828,7 +2204,6 @@ bool RegrCountAggNode::aggPass(thread_db* tdbb, jrd_req* request) const
 	if (request->req_flags & req_null)
 		return false;
 
-	impure_value_ex* impure = request->getImpure<impure_value_ex>(impureOffset);
 	++impure->vlu_misc.vlu_int64;
 
 	return true;
@@ -1851,7 +2226,7 @@ dsc* RegrCountAggNode::aggExecute(thread_db* tdbb, jrd_req* request) const
 
 AggNode* RegrCountAggNode::dsqlCopy(DsqlCompilerScratch* dsqlScratch) /*const*/
 {
-	return FB_NEW_POOL(getPool()) RegrCountAggNode(getPool(),
+	return FB_NEW_POOL(dsqlScratch->getPool()) RegrCountAggNode(dsqlScratch->getPool(),
 		doDsqlPass(dsqlScratch, arg), doDsqlPass(dsqlScratch, arg2));
 }
 

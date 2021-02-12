@@ -34,9 +34,17 @@
 #include <sys/timeb.h>
 #endif
 
+#ifdef WIN_NT
+#include <windows.h>
+#endif
+
 #include "../common/classes/NoThrowTimeStamp.h"
 
 namespace Firebird {
+
+const ISC_TIMESTAMP NoThrowTimeStamp::MIN_TIMESTAMP = {NoThrowTimeStamp::MIN_DATE, 0};
+const ISC_TIMESTAMP NoThrowTimeStamp::MAX_TIMESTAMP =
+	{NoThrowTimeStamp::MAX_DATE, NoThrowTimeStamp::ISC_TICKS_PER_DAY - 1};
 
 const ISC_TIME NoThrowTimeStamp::POW_10_TABLE[] =
 	{1, 10, 100, 1000, 10000, 100000, 1000000, 10000000, 100000000, 1000000000};
@@ -53,8 +61,29 @@ NoThrowTimeStamp NoThrowTimeStamp::getCurrentTimeStamp(const char** error) throw
 	// is going to to be somewhere in range between 1 ms (like on UNIX/Risc)
 	// and 53 ms (such as Win9X)
 
-	time_t seconds; // UTC time
 	int milliseconds;
+
+#ifdef WIN_NT
+	FILETIME ftUtc, ftLocal;
+	SYSTEMTIME stLocal;
+
+	GetSystemTimeAsFileTime(&ftUtc);
+	if (!FileTimeToLocalFileTime(&ftUtc, &ftLocal))
+	{
+		if (error)
+			*error = "FileTimeToLocalFileTime";
+		return result;
+	}
+	if (!FileTimeToSystemTime(&ftLocal, &stLocal))
+	{
+		if (error)
+			*error = "FileTimeToSystemTime";
+		return result;
+	}
+
+	milliseconds = stLocal.wMilliseconds;
+#else
+	time_t seconds; // UTC time
 
 #ifdef HAVE_GETTIMEOFDAY
 	struct timeval tp;
@@ -67,6 +96,7 @@ NoThrowTimeStamp NoThrowTimeStamp::getCurrentTimeStamp(const char** error) throw
 	seconds = time_buffer.time;
 	milliseconds = time_buffer.millitm;
 #endif
+#endif // WIN_NT
 
 	// NS: Current FB behavior of using server time zone is not appropriate for
 	// distributed applications. We should be storing UTC times everywhere and
@@ -78,28 +108,43 @@ NoThrowTimeStamp NoThrowTimeStamp::getCurrentTimeStamp(const char** error) throw
 
 	const int fractions = milliseconds * ISC_TIME_SECONDS_PRECISION / 1000;
 
+#ifdef WIN_NT
+	// Manually convert SYSTEMTIME to "struct tm" used below
+
+	struct tm times, *ptimes = &times;
+
+	times.tm_sec = stLocal.wSecond;			// seconds after the minute - [0,59]
+	times.tm_min = stLocal.wMinute;			// minutes after the hour - [0,59]
+	times.tm_hour = stLocal.wHour;			// hours since midnight - [0,23]
+	times.tm_mday = stLocal.wDay;			// day of the month - [1,31]
+	times.tm_mon = stLocal.wMonth - 1;		// months since January - [0,11]
+	times.tm_year = stLocal.wYear - 1900;	// years since 1900
+	times.tm_wday = stLocal.wDayOfWeek;		// days since Sunday - [0,6]
+
+	// --- no used for encoding below
+	times.tm_yday = 0;						// days since January 1 - [0,365]
+	times.tm_isdst = -1;					// daylight savings time flag
+#else
 #ifdef HAVE_LOCALTIME_R
-	struct tm times;
+	struct tm times, *ptimes = &times;
 	if (!localtime_r(&seconds, &times))
 	{
 		if (error)
 			*error = "localtime_r";
 		return result;
 	}
-
-	result.encode(&times, fractions);
 #else
-	struct tm *times = localtime(&seconds);
-	if (!times)
+	struct tm *ptimes = localtime(&seconds);
+	if (!ptimes)
 	{
 		if (error)
 			*error = "localtime";
 		return result;
 	}
-
-	result.encode(times, fractions);
 #endif
+#endif // WIN_NT
 
+	result.encode(ptimes, fractions);
 	return result;
 }
 
@@ -121,7 +166,7 @@ int NoThrowTimeStamp::yday(const struct tm* times) throw()
 	if (month < 2)
 		return day;
 
-	if (year % 4 == 0 && year % 100 != 0 || year % 400 == 0)
+	if ((year % 4 == 0 && year % 100 != 0) || year % 400 == 0)
 		--day;
 	else
 		day -= 2;
@@ -250,6 +295,28 @@ ISC_TIMESTAMP NoThrowTimeStamp::encode_timestamp(const struct tm* times, const i
 	ts.timestamp_time = encode_time(times->tm_hour, times->tm_min, times->tm_sec, fractions);
 
 	return ts;
+}
+
+void NoThrowTimeStamp::add10msec(ISC_TIMESTAMP* v, SINT64 msec, SINT64 multiplier)
+{
+	const SINT64 full = msec * multiplier;
+	const int days = full / (SECONDS_PER_DAY * ISC_TIME_SECONDS_PRECISION);
+	const int secs = full % (SECONDS_PER_DAY * ISC_TIME_SECONDS_PRECISION);
+
+	v->timestamp_date += days;
+
+	// Time portion is unsigned, so we avoid unsigned rolling over negative values
+	// that only produce a new unsigned number with the wrong result.
+	if (secs < 0 && ISC_TIME(-secs) > v->timestamp_time)
+	{
+		v->timestamp_date--;
+		v->timestamp_time += (SECONDS_PER_DAY * ISC_TIME_SECONDS_PRECISION) + secs;
+	}
+	else if ((v->timestamp_time += secs) >= (SECONDS_PER_DAY * ISC_TIME_SECONDS_PRECISION))
+	{
+		v->timestamp_date++;
+		v->timestamp_time -= (SECONDS_PER_DAY * ISC_TIME_SECONDS_PRECISION);
+	}
 }
 
 void NoThrowTimeStamp::round_time(ISC_TIME &ntime, const int precision)

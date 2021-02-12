@@ -34,7 +34,9 @@
 #define ISQL_ISQL_H
 
 #include "../jrd/flags.h"
+#include "../jrd/constants.h"
 #include <stdlib.h>
+#include <firebird/Interface.h>
 
 // Define lengths used in isql.e
 
@@ -85,9 +87,16 @@ enum LegacyTables
 	ALL_objects
 };
 
-const size_t WORDLENGTH				= 32;
-// The worst case of a quoted identifier is 31 * 2 => 62 + 2 DQUOTES + TERM => 65.
-const size_t QUOTEDLENGTH			= 65;
+const size_t QUOTED_NAME_SIZE		= MAX_SQL_IDENTIFIER_SIZE + 2 /* quotes */;
+
+const size_t CHARSET_COLLATE_SIZE	=
+	(MAX_SQL_IDENTIFIER_LEN + 2 /* quotes */) * 2 +	// charset and collate names
+	14 +	// CHARACTER SET
+	9 +		// NOT NULL
+	8 +		// COLLATE
+	30 +	// extra space
+	1;		// null terminator
+
 static const char* const DEFTERM	= ";";
 static const char* const DEFCHARSET	= "NONE";
 const unsigned NULL_DISP_LEN		= 6;
@@ -139,7 +148,7 @@ const int HLP_QUIT					= 40;		// QUIT -- Exit program and rollback changes\n\n
 const int HLP_ALL					= 41;		// All commands may be abbreviated to letters in CAPs\n
 const int HLP_SETSCHEMA				= 42;		// \tSET SCHema/DB <db name> -- changes current database\n
 const int YES_ANS					= 43;		// Yes
-const int REPORT1					= 44;		// Current memory = !c\nDelta memory = !d\nMax memory = !x\nElapsed time= !e sec\n
+const int REPORT1					= 44;		// Current memory = !c\nDelta memory = !d\nMax memory = !x\nElapsed time = !e sec\n
 #if (defined WIN_NT)
 const int REPORT2					= 93;		// Buffers = !b\nReads = !r\nWrites = !w\nFetches = !f\n
 #else
@@ -254,7 +263,7 @@ const int NO_GRANT_ON_CS			= 177;		// There is no privilege granted on character
 const int NO_GRANT_ON_COLL			= 178;		// There is no privilege granted on collation @1 in this database
 const int NO_GRANT_ON_PKG			= 179;		// There is no privilege granted on package @1 in this database
 const int NO_GRANT_ON_FUN			= 180;		// There is no privilege granted on function @1 in this database
-const int REPORT_NEW1				= 181;		// Current memory = !\nDelta memory = !\nMax memory = !\nElapsed time= ~ sec\n
+const int REPORT_NEW1				= 181;		// Current memory = !\nDelta memory = !\nMax memory = !\nElapsed time = ~ sec\n
 const int REPORT_NEW2				= 182;		// Cpu = ~ sec\n (skipped on windows)
 const int REPORT_NEW3				= 183;		// Buffers = !\nReads = !\nWrites = !\nFetches = !\n
 const int NO_MAP					= 184;		// There is no mapping from @1 in this database
@@ -265,6 +274,8 @@ const int NUMBER_FREE_PAGES			= 191;		// Number of free DB pages = @1
 const int DATABASE_CRYPTED			= 192;		// DB encrypted
 const int DATABASE_NOT_CRYPTED		= 193;		// DB not encrypted
 const int DATABASE_CRYPT_PROCESS	= 194;		// crypt thread not complete
+const int MSG_ROLES					= 195;		// Roles:
+const int NO_TIMEOUTS				= 196;		// Timeouts are not supported by server
 
 
 // Initialize types
@@ -272,44 +283,32 @@ const int DATABASE_CRYPT_PROCESS	= 194;		// crypt thread not complete
 struct sqltypes
 {
 	int type;
-	SCHAR type_name[WORDLENGTH];
+	SCHAR type_name[QUOTED_NAME_SIZE];
 };
 
-//
-// Use T_FLOAT and T_CHAR to avoid collisions with windows defines
-//
-const int SMALLINT		= 7;
-const int INTEGER		= 8;
-const int QUAD			= 9;
-const int T_FLOAT		= 10;
-const int T_CHAR		= 14;
-const int DOUBLE_PRECISION = 27;
-const int DATE			= 35;
-const int VARCHAR		= 37;
-const int CSTRING		= 40;
-const int BLOB_ID		= 45;
-const int BLOB			= 261;
-//const int SQL_DATE	= 12;
-//const int SQL_TIME	= 13;
-const int BIGINT		= 16;
-const int BOOLEAN_TYPE	= 23;
-
 static const sqltypes Column_types[] = {
-	{SMALLINT, "SMALLINT"},		// keyword
-	{INTEGER, "INTEGER"},		// keyword
-	{QUAD, "QUAD"},				// keyword
-	{T_FLOAT, "FLOAT"},			// keyword
-	{T_CHAR, "CHAR"},			// keyword
-	{DOUBLE_PRECISION, "DOUBLE PRECISION"},	// keyword
-	{VARCHAR, "VARCHAR"},		// keyword
-	{CSTRING, "CSTRING"},		// keyword
-	{BLOB_ID, "BLOB_ID"},		// keyword
-	{BLOB, "BLOB"},				// keyword
-	{blr_sql_time, "TIME"},		// keyword
-	{blr_sql_date, "DATE"},		// keyword
-	{blr_timestamp, "TIMESTAMP"},	// keyword
-	{BIGINT, "BIGINT"},			// keyword
-	{BOOLEAN_TYPE, "BOOLEAN"},	// keyword
+	{blr_short, "SMALLINT"},
+	{blr_long, "INTEGER"},
+	{blr_quad, "QUAD"},
+	{blr_float, "FLOAT"},
+	{blr_text, "CHAR"},
+	{blr_double, "DOUBLE PRECISION"},
+	{blr_varying, "VARCHAR"},
+	{blr_cstring, "CSTRING"},
+	{blr_blob_id, "BLOB_ID"},
+	{blr_blob, "BLOB"},
+	{blr_sql_time, "TIME"},
+	{blr_sql_date, "DATE"},
+	{blr_timestamp, "TIMESTAMP"},
+	{blr_int64, "BIGINT"},
+	{blr_bool, "BOOLEAN"},
+	{blr_dec64, "DECFLOAT(16)"},
+	{blr_dec128, "DECFLOAT(34)"},
+	{blr_int128, "INT128"},
+	{blr_sql_time_tz, "TIME WITH TIME ZONE"},
+	{blr_timestamp_tz, "TIMESTAMP WITH TIME ZONE"},
+	{blr_ex_time_tz, "TIME WITH TIME ZONE"},
+	{blr_ex_timestamp_tz, "TIMESTAMP WITH TIME ZONE"},
 	{0, ""}
 };
 
@@ -321,6 +320,24 @@ static const SCHAR* Integral_subtypes[] = {
 	"UNKNOWN",					// Defined type, keyword
 	"NUMERIC",					// NUMERIC, keyword
 	"DECIMAL"					// DECIMAL, keyword
+};
+
+// Text subtypes
+
+const int MAX_TEXTSUBTYPES = 1;
+
+static const SCHAR* Text_subtypes[] = {
+	"CHAR",
+	"BINARY"
+};
+
+// Varying subtypes
+
+const int MAX_VARYINGSUBTYPES = 1;
+
+static const SCHAR* Varying_subtypes[] = {
+	"VARCHAR",
+	"VARBINARY"
 };
 
 // Blob subtypes
@@ -378,8 +395,13 @@ public:
 	USHORT major_ods;
 	USHORT minor_ods;
 	USHORT att_charset;
+	Firebird::IDecFloat16* df16;
+	Firebird::IDecFloat34* df34;
+	Firebird::IInt128* i128;
 	void printf(const char* buffer, ...);
 	void prints(const char* buffer);
+
+	IsqlGlobals();
 };
 
 extern IsqlGlobals isqlGlob;
@@ -422,7 +444,11 @@ struct IsqlVar
 	union TypeMix
 	{
 		ISC_TIMESTAMP* asDateTime;
+		ISC_TIMESTAMP_TZ* asDateTimeTz;
+		ISC_TIMESTAMP_TZ_EX* asDateTimeTzEx;
 		ISC_TIME* asTime;
+		ISC_TIME_TZ* asTimeTz;
+		ISC_TIME_TZ_EX* asTimeTzEx;
 		ISC_DATE* asDate;
 		SSHORT* asSmallint;
 		SLONG* asInteger;
@@ -433,6 +459,9 @@ struct IsqlVar
 		ISC_QUAD* blobid;
 		vary* asVary;
 		char* asChar;
+		FB_DEC16* asDec16;
+		FB_DEC34* asDec34;
+		FB_I128* asInt128;
 		void* setPtr;
 	};
 	TypeMix value;

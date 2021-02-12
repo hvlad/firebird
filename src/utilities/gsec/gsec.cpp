@@ -28,7 +28,7 @@
 #include <string.h>
 #include <errno.h>
 #include <stdarg.h>
-#include "../jrd/ibase.h"
+#include "ibase.h"
 #include "../yvalve/gds_proto.h"
 #include "../common/msg_encode.h"
 #include "../common/isc_f_proto.h"
@@ -188,6 +188,16 @@ namespace {
 		{
 			*length = authLength;
 			return authBytes;
+		}
+
+		Firebird::IAttachment* attachment(Firebird::CheckStatusWrapper* status)
+		{
+			return nullptr;
+		}
+
+		Firebird::ITransaction* transaction(Firebird::CheckStatusWrapper* status)
+		{
+			return nullptr;
 		}
 
 	private:
@@ -379,7 +389,7 @@ int gsec(Firebird::UtilSvc* uSvc)
 	}
 	else
 	{
-		const Firebird::RefPtr<Config> defConf(Config::getDefaultConfig());
+		const Firebird::RefPtr<const Firebird::Config> defConf(Firebird::Config::getDefaultConfig());
 		databaseName = defConf->getSecurityDatabase();
 	}
 
@@ -409,14 +419,14 @@ int gsec(Firebird::UtilSvc* uSvc)
 	user_data->database.set(&statusWrapper, databaseName.c_str());
 	check(&statusWrapper);
 
-	Firebird::RefPtr<Firebird::IManagement> manager;
+	Firebird::AutoPlugin<Firebird::IManagement> manager;
 	ISC_STATUS_ARRAY status;
 
 	if (!useServices)
 	{
 		// Get remote address info for management plugin
 		Firebird::string network_protocol, remote_address;
-		Firebird::ClumpletWriter tmp(Firebird::ClumpletReader::Tagged, MAX_DPB_SIZE, isc_dpb_version1);
+		Firebird::ClumpletWriter tmp(Firebird::ClumpletReader::dpbList, MAX_DPB_SIZE);
 		uSvc->fillDpb(tmp);
 
 		if (tmp.find(isc_dpb_address_path))
@@ -460,8 +470,8 @@ int gsec(Firebird::UtilSvc* uSvc)
 		Firebird::string databaseText;
 		databaseText.printf("SecurityDatabase = %s\n", databaseName.c_str());
 		ConfigFile gsecDatabase(ConfigFile::USE_TEXT, databaseText.c_str());
-		Firebird::RefPtr<Config> defaultConfig(Config::getDefaultConfig());
-		Firebird::RefPtr<Config> pseudoConfig(FB_NEW Config(gsecDatabase, *defaultConfig));
+		Firebird::RefPtr<const Firebird::Config> defaultConfig(Firebird::Config::getDefaultConfig());
+		Firebird::RefPtr<const Firebird::Config> pseudoConfig(FB_NEW Firebird::Config(gsecDatabase, "<gsec DPB>", *defaultConfig));
 
 		uSvc->checkService();
 
@@ -472,16 +482,17 @@ int gsec(Firebird::UtilSvc* uSvc)
 			try
 			{
 				Get getPlugin(pseudoConfig);
-				manager = getPlugin.plugin();
+				manager.reset(getPlugin.plugin());
 				if (!manager)
 				{
-					GSEC_error_redirect((Firebird::Arg::Gds(isc_random) <<
-						"Management plugin is missing or failed to load").value(), GsecMsg15);
+					GSEC_error_redirect(Firebird::Arg::Gds(isc_user_manager).value(), GsecMsg15);
 				}
 
 				GsecInfo info(user_data->dba.get(), user_data->role.get(),
 							  network_protocol.c_str(), remote_address.c_str(), &user_data->authenticationBlock);
 				manager->start(&statusManager, &info);
+				check(&statusManager);
+				manager->addRef();
 			}
 			catch (const Firebird::Exception& ex)
 			{

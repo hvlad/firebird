@@ -23,6 +23,7 @@
 #include "firebird.h"
 #include "../jrd/Relation.h"
 
+#include "../jrd/met.h"
 #include "../jrd/tra.h"
 #include "../jrd/btr_proto.h"
 #include "../jrd/dpm_proto.h"
@@ -36,6 +37,21 @@ using namespace Jrd;
 
 /// jrd_rel
 
+bool jrd_rel::isReplicating(thread_db* tdbb)
+{
+	Database* const dbb = tdbb->getDatabase();
+	if (!dbb->isReplicating(tdbb))
+		return false;
+
+	Attachment* const attachment = tdbb->getAttachment();
+	attachment->checkReplSetLock(tdbb);
+
+	if (rel_repl_state.isUnknown())
+		rel_repl_state = MET_get_repl_state(tdbb, rel_name);
+
+	return rel_repl_state.value;
+}
+
 RelationPages* jrd_rel::getPagesInternal(thread_db* tdbb, TraNumber tran, bool allocPages)
 {
 	if (tdbb->tdbb_flags & TDBB_use_db_page_space)
@@ -44,14 +60,11 @@ RelationPages* jrd_rel::getPagesInternal(thread_db* tdbb, TraNumber tran, bool a
 	Jrd::Attachment* attachment = tdbb->getAttachment();
 	Database* dbb = tdbb->getDatabase();
 
-	SINT64 inst_id;
-	// Vlad asked for this compile-time check to make sure we can contain a txn number here
-	typedef int RangeCheck1[sizeof(inst_id) >= sizeof(TraNumber)];
-	typedef int RangeCheck2[sizeof(inst_id) >= sizeof(AttNumber)];
+	RelationPages::InstanceId inst_id;
 
 	if (rel_flags & REL_temp_tran)
 	{
-		if (tran > 0 && tran != MAX_TRA_NUMBER) //if (tran > 0)
+		if (tran != 0 && tran != MAX_TRA_NUMBER)
 			inst_id = tran;
 		else if (tdbb->tdbb_temp_traid)
 			inst_id = tdbb->tdbb_temp_traid;
@@ -73,16 +86,8 @@ RelationPages* jrd_rel::getPagesInternal(thread_db* tdbb, TraNumber tran, bool a
 			return 0;
 
 		RelationPages* newPages = rel_pages_free;
-		if (!newPages)
-		{
-			const size_t BULK_ALLOC = 8;
-
-			RelationPages* allocatedPages = newPages =
-				FB_NEW_POOL(*rel_pool) RelationPages[BULK_ALLOC];
-
-			rel_pages_free = ++allocatedPages;
-			for (size_t i = 1; i < BULK_ALLOC - 1; i++, allocatedPages++)
-				allocatedPages->rel_next_free = allocatedPages + 1;
+		if (!newPages) {
+			newPages = FB_NEW_POOL(*rel_pool) RelationPages(*rel_pool);
 		}
 		else
 		{
@@ -102,7 +107,8 @@ RelationPages* jrd_rel::getPagesInternal(thread_db* tdbb, TraNumber tran, bool a
 
 #ifdef VIO_DEBUG
 		VIO_trace(DEBUG_WRITES,
-			"jrd_rel::getPages inst %" ULONGFORMAT", ppp %" SLONGFORMAT", irp %" SLONGFORMAT", addr 0x%x\n",
+			"jrd_rel::getPages rel_id %u, inst %" UQUADFORMAT", ppp %" ULONGFORMAT", irp %" ULONGFORMAT", addr 0x%x\n",
+			rel_id,
 			newPages->rel_instance_id,
 			newPages->rel_pages ? (*newPages->rel_pages)[0] : 0,
 			newPages->rel_index_root,
@@ -128,7 +134,7 @@ RelationPages* jrd_rel::getPagesInternal(thread_db* tdbb, TraNumber tran, bool a
 		const index_desc* const end = indices->items + idx_count;
 		for (index_desc* idx = indices->items; idx < end; idx++)
 		{
-			Firebird::MetaName idx_name;
+			MetaName idx_name;
 			MET_lookup_index(tdbb, idx_name, this->rel_name, idx->idx_id + 1);
 
 			idx->idx_root = 0;
@@ -137,7 +143,8 @@ RelationPages* jrd_rel::getPagesInternal(thread_db* tdbb, TraNumber tran, bool a
 
 #ifdef VIO_DEBUG
 			VIO_trace(DEBUG_WRITES,
-				"jrd_rel::getPages inst %" SQUADFORMAT", irp %" SLONGFORMAT", idx %u, idx_root %" SLONGFORMAT", addr 0x%x\n",
+				"jrd_rel::getPages rel_id %u, inst %" UQUADFORMAT", irp %" ULONGFORMAT", idx %u, idx_root %" ULONGFORMAT", addr 0x%x\n",
+				rel_id,
 				newPages->rel_instance_id,
 				newPages->rel_index_root,
 				idx->idx_id,
@@ -164,9 +171,7 @@ bool jrd_rel::delPages(thread_db* tdbb, TraNumber tran, RelationPages* aPages)
 	if (!pages || !pages->rel_instance_id)
 		return false;
 
-	//fb_assert((tran <= 0) || ((tran > 0) && (pages->rel_instance_id == tran)));
-	fb_assert(tran == 0 || tran == MAX_TRA_NUMBER ||
-		(tran > 0 && pages->rel_instance_id == tran));
+	fb_assert(tran == 0 || tran == MAX_TRA_NUMBER || pages->rel_instance_id == tran);
 
 	fb_assert(pages->useCount > 0);
 
@@ -175,7 +180,8 @@ bool jrd_rel::delPages(thread_db* tdbb, TraNumber tran, RelationPages* aPages)
 
 #ifdef VIO_DEBUG
 	VIO_trace(DEBUG_WRITES,
-		"jrd_rel::delPages inst %" ULONGFORMAT", ppp %" SLONGFORMAT", irp %" SLONGFORMAT", addr 0x%x\n",
+		"jrd_rel::delPages rel_id %u, inst %" UQUADFORMAT", ppp %" ULONGFORMAT", irp %" ULONGFORMAT", addr 0x%x\n",
+		rel_id,
 		pages->rel_instance_id,
 		pages->rel_pages ? (*pages->rel_pages)[0] : 0,
 		pages->rel_index_root,
@@ -201,14 +207,34 @@ bool jrd_rel::delPages(thread_db* tdbb, TraNumber tran, RelationPages* aPages)
 	return true;
 }
 
+void jrd_rel::retainPages(thread_db* tdbb, TraNumber oldNumber, TraNumber newNumber)
+{
+	fb_assert(rel_flags & REL_temp_tran);
+	fb_assert(oldNumber != 0);
+	fb_assert(newNumber != 0);
+
+	SINT64 inst_id = oldNumber;
+	FB_SIZE_T pos;
+	if (!rel_pages_inst->find(oldNumber, pos))
+		return;
+
+	RelationPages* pages = (*rel_pages_inst)[pos];
+	fb_assert(pages->rel_instance_id == oldNumber);
+
+	rel_pages_inst->remove(pos);
+
+	pages->rel_instance_id = newNumber;
+	rel_pages_inst->add(pages);
+}
+
 void jrd_rel::getRelLockKey(thread_db* tdbb, UCHAR* key)
 {
 	const ULONG val = rel_id;
 	memcpy(key, &val, sizeof(ULONG));
 	key += sizeof(ULONG);
 
-	const SINT64 inst_id = getPages(tdbb)->rel_instance_id;
-	memcpy(key, &inst_id, sizeof(SINT64));
+	const RelationPages::InstanceId inst_id = getPages(tdbb)->rel_instance_id;
+	memcpy(key, &inst_id, sizeof(inst_id));
 }
 
 USHORT jrd_rel::getRelLockKeyLength() const
@@ -281,7 +307,7 @@ void jrd_rel::RelPagesSnapshot::clear()
 
 bool jrd_rel::hasTriggers() const
 {
-	typedef const trig_vec* ctv;
+	typedef const TrigVector* ctv;
 	ctv trigs[6] = // non-const array, don't want optimization tricks by the compiler.
 	{
 		rel_pre_erase,
@@ -300,6 +326,45 @@ bool jrd_rel::hasTriggers() const
 	return false;
 }
 
+void jrd_rel::releaseTriggers(thread_db* tdbb, bool destroy)
+{
+	MET_release_triggers(tdbb, &rel_pre_store, destroy);
+	MET_release_triggers(tdbb, &rel_post_store, destroy);
+	MET_release_triggers(tdbb, &rel_pre_erase, destroy);
+	MET_release_triggers(tdbb, &rel_post_erase, destroy);
+	MET_release_triggers(tdbb, &rel_pre_modify, destroy);
+	MET_release_triggers(tdbb, &rel_post_modify, destroy);
+}
+
+void jrd_rel::replaceTriggers(thread_db* tdbb, TrigVector** triggers)
+{
+	TrigVector* tmp_vector;
+
+	tmp_vector = rel_pre_store;
+	rel_pre_store = triggers[TRIGGER_PRE_STORE];
+	MET_release_triggers(tdbb, &tmp_vector, true);
+
+	tmp_vector = rel_post_store;
+	rel_post_store = triggers[TRIGGER_POST_STORE];
+	MET_release_triggers(tdbb, &tmp_vector, true);
+
+	tmp_vector = rel_pre_erase;
+	rel_pre_erase = triggers[TRIGGER_PRE_ERASE];
+	MET_release_triggers(tdbb, &tmp_vector, true);
+
+	tmp_vector = rel_post_erase;
+	rel_post_erase = triggers[TRIGGER_POST_ERASE];
+	MET_release_triggers(tdbb, &tmp_vector, true);
+
+	tmp_vector = rel_pre_modify;
+	rel_pre_modify = triggers[TRIGGER_PRE_MODIFY];
+	MET_release_triggers(tdbb, &tmp_vector, true);
+
+	tmp_vector = rel_post_modify;
+	rel_post_modify = triggers[TRIGGER_POST_MODIFY];
+	MET_release_triggers(tdbb, &tmp_vector, true);
+}
+
 Lock* jrd_rel::createLock(thread_db* tdbb, MemoryPool* pool, jrd_rel* relation, lck_t lckType, bool noAst)
 {
 	if (!pool)
@@ -308,7 +373,7 @@ Lock* jrd_rel::createLock(thread_db* tdbb, MemoryPool* pool, jrd_rel* relation, 
 	const USHORT relLockLen = relation->getRelLockKeyLength();
 
 	Lock* lock = FB_NEW_RPT(*pool, relLockLen) Lock(tdbb, relLockLen, lckType, relation);
-	relation->getRelLockKey(tdbb, &lock->lck_key.lck_string[0]);
+	relation->getRelLockKey(tdbb, lock->getKeyPtr());
 
 	lock->lck_type = lckType;
 	switch (lckType)
@@ -527,5 +592,9 @@ void RelationPages::free(RelationPages*& nextFree)
 
 	rel_index_root = rel_data_pages = 0;
 	rel_slot_space = rel_pri_data_space = rel_sec_data_space = 0;
+	rel_last_free_pri_dp = 0;
 	rel_instance_id = 0;
+
+	dpMap.clear();
+	dpMapMark = 0;
 }

@@ -45,9 +45,9 @@ public:
 	void beginDebug();
 	void endDebug();
 	void putDebugSrcInfo(ULONG, ULONG);
-	void putDebugVariable(USHORT, const Firebird::MetaName&);
+	void putDebugVariable(USHORT, const MetaName&);
 	void putDebugArgument(UCHAR, USHORT, const TEXT*);
-	void putDebugCursor(USHORT, const Firebird::MetaName&);
+	void putDebugCursor(USHORT, const MetaName&);
 	void putDebugSubFunction(DeclareSubFuncNode* subFuncNode);
 	void putDebugSubProcedure(DeclareSubProcNode* subProcNode);
 
@@ -56,6 +56,9 @@ public:
 	virtual void raiseError(const Firebird::Arg::StatusVector& vector);
 
 private:
+	void putValue(ULONG val);
+	void putBlrOffset();
+
 	DebugData debugData;
 };
 

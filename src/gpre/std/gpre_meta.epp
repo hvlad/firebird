@@ -30,9 +30,8 @@
 
 #include "firebird.h"
 #include <string.h>
-#include "../jrd/ibase.h"
+#include "ibase.h"
 #include "../gpre/gpre.h"
-//#include "../jrd/license.h"
 #include "../jrd/intl.h"
 #include "../gpre/gpre_proto.h"
 #include "../gpre/hsh_proto.h"
@@ -159,7 +158,7 @@ bool MET_database(gpre_dbb* database, bool print_version)
 	// generate a dpb for the attach from the specified
 	// compiletime user name and password
 
-	Firebird::ClumpletWriter dpb(Firebird::ClumpletReader::Tagged, MAX_DPB_SIZE, isc_dpb_version1);
+	Firebird::ClumpletWriter dpb(Firebird::ClumpletReader::dpbList, MAX_DPB_SIZE);
 
 	const TEXT* p;
 	if ((p = database->dbb_c_user)) {
@@ -879,85 +878,94 @@ USHORT MET_get_dtype(USHORT blr_dtype, USHORT sub_type, USHORT char_length, USHO
 {
 	USHORT dtype;
 
-	USHORT l = *length;
+	USHORT corr_length = *length;
 
 	switch (blr_dtype)
 	{
 	case blr_varying:
 	case blr_text:
-		if (char_length != 0 && sub_type != dsc_text_type_none)
-			l = char_length * 4;
+		if (char_length != 0 && sub_type >= dsc_text_type_metadata)	// subtypes below are single byte characters
+			corr_length = char_length * 4;
 
 		dtype = dtype_text;
-		if (gpreGlob.sw_cstring && sub_type != dsc_text_type_fixed)
+		if (sub_type == dsc_text_type_fixed)
 		{
-			++l;
+			if (blr_dtype == blr_varying)
+			{
+				dtype = dtype_varying;
+				// Round up size of field to get right alignment and workaround message length mismatch error
+				corr_length = (corr_length + 1) & ~1U;
+			}
+		}
+		else if (gpreGlob.sw_cstring)
+		{
+			++corr_length;
 			dtype = dtype_cstring;
 		}
 		break;
 
 	case blr_cstring:
 		dtype = dtype_cstring;
-		if (char_length != 0 && sub_type != dsc_text_type_none)
-			l = char_length * 4;
-		++l;
+		if (char_length != 0 && sub_type >= dsc_text_type_metadata)	// subtypes below are single byte characters
+			corr_length = char_length * 4;
+		++corr_length;
 		break;
 
 	case blr_short:
 		dtype = dtype_short;
-		l = sizeof(SSHORT);
+		corr_length = sizeof(SSHORT);
 		break;
 
 	case blr_long:
 		dtype = dtype_long;
-		l = sizeof(SLONG);
+		corr_length = sizeof(SLONG);
 		break;
 
 	case blr_quad:
 		dtype = dtype_quad;
-		l = sizeof(ISC_QUAD);
+		corr_length = sizeof(ISC_QUAD);
 		break;
 
 	case blr_float:
 		dtype = dtype_real;
-		l = sizeof(float);
+		corr_length = sizeof(float);
 		break;
 
 	case blr_double:
 		dtype = dtype_double;
-		l = sizeof(double);
+		corr_length = sizeof(double);
 		break;
 
 	case blr_blob:
 		dtype = dtype_blob;
-		l = sizeof(ISC_QUAD);
+		corr_length = sizeof(ISC_QUAD);
 		break;
 
 	// Begin sql date/time/timestamp
 	case blr_sql_date:
 		dtype = dtype_sql_date;
-		l = sizeof(ISC_DATE);
+		corr_length = sizeof(ISC_DATE);
 		break;
 
 	case blr_sql_time:
 		dtype = dtype_sql_time;
-		l = sizeof(ISC_TIME);
+		corr_length = sizeof(ISC_TIME);
 		break;
 
 	case blr_timestamp:
 		dtype = dtype_timestamp;
-		l = sizeof(ISC_TIMESTAMP);
+		corr_length = sizeof(ISC_TIMESTAMP);
 		break;
 	// End sql date/time/timestamp
 
 	case blr_int64:
 		dtype = dtype_int64;
-		l = sizeof(ISC_INT64);
+		corr_length = sizeof(ISC_INT64);
 		break;
 
 	case blr_bool:
 		dtype = dtype_boolean;
-		l = sizeof(UCHAR);
+		corr_length = sizeof(UCHAR);
 		break;
 
 	default:
@@ -965,7 +973,7 @@ USHORT MET_get_dtype(USHORT blr_dtype, USHORT sub_type, USHORT char_length, USHO
 		return 0; // silence non initialized warning
 	}
 
-	*length = l;
+	*length = corr_length;
 
 	return dtype;
 }
@@ -1002,7 +1010,9 @@ gpre_prc* MET_get_procedure(gpre_dbb* database, const TEXT* string, const TEXT* 
 		return procedure;
 
 	FOR(REQUEST_HANDLE database->dbb_procedure_request)
-	X IN RDB$PROCEDURES WITH X.RDB$PROCEDURE_ID = procedure->prc_id;
+	X IN RDB$PROCEDURES
+	WITH X.RDB$PROCEDURE_ID = procedure->prc_id AND
+		 X.RDB$PACKAGE_NAME MISSING
 
 	for (USHORT type = 0; type < 2; type++)
 	{
@@ -1156,6 +1166,8 @@ udf* MET_get_udf(gpre_dbb* database, const TEXT* string)
 	UDF_DEF IN RDB$FUNCTIONS CROSS
 		UDF_ARG IN RDB$FUNCTION_ARGUMENTS
 		WITH UDF_DEF.RDB$FUNCTION_NAME EQ name AND
+		UDF_DEF.RDB$PACKAGE_NAME MISSING AND
+		UDF_ARG.RDB$PACKAGE_NAME MISSING AND
 		UDF_DEF.RDB$FUNCTION_NAME EQ UDF_ARG.RDB$FUNCTION_NAME AND
 		UDF_DEF.RDB$RETURN_ARGUMENT != UDF_ARG.RDB$ARGUMENT_POSITION
 		SORTED BY DESCENDING UDF_ARG.RDB$ARGUMENT_POSITION;
@@ -1374,6 +1386,7 @@ void MET_load_hash_table(gpre_dbb* database)
 
 	FOR(REQUEST_HANDLE handle)
 	X IN RDB$PROCEDURES
+	WITH X.RDB$PACKAGE_NAME MISSING
 		gpre_prc* procedure = (gpre_prc*) MSC_alloc(REL_LEN);
 		procedure->prc_database = database;
 		procedure->prc_next = database->dbb_procedures;
@@ -1403,6 +1416,8 @@ void MET_load_hash_table(gpre_dbb* database)
 	FOR(REQUEST_HANDLE handle)
 	FUN IN RDB$FUNCTIONS CROSS ARG IN RDB$FUNCTION_ARGUMENTS WITH
 		FUN.RDB$FUNCTION_NAME EQ ARG.RDB$FUNCTION_NAME AND
+		FUN.RDB$PACKAGE_NAME MISSING AND
+		ARG.RDB$PACKAGE_NAME MISSING AND
 		FUN.RDB$RETURN_ARGUMENT EQ ARG.RDB$ARGUMENT_POSITION
 		p = FUN.RDB$FUNCTION_NAME;
 		length = fb_utils::name_length(p);
@@ -1438,6 +1453,7 @@ void MET_load_hash_table(gpre_dbb* database)
 				COLL.RDB$COLLATION_NAME EQ CS.RDB$DEFAULT_COLLATE_NAME AND
 				V4ARG.RDB$CHARACTER_SET_ID NOT MISSING AND
 				V4ARG.RDB$FUNCTION_NAME EQ ARG.RDB$FUNCTION_NAME AND
+				V4ARG.RDB$PACKAGE_NAME MISSING AND
 				V4ARG.RDB$ARGUMENT_POSITION EQ ARG.RDB$ARGUMENT_POSITION;
 
 				an_udf->udf_charset_id = V4ARG.RDB$CHARACTER_SET_ID;

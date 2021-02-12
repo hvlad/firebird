@@ -52,7 +52,7 @@ namespace Jrd {
 
 GlobalPtr<StorageInstance, InstanceControl::PRIORITY_DELETE_FIRST> TraceManager::storageInstance;
 TraceManager::Factories* TraceManager::factories = NULL;
-GlobalPtr<Mutex> TraceManager::init_factories_mtx;
+GlobalPtr<RWLock> TraceManager::init_factories_lock;
 volatile bool TraceManager::init_factories;
 
 
@@ -88,7 +88,8 @@ TraceManager::TraceManager(Attachment* in_att) :
 	attachment(in_att),
 	service(NULL),
 	filename(NULL),
-	trace_sessions(*in_att->att_pool)
+	trace_sessions(*in_att->att_pool),
+	active(false)
 {
 	init();
 }
@@ -97,7 +98,8 @@ TraceManager::TraceManager(Service* in_svc) :
 	attachment(NULL),
 	service(in_svc),
 	filename(NULL),
-	trace_sessions(in_svc->getPool())
+	trace_sessions(in_svc->getPool()),
+	active(true)
 {
 	init();
 }
@@ -106,7 +108,8 @@ TraceManager::TraceManager(const char* in_filename) :
 	attachment(NULL),
 	service(NULL),
 	filename(in_filename),
-	trace_sessions(*getDefaultMemoryPool())
+	trace_sessions(*getDefaultMemoryPool()),
+	active(true)
 {
 	init();
 }
@@ -131,11 +134,9 @@ void TraceManager::load_plugins()
 	if (init_factories)
 		return;
 
-	MutexLockGuard guard(init_factories_mtx, FB_FUNCTION);
+	WriteLockGuard guard(init_factories_lock, FB_FUNCTION);
 	if (init_factories)
 		return;
-
-	init_factories = true;
 
 	factories = FB_NEW_POOL(*getDefaultMemoryPool()) TraceManager::Factories(*getDefaultMemoryPool());
 	for (GetPlugins<ITraceFactory> traceItr(IPluginManager::TYPE_TRACE); traceItr.hasData(); traceItr.next())
@@ -147,6 +148,8 @@ void TraceManager::load_plugins()
 		name.copyTo(info.name, sizeof(info.name));
 		factories->add(info);
 	}
+
+	init_factories = true;
 }
 
 
@@ -154,13 +157,13 @@ void TraceManager::shutdown()
 {
 	if (init_factories)
 	{
-		MutexLockGuard guard(init_factories_mtx, FB_FUNCTION);
+		WriteLockGuard guard(init_factories_lock, FB_FUNCTION);
 
 		if (init_factories)
 		{
+			init_factories = false;
 			delete factories;
 			factories = NULL;
-			init_factories = false;
 		}
 	}
 
@@ -170,9 +173,13 @@ void TraceManager::shutdown()
 
 void TraceManager::update_sessions()
 {
+	// Let be inactive until database is creating
+	if (attachment && (attachment->att_database->dbb_flags & DBB_creating))
+		return;
+
 	MemoryPool& pool = *getDefaultMemoryPool();
 	SortedArray<ULONG, InlineStorage<ULONG, 64> > liveSessions(pool);
-	HalfStaticArray<TraceSession*, 64> newSessions;
+	HalfStaticArray<TraceSession*, 64> newSessions(pool);
 
 	{	// scope
 		ConfigStorage* storage = getStorage();
@@ -181,7 +188,7 @@ void TraceManager::update_sessions()
 		storage->restart();
 
 		TraceSession session(pool);
-		while (storage->getNextSession(session))
+		while (storage->getNextSession(session, ConfigStorage::FLAGS))
 		{
 			if ((session.ses_flags & trs_active) && !(session.ses_flags & trs_log_full))
 			{
@@ -189,7 +196,10 @@ void TraceManager::update_sessions()
 				if (trace_sessions.find(session.ses_id, pos))
 					liveSessions.add(session.ses_id);
 				else
+				{
+					storage->getSession(session, ConfigStorage::ALL);
 					newSessions.add(FB_NEW_POOL(pool) TraceSession(pool, session));
+				}
 			}
 		}
 
@@ -236,77 +246,88 @@ void TraceManager::update_session(const TraceSession& session)
 
 	// if this session is not from administrator, it may trace connections
 	// only created by the same user
-	if (!(session.ses_flags & trs_admin))
+	if (!(session.ses_flags & (trs_admin | trs_system)))
 	{
-		if (attachment)
+		const char* curr_user = nullptr;
+		string s_user = session.ses_user;
+		string t_role;
+		UserId::Privileges priv;
+
+		try
 		{
-			if ((!attachment->att_user) || (attachment->att_flags & ATT_mapping))
-				return;
+			ULONG mapResult = 0;
 
-			string s_user = session.ses_user;
-			string t_role;
-
-			if (session.ses_auth.hasData())
+			if (attachment)
 			{
-				Database* dbb = attachment->att_database;
-				fb_assert(dbb);
-
-				try
-				{
-					mapUser(s_user, t_role, NULL, NULL, session.ses_auth,
-						attachment->att_filename.c_str(), dbb->dbb_filename.c_str(),
-						dbb->dbb_config->getSecurityDatabase(),
-						dbb->dbb_provider->getCryptCallback());
-				}
-				catch (const Firebird::Exception&)
-				{
-					// Error in mapUser() means missing context, therefore...
+				if ((!attachment->att_user) || (attachment->att_flags & ATT_mapping))
 					return;
-				}
 
-				t_role.upper();
+				curr_user = attachment->att_user->getUserName().c_str();
+
+				if (session.ses_auth.hasData())
+				{ // scope
+					AutoSetRestoreFlag<ULONG> autoRestore(&attachment->att_flags, ATT_mapping, true);
+
+					Database* dbb = attachment->att_database;
+					fb_assert(dbb);
+					Mapping mapping(Mapping::MAP_NO_FLAGS, dbb->dbb_callback);
+					mapping.needSystemPrivileges(priv);
+					mapping.setAuthBlock(session.ses_auth);
+					mapping.setSqlRole(session.ses_role);
+					mapping.setSecurityDbAlias(dbb->dbb_config->getSecurityDatabase(), dbb->dbb_filename.c_str());
+					mapping.setDb(attachment->att_filename.c_str(), dbb->dbb_filename.c_str(),
+						attachment->getInterface());
+					mapResult = mapping.mapUser(s_user, t_role);
+				}
+			}
+			else if (service)
+			{
+				curr_user = service->getUserName().c_str();
+
+				if (session.ses_auth.hasData())
+				{
+					PathName dummy;
+					RefPtr<const Config> config;
+					expandDatabaseName(service->getExpectedDb(), dummy, &config);
+
+					Mapping mapping(Mapping::MAP_NO_FLAGS, service->getCryptCallback());
+					mapping.needSystemPrivileges(priv);
+					mapping.setAuthBlock(session.ses_auth);
+					mapping.setErrorMessagesContextName("services manager");
+					mapping.setSqlRole(session.ses_role);
+					mapping.setSecurityDbAlias(config->getSecurityDatabase(), nullptr);
+
+					mapResult = mapping.mapUser(s_user, t_role);
+				}
+			}
+			else
+			{
+				// failed attachment attempts traced by admin trace only
+				return;
 			}
 
-			if (s_user != SYSDBA_USER_NAME && t_role != ADMIN_ROLE &&
-				attachment->att_user->usr_user_name != s_user)
+			if (mapResult & Mapping::MAP_ERROR_NOT_THROWN)
 			{
+				// Error in mapUser() means missing context, therefore...
 				return;
 			}
 		}
-		else if (service)
+		catch (const Exception&)
 		{
-			string s_user = session.ses_user;
-			string t_role;
-
-			if (session.ses_auth.hasData())
-			{
-				PathName dummy;
-				RefPtr<Config> config;
-				expandDatabaseName(service->getExpectedDb(), dummy, &config);
-
-				try
-				{
-					mapUser(s_user, t_role, NULL, NULL, session.ses_auth, "services manager", NULL,
-						config->getSecurityDatabase(), service->getCryptCallback());
-				}
-				catch (const Firebird::Exception&)
-				{
-					// Error in mapUser() means missing context, therefore...
-					return;
-				}
-
-				t_role.upper();
-			}
-
-			if (s_user != SYSDBA_USER_NAME && t_role != ADMIN_ROLE && service->getUserName() != s_user)
-				return;
+			return;
 		}
-		else
+
+		t_role.upper();
+		if (s_user != DBA_USER_NAME && t_role != ADMIN_ROLE &&
+			s_user != curr_user && (!priv.test(TRACE_ANY_ATTACHMENT)))
 		{
-			// failed attachment attempts traced by admin trace only
 			return;
 		}
 	}
+
+	ReadLockGuard guard(init_factories_lock, FB_FUNCTION);
+	if (!factories)
+		return;
 
 	for (FactoryInfo* info = factories->begin(); info != factories->end(); ++info)
 	{
@@ -374,7 +395,8 @@ void TraceManager::event_dsql_execute(Attachment* att, jrd_tra* transaction,
 	TraceConnectionImpl conn(att);
 	TraceTransactionImpl tran(transaction);
 
-	att->att_trace_manager->event_dsql_execute(&conn, &tran, statement, started, req_result);
+	att->att_trace_manager->event_dsql_execute(&conn, transaction ? &tran : NULL, statement, 
+											   started, req_result);
 }
 
 

@@ -30,6 +30,7 @@
 namespace Jrd
 {
 	class ValueListNode;
+	class QualifiedName;
 
 	class Function : public Routine
 	{
@@ -37,7 +38,7 @@ namespace Jrd
 
 	public:
 		static Function* lookup(thread_db* tdbb, USHORT id, bool return_deleted, bool noscan, USHORT flags);
-		static Function* lookup(thread_db* tdbb, const Firebird::QualifiedName& name, bool noscan);
+		static Function* lookup(thread_db* tdbb, const QualifiedName& name, bool noscan);
 
 		void releaseLocks(thread_db* tdbb);
 
@@ -70,6 +71,16 @@ namespace Jrd
 		virtual bool checkCache(thread_db* tdbb) const;
 		virtual void clearCache(thread_db* tdbb);
 
+		virtual ~Function()
+		{
+			delete fun_external;
+		}
+
+		virtual void releaseExternal()
+		{
+			delete fun_external;
+			fun_external = NULL;
+		}
 	public:
 		int (*fun_entrypoint)();				// function entrypoint
 		USHORT fun_inputs;						// input arguments
@@ -80,6 +91,9 @@ namespace Jrd
 
 		bool fun_deterministic;
 		const ExtEngineManager::Function* fun_external;
+
+	protected:
+		virtual bool reload(thread_db* tdbb);
 	};
 }
 

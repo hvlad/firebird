@@ -40,8 +40,6 @@
 
 namespace Firebird {
 
-class MetaName;
-
 // This class provides read access for clumplet structure
 // Note: it doesn't make a copy of buffer it reads
 class ClumpletReader : protected AutoStorage
@@ -58,7 +56,9 @@ public:
 		WideTagged,
 		WideUnTagged,
 		SpbSendItems,
-		SpbReceiveItems
+		SpbReceiveItems,
+		SpbResponse,
+		InfoResponse
 	};
 
 	struct KindList
@@ -102,7 +102,6 @@ public:
 	bool getBoolean() const;
 	SINT64 getBigInt() const;
 	string& getString(string& str) const;
-	MetaName& getString(MetaName& str) const;
 	PathName& getPath(PathName& str) const;
 	void getData(UCharBuffer& data) const;
 	const UCHAR* getBytes() const;
@@ -110,6 +109,15 @@ public:
 	ISC_TIMESTAMP getTimeStamp() const;
 	ISC_TIME getTime() const { return getInt(); }
 	ISC_DATE getDate() const { return getInt(); }
+
+	template <typename STR>
+	STR& getString(STR& str) const
+	{
+		const UCHAR* ptr = getBytes();
+		const FB_SIZE_T length = getClumpLength();
+		str.assign(reinterpret_cast<const char*>(ptr), length);
+		return str;
+	}
 
 	// get the most generic representation of clumplet
 	SingleClumplet getClumplet() const;
@@ -123,7 +131,8 @@ public:
 		FB_SIZE_T rc = getBufferEnd() - getBuffer();
 		if (rc == 1 && kind != UnTagged     && kind != SpbStart &&
 					   kind != WideUnTagged && kind != SpbSendItems &&
-					   kind != SpbReceiveItems)
+					   kind != SpbReceiveItems && kind != SpbResponse &&
+					   kind != InfoResponse)
 		{
 			rc = 0;
 		}
@@ -145,8 +154,19 @@ public:
 		return (len == other.getBufferLength()) && (memcmp(getBuffer(), other.getBuffer(), len) == 0);
 	}
 
+	// Methods are virtual so writer can override 'em
+	virtual const UCHAR* getBuffer() const;
+	virtual const UCHAR* getBufferEnd() const;
+
 protected:
-	enum ClumpletType {TraditionalDpb, SingleTpb, StringSpb, IntSpb, BigIntSpb, ByteSpb, Wide};
+	enum ClumpletType {TraditionalDpb,	// one byte length, n bytes value
+					   SingleTpb,		// no data after
+					   StringSpb,		// two bytes length, n bytes data
+					   IntSpb,			// four bytes data
+					   BigIntSpb,		// eight bytes data
+					   ByteSpb,			// one byte data
+					   Wide				// four bytes length, n bytes data
+					  };
 	ClumpletType getClumpletType(UCHAR tag) const;
 	FB_SIZE_T getClumpletSize(bool wTag, bool wLength, bool wData) const;
 	void adjustSpbState();
@@ -154,10 +174,6 @@ protected:
 	FB_SIZE_T cur_offset;
 	Kind kind;
 	UCHAR spbState;		// Reflects state of spb parser/writer
-
-	// Methods are virtual so writer can override 'em
-	virtual const UCHAR* getBuffer() const;
-	virtual const UCHAR* getBufferEnd() const;
 
 	// These functions are called when error condition is detected by this class.
 	// They may throw exceptions. If they don't reader tries to do something
@@ -167,7 +183,7 @@ protected:
 	virtual void usage_mistake(const char* what) const;
 
 	// This is called when passed buffer appears invalid
-	virtual void invalid_structure(const char* what) const;
+	virtual void invalid_structure(const char* what, const int data = 0) const;
 
 private:
 	// Assignment not implemented.
@@ -205,8 +221,13 @@ public:
 		Info()
 			: found(0), current(0)
 		{ }
+
+		Info(MemoryPool& pool)
+			: type(pool), name(pool), plugin(pool), secDb(pool), origPlug(pool), found(0), current(0)
+		{ }
 	};
 
+	AuthReader(MemoryPool& pool, const AuthBlock& authBlock);
 	explicit AuthReader(const AuthBlock& authBlock);
 	explicit AuthReader(const ClumpletReader& rdr)
 		: ClumpletReader(rdr)

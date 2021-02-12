@@ -25,6 +25,9 @@
    as well as by ini.epp in JRD.  Make sure that any
    changes are compatible in both places. */
 
+#ifndef JRD_INI_H
+#define JRD_INI_H
+
 #include "../common/intlobj_new.h"
 #include "../jrd/intl.h"
 #include "../intl/country_codes.h"
@@ -65,8 +68,9 @@ static const TEXT* const names[] =
 //******************************
 // fields.h
 //******************************
-const USHORT BLOB_SIZE		= 8;
-const USHORT TIMESTAMP_SIZE	= 8;
+const USHORT BLOB_SIZE			= 8;
+const USHORT TIMESTAMP_SIZE		= 8;
+const USHORT TIMESTAMP_TZ_SIZE	= 12;
 
 // Pick up global ids
 
@@ -160,6 +164,13 @@ static const int relfields[] =
 #undef END_RELATION
 
 //******************************
+// SystemPrivileges.h
+//	should go before types.h
+//******************************
+
+#include "SystemPrivileges.h"
+
+//******************************
 // types.h
 //******************************
 
@@ -181,3 +192,5 @@ static const rtyp types[] =
 };
 
 #undef TYPE
+
+#endif	// JRD_INI_H

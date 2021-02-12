@@ -33,12 +33,12 @@ namespace Firebird
 	class RefCounted
 	{
 	public:
-		virtual int addRef()
+		virtual int addRef() const
 		{
 			return ++m_refCnt;
 		}
 
-		virtual int release()
+		virtual int release() const
 		{
 			fb_assert(m_refCnt.value() > 0);
 			const int refCnt = --m_refCnt;
@@ -56,7 +56,7 @@ namespace Firebird
 		}
 
 	private:
-		AtomicCounter m_refCnt;
+		mutable AtomicCounter m_refCnt;
 	};
 
 	// reference counted object guard
@@ -130,6 +130,13 @@ namespace Firebird
 			return ptr;
 		}
 
+		void moveFrom(RefPtr& r)
+		{
+			assign(NULL);
+			ptr = r.ptr;
+			r.ptr = NULL;
+		}
+
 		T* operator=(T* p)
 		{
 			return assign(p);
@@ -160,14 +167,6 @@ namespace Firebird
 			return ptr;
 		}
 
-		/* NS: you cannot have operator bool here. It creates ambiguity with
-		  operator T* with some of the compilers (at least VS2003)
-
-		operator bool() const
-		{
-			return ptr ? true : false;
-		}*/
-
 		bool hasData() const
 		{
 			return ptr ? true : false;
@@ -193,7 +192,7 @@ namespace Firebird
 			return ptr;
 		}
 
-	private:
+	protected:
 		T* assign(T* const p)
 		{
 			if (ptr != p)
@@ -212,9 +211,10 @@ namespace Firebird
 				}
 			}
 
-			return ptr;
+			return p;
 		}
 
+	private:
 		T* ptr;
 	};
 

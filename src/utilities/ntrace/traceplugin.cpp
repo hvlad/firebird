@@ -43,18 +43,7 @@ public:
 	ntrace_mask_t trace_needs();
 	Firebird::ITracePlugin* trace_create(Firebird::CheckStatusWrapper* status,
 		Firebird::ITraceInitInfo* init_info);
-	int release();
 };
-
-int TraceFactoryImpl::release()
-{
-	if (--refCounter == 0)
-	{
-		delete this;
-		return 0;
-	}
-	return 1;
-}
 
 ntrace_mask_t TraceFactoryImpl::trace_needs()
 {
@@ -84,7 +73,7 @@ Firebird::ITracePlugin* TraceFactoryImpl::trace_create(Firebird::CheckStatusWrap
 			return NULL; // Plugin is not needed, no error happened.
 		}
 
-		Firebird::AutoPtr<Firebird::ITraceLogWriter, Firebird::SimpleRelease<Firebird::ITraceLogWriter> >
+		Firebird::AutoPtr<Firebird::ITraceLogWriter, Firebird::SimpleRelease>
 			logWriter(initInfo->getLogWriter());
 
 		if (logWriter)
@@ -101,7 +90,7 @@ Firebird::ITracePlugin* TraceFactoryImpl::trace_create(Firebird::CheckStatusWrap
 		{
 			const char* strEx = TracePluginImpl::marshal_exception(ex);
 			Firebird::string err;
-			if (dbname)
+			if (dbname && dbname[0])
 				err.printf("Error creating trace session for database \"%s\":\n%s\n", dbname, strEx);
 			else
 				err.printf("Error creating trace session for service manager attachment:\n%s\n", strEx);

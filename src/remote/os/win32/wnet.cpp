@@ -30,7 +30,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "../remote/remote.h"
-#include "../jrd/ibase.h"
+#include "ibase.h"
 
 #include "../utilities/install/install_nt.h"
 
@@ -72,7 +72,7 @@ static void		disconnect(rem_port*);
 static void		exit_handler(void*);
 #endif
 static void		force_close(rem_port*);
-static rem_str*		make_pipe_name(const RefPtr<Config>&, const TEXT*, const TEXT*, const TEXT*);
+static rem_str*		make_pipe_name(const RefPtr<const Config>&, const TEXT*, const TEXT*, const TEXT*);
 static rem_port*	receive(rem_port*, PACKET*);
 static int		send_full(rem_port*, PACKET*);
 static int		send_partial(rem_port*, PACKET*);
@@ -80,8 +80,8 @@ static int		xdrwnet_create(XDR*, rem_port*, UCHAR*, USHORT, xdr_op);
 static bool_t	xdrwnet_endofrecord(XDR*);//, int);
 static bool		wnet_error(rem_port*, const TEXT*, ISC_STATUS, int);
 static void		wnet_gen_error(rem_port*, const Arg::StatusVector& v);
-static bool_t	wnet_getbytes(XDR*, SCHAR*, u_int);
-static bool_t	wnet_putbytes(XDR*, const SCHAR*, u_int);
+static bool_t	wnet_getbytes(XDR*, SCHAR*, unsigned);
+static bool_t	wnet_putbytes(XDR*, const SCHAR*, unsigned);
 static bool_t	wnet_read(XDR*);
 static bool_t	wnet_write(XDR*); //, int);
 #ifdef DEBUG
@@ -104,7 +104,7 @@ rem_port* WNET_analyze(ClntAuthBlock* cBlock,
 					   const PathName& file_name,
 					   const TEXT* node_name,
 					   bool uv_flag,
-					   RefPtr<Config>* config,
+					   RefPtr<const Config>* config,
 					   const Firebird::PathName* ref_db_name)
 {
 /**************************************
@@ -172,7 +172,10 @@ rem_port* WNET_analyze(ClntAuthBlock* cBlock,
 		REMOTE_PROTOCOL(PROTOCOL_VERSION10, ptype_batch_send, 1),
 		REMOTE_PROTOCOL(PROTOCOL_VERSION11, ptype_batch_send, 2),
 		REMOTE_PROTOCOL(PROTOCOL_VERSION12, ptype_batch_send, 3),
-		REMOTE_PROTOCOL(PROTOCOL_VERSION13, ptype_batch_send, 4)
+		REMOTE_PROTOCOL(PROTOCOL_VERSION13, ptype_batch_send, 4),
+		REMOTE_PROTOCOL(PROTOCOL_VERSION14, ptype_batch_send, 5),
+		REMOTE_PROTOCOL(PROTOCOL_VERSION15, ptype_batch_send, 6),
+		REMOTE_PROTOCOL(PROTOCOL_VERSION16, ptype_batch_send, 7)
 	};
 	fb_assert(FB_NELEM(protocols_to_try) <= FB_NELEM(cnct->p_cnct_versions));
 	cnct->p_cnct_count = FB_NELEM(protocols_to_try);
@@ -212,14 +215,14 @@ rem_port* WNET_analyze(ClntAuthBlock* cBlock,
 									   packet->p_acpd.p_acpt_data.cstr_address);
 			cBlock->authComplete = packet->p_acpd.p_acpt_authenticated;
 			port->addServerKeys(&packet->p_acpd.p_acpt_keys);
-			cBlock->resetClnt(&file_name, &packet->p_acpd.p_acpt_keys);
+			cBlock->resetClnt(&packet->p_acpd.p_acpt_keys);
 		}
 		break;
 
 	case op_accept:
 		if (cBlock)
 		{
-			cBlock->resetClnt(&file_name);
+			cBlock->resetClnt();
 		}
 		accept = &packet->p_acpt;
 		break;
@@ -268,7 +271,7 @@ rem_port* WNET_analyze(ClntAuthBlock* cBlock,
 }
 
 
-rem_port* WNET_connect(const TEXT* name, PACKET* packet, USHORT flag, Firebird::RefPtr<Config>* config)
+rem_port* WNET_connect(const TEXT* name, PACKET* packet, USHORT flag, Firebird::RefPtr<const Config>* config)
 {
 /**************************************
  *
@@ -535,6 +538,7 @@ static rem_port* alloc_port( rem_port* parent)
 	if (parent)
 	{
 		delete port->port_connection;
+		port->port_connection = nullptr;
 		port->port_connection = REMOTE_make_string(parent->port_connection->str_data);
 
 		port->linkParent(parent);
@@ -722,6 +726,11 @@ static void disconnect(rem_port* port)
  *
  **************************************/
 
+	if (port->port_state == rem_port::DISCONNECTED)
+		return;
+
+	port->port_state = rem_port::DISCONNECTED;
+
 	if (port->port_async)
 	{
 		disconnect(port->port_async);
@@ -750,7 +759,11 @@ static void disconnect(rem_port* port)
 	}
 
 	wnet_ports->unRegisterPort(port);
-	port->release();
+
+	if (port->port_thread_guard && port->port_events_thread && !port->port_events_threadId.isCurrent())
+		port->port_thread_guard->setWait(port->port_events_thread);
+	else
+		port->releasePort();
 }
 
 
@@ -799,7 +812,7 @@ static void exit_handler(void* main_port)
 #endif
 
 
-static rem_str* make_pipe_name(const RefPtr<Config>& config, const TEXT* connect_name,
+static rem_str* make_pipe_name(const RefPtr<const Config>& config, const TEXT* connect_name,
 	const TEXT* suffix_name, const TEXT* str_pid)
 {
 /**************************************
@@ -992,7 +1005,8 @@ static bool wnet_error(rem_port* port,
  **************************************/
 	if (status)
 	{
-		if (port->port_state != rem_port::BROKEN) {
+		if (port->port_state == rem_port::PENDING)
+		{
 			gds__log("WNET/wnet_error: %s errno = %d", function, status);
 		}
 
@@ -1042,7 +1056,7 @@ static void wnet_gen_error (rem_port* port, const Arg::StatusVector& v)
 }
 
 
-static bool_t wnet_getbytes( XDR* xdrs, SCHAR* buff, u_int count)
+static bool_t wnet_getbytes( XDR* xdrs, SCHAR* buff, unsigned bytecount)
 {
 /**************************************
  *
@@ -1054,8 +1068,6 @@ static bool_t wnet_getbytes( XDR* xdrs, SCHAR* buff, u_int count)
  *	Get a bunch of bytes from a memory stream if it fits.
  *
  **************************************/
-	SLONG bytecount = count;
-
 	// Use memcpy to optimize bulk transfers.
 
 	while (bytecount > (SLONG) sizeof(ISC_QUAD))
@@ -1094,9 +1106,9 @@ static bool_t wnet_getbytes( XDR* xdrs, SCHAR* buff, u_int count)
 		return TRUE;
 	}
 
-	while (--bytecount >= 0)
+	while (bytecount--)
 	{
-		if (!xdrs->x_handy && !wnet_read(xdrs))
+		if (xdrs->x_handy == 0 && !wnet_read(xdrs))
 			return FALSE;
 		*buff++ = *xdrs->x_private++;
 		--xdrs->x_handy;
@@ -1106,7 +1118,7 @@ static bool_t wnet_getbytes( XDR* xdrs, SCHAR* buff, u_int count)
 }
 
 
-static bool_t wnet_putbytes( XDR* xdrs, const SCHAR* buff, u_int count)
+static bool_t wnet_putbytes( XDR* xdrs, const SCHAR* buff, unsigned count)
 {
 /**************************************
  *
@@ -1158,9 +1170,9 @@ static bool_t wnet_putbytes( XDR* xdrs, const SCHAR* buff, u_int count)
 		return TRUE;
 	}
 
-	while (--bytecount >= 0)
+	while (bytecount--)
 	{
-		if (xdrs->x_handy <= 0 && !wnet_write(xdrs /*, 0*/))
+		if (xdrs->x_handy == 0 && !wnet_write(xdrs /*, 0*/))
 			return FALSE;
 		--xdrs->x_handy;
 		*xdrs->x_private++ = *buff++;
@@ -1214,7 +1226,7 @@ static bool_t wnet_read( XDR* xdrs)
 			return FALSE;
 	}
 
-	xdrs->x_handy = (int) (p - xdrs->x_base);
+	xdrs->x_handy = p - xdrs->x_base;
 	xdrs->x_private = xdrs->x_base;
 
 	return TRUE;
@@ -1322,7 +1334,7 @@ static bool packet_receive(rem_port* port, UCHAR* buffer, SSHORT buffer_length, 
 
 	if (!n)
 	{
-		if (port->port_flags & PORT_detached)
+		if (port->port_flags & (PORT_detached | PORT_disconnect))
 			return false;
 
 		return wnet_error(port, "ReadFile end-of-file", isc_net_read_err, dwError);
@@ -1398,10 +1410,15 @@ static bool packet_send( rem_port* port, const SCHAR* buffer, SSHORT buffer_leng
 		status = GetOverlappedResult(port->port_pipe, &ovrl, &n, TRUE);
 		dwError = GetLastError();
 	}
-	if (!status)
+	if (!status && dwError != ERROR_NO_DATA)
 		return wnet_error(port, "WriteFile", isc_net_write_err, dwError);
 	if (n != length)
+	{
+		if (port->port_flags & (PORT_detached | PORT_disconnect))
+			return false;
+
 		return wnet_error(port, "WriteFile truncated", isc_net_write_err, dwError);
+	}
 
 #if defined(DEBUG) && defined(WNET_trace)
 	packet_print("send", reinterpret_cast<const UCHAR*>(buffer), buffer_length);

@@ -25,7 +25,8 @@
 #include "../common/classes/array.h"
 #include "../common/classes/objects_array.h"
 #include "../common/classes/NestConst.h"
-#include "../common/classes/QualifiedName.h"
+#include "../jrd/QualifiedName.h"
+#include "../dsql/ExprNodes.h"
 #include "../jrd/jrd.h"
 #include "../jrd/exe.h"
 #include "../dsql/Visitors.h"
@@ -52,7 +53,7 @@ public:
 		: PermanentStorage(pool),
 		  unique(false),
 		  expressions(pool),
-		  descending(pool),
+		  direction(pool),
 		  nullOrder(pool)
 	{
 	}
@@ -70,11 +71,22 @@ public:
 	bool computable(CompilerScratch* csb, StreamType stream, bool allowOnlyCurrentStream);
 	void findDependentFromStreams(const OptimizerRetrieval* optRet, SortedStreamList* streamList);
 
+	NullsPlacement getEffectiveNullOrder(unsigned index) const
+	{
+		if (direction[index] == ORDER_ASC)
+			return (nullOrder[index] == NULLS_DEFAULT) ? NULLS_FIRST : nullOrder[index];
+		else if (direction[index] == ORDER_DESC)
+			return (nullOrder[index] == NULLS_DEFAULT) ? NULLS_LAST : nullOrder[index];
+
+		fb_assert(false);
+		return NULLS_DEFAULT;
+	}
+
 public:
-	bool unique;						// sorts using unique key - for distinct and group by
+	bool unique;						// sort uses unique key - for DISTINCT and GROUP BY
 	NestValueArray expressions;			// sort expressions
-	Firebird::Array<bool> descending;	// true = descending / false = ascending
-	Firebird::Array<int> nullOrder;		// rse_nulls_*
+	Firebird::Array<SortDirection> direction;	// rse_order_*
+	Firebird::Array<NullsPlacement> nullOrder;	// rse_nulls_*
 };
 
 class MapNode : public Firebird::PermanentStorage, public Printable
@@ -110,7 +122,7 @@ public:
 class PlanNode : public Firebird::PermanentStorage, public Printable
 {
 public:
-	enum Type
+	enum Type : UCHAR
 	{
 		TYPE_JOIN,
 		TYPE_RETRIEVE
@@ -134,12 +146,12 @@ public:
 
 		SLONG relationId;
 		SLONG indexId;
-		Firebird::MetaName indexName;
+		MetaName indexName;
 	};
 
 	struct AccessType
 	{
-		enum Type
+		enum Type : UCHAR
 		{
 			TYPE_SEQUENTIAL,
 			TYPE_NAVIGATIONAL,
@@ -180,7 +192,7 @@ public:
 private:
 	dsql_ctx* dsqlPassAliasList(DsqlCompilerScratch* dsqlScratch);
 	static dsql_ctx* dsqlPassAlias(DsqlCompilerScratch* dsqlScratch, DsqlContextStack& stack,
-		const Firebird::MetaName& alias);
+		const MetaName& alias);
 
 public:
 	Type const type;
@@ -188,13 +200,13 @@ public:
 	RelationSourceNode* relationNode;
 	Firebird::Array<NestConst<PlanNode> > subNodes;
 	RecordSourceNode* dsqlRecordSourceNode;
-	Firebird::ObjectsArray<Firebird::MetaName>* dsqlNames;
+	Firebird::ObjectsArray<MetaName>* dsqlNames;
 };
 
 class InversionNode
 {
 public:
-	enum Type
+	enum Type : UCHAR
 	{
 		TYPE_AND,
 		TYPE_OR,
@@ -204,45 +216,57 @@ public:
 	};
 
 	InversionNode(Type aType, InversionNode* aNode1, InversionNode* aNode2)
-		: type(aType),
-		  impure(0),
+		: impure(0),
+		  id(0),
+		  type(aType),
 		  retrieval(NULL),
 		  node1(aNode1),
 		  node2(aNode2),
-		  value(NULL),
-		  id(0)
+		  value(NULL)
 	{
 	}
 
 	InversionNode(IndexRetrieval* aRetrieval, ULONG anImpure)
-		: type(TYPE_INDEX),
-		  impure(anImpure),
+		: impure(anImpure),
+		  id(0),
+		  type(TYPE_INDEX),
 		  retrieval(aRetrieval),
 		  node1(NULL),
 		  node2(NULL),
-		  value(NULL),
-		  id(0)
+		  value(NULL)
 	{
 	}
 
 	InversionNode(ValueExprNode* aValue, USHORT aId)
-		: type(TYPE_DBKEY),
-		  impure(0),
+		: impure(0),
+		  id(aId),
+		  type(TYPE_DBKEY),
 		  retrieval(NULL),
 		  node1(NULL),
 		  node2(NULL),
-		  value(aValue),
-		  id(aId)
+		  value(aValue)
 	{
 	}
 
-	Type type;
 	ULONG impure;
+	USHORT id;
+	Type type;
 	NestConst<IndexRetrieval> retrieval;
 	NestConst<InversionNode> node1;
 	NestConst<InversionNode> node2;
 	NestConst<ValueExprNode> value;
-	USHORT id;
+};
+
+class DbKeyRangeNode
+{
+public:
+	DbKeyRangeNode(ValueExprNode* aLower, ValueExprNode* aUpper)
+		: lower(aLower), upper(aUpper)
+	{
+	}
+
+	NestConst<ValueExprNode> lower;
+	NestConst<ValueExprNode> upper;
 };
 
 class WithClause : public Firebird::Array<SelectExprNode*>
@@ -262,13 +286,13 @@ public:
 class RelationSourceNode : public TypedNode<RecordSourceNode, RecordSourceNode::TYPE_RELATION>
 {
 public:
-	explicit RelationSourceNode(MemoryPool& pool, const Firebird::MetaName& aDsqlName = NULL)
+	explicit RelationSourceNode(MemoryPool& pool, const MetaName& aDsqlName = NULL)
 		: TypedNode<RecordSourceNode, RecordSourceNode::TYPE_RELATION>(pool),
 		  dsqlName(pool, aDsqlName),
 		  alias(pool),
 		  relation(NULL),
-		  context(0),
-		  view(NULL)
+		  view(NULL),
+		  context(0)
 	{
 	}
 
@@ -283,11 +307,10 @@ public:
 		return false;
 	}
 
-	virtual bool dsqlMatch(const ExprNode* other, bool ignoreMapCast) const;
+	virtual bool dsqlMatch(DsqlCompilerScratch* dsqlScratch, const ExprNode* other, bool ignoreMapCast) const;
 	virtual void genBlr(DsqlCompilerScratch* dsqlScratch);
 
 	virtual RelationSourceNode* copy(thread_db* tdbb, NodeCopier& copier) const;
-	virtual void ignoreDbKey(thread_db* tdbb, CompilerScratch* csb) const;
 
 	virtual RecordSourceNode* pass1(thread_db* tdbb, CompilerScratch* csb);
 
@@ -325,20 +348,22 @@ public:
 	virtual RecordSource* compile(thread_db* tdbb, OptimizerBlk* opt, bool innerSubStream);
 
 public:
-	Firebird::MetaName dsqlName;
+	MetaName dsqlName;
 	Firebird::string alias;	// SQL alias for the relation
 	jrd_rel* relation;
-	SSHORT context;			// user-specified context number for the relation reference
 
 private:
 	jrd_rel* view;		// parent view for posting access
+
+public:
+	SSHORT context;			// user-specified context number for the relation reference
 };
 
 class ProcedureSourceNode : public TypedNode<RecordSourceNode, RecordSourceNode::TYPE_PROCEDURE>
 {
 public:
 	explicit ProcedureSourceNode(MemoryPool& pool,
-			const Firebird::QualifiedName& aDsqlName = Firebird::QualifiedName())
+			const QualifiedName& aDsqlName = QualifiedName())
 		: TypedNode<RecordSourceNode, RecordSourceNode::TYPE_PROCEDURE>(pool),
 		  dsqlName(pool, aDsqlName),
 		  alias(pool),
@@ -347,7 +372,9 @@ public:
 		  in_msg(NULL),
 		  procedure(NULL),
 		  view(NULL),
-		  context(0)
+		  procedureId(0),
+		  context(0),
+		  isSubRoutine(false)
 	{
 	}
 
@@ -363,14 +390,10 @@ public:
 	virtual bool dsqlFieldFinder(FieldFinder& visitor);
 	virtual RecordSourceNode* dsqlFieldRemapper(FieldRemapper& visitor);
 
-	virtual bool dsqlMatch(const ExprNode* other, bool ignoreMapCast) const;
+	virtual bool dsqlMatch(DsqlCompilerScratch* dsqlScratch, const ExprNode* other, bool ignoreMapCast) const;
 	virtual void genBlr(DsqlCompilerScratch* dsqlScratch);
 
 	virtual ProcedureSourceNode* copy(thread_db* tdbb, NodeCopier& copier) const;
-
-	virtual void ignoreDbKey(thread_db* /*tdbb*/, CompilerScratch* /*csb*/) const
-	{
-	}
 
 	virtual RecordSourceNode* pass1(thread_db* tdbb, CompilerScratch* csb);
 	virtual void pass1Source(thread_db* tdbb, CompilerScratch* csb, RseNode* rse,
@@ -392,7 +415,7 @@ public:
 	virtual void findDependentFromStreams(const OptimizerRetrieval* optRet,
 		SortedStreamList* streamList);
 
-	virtual void collectStreams(SortedStreamList& streamList) const;
+	virtual void collectStreams(CompilerScratch* csb, SortedStreamList& streamList) const;
 
 	virtual RecordSource* compile(thread_db* tdbb, OptimizerBlk* opt, bool innerSubStream);
 
@@ -400,16 +423,36 @@ private:
 	ProcedureScan* generate(thread_db* tdbb, OptimizerBlk* opt);
 
 public:
-	Firebird::QualifiedName dsqlName;
+	QualifiedName dsqlName;
 	Firebird::string alias;
 	NestConst<ValueListNode> sourceList;
 	NestConst<ValueListNode> targetList;
 
 private:
 	NestConst<MessageNode> in_msg;
+
+	/***
+	dimitr: Referencing procedures via a pointer is not currently reliable, because
+			procedures can be removed from the metadata cache after ALTER/DROP.
+			Usually, this is prevented via the reference counting, but it's incremented
+			only for compiled requests. Node trees without requests (e.g. computed fields)
+			are not protected and may end with dead procedure pointers, causing problems
+			(up to crashing) when they're copied the next time. See CORE-5456 / CORE-5457.
+
+			ExecProcedureNode is a lucky exception because it's never (directly) used in
+			expressions. Sub-procedures are safe too. In other cases the procedure object
+			must be refetched from the metadata cache while copying the node.
+
+			A better (IMO) solution would be to add a second-level reference counting for
+			metadata objects since the parsing stage till either request creation or
+			explicit unload from the metadata cache. But we don't have clearly established
+			cache management policies yet, so I leave it for the other day.
+	***/
 	jrd_prc* procedure;
 	jrd_rel* view;
+	USHORT procedureId;
 	SSHORT context;
+	bool isSubRoutine;
 };
 
 class AggregateSourceNode : public TypedNode<RecordSourceNode, RecordSourceNode::TYPE_AGGREGATE_SOURCE>
@@ -419,10 +462,10 @@ public:
 		: TypedNode<RecordSourceNode, RecordSourceNode::TYPE_AGGREGATE_SOURCE>(pool),
 		  dsqlGroup(NULL),
 		  dsqlRse(NULL),
-		  dsqlWindow(false),
 		  group(NULL),
 		  map(NULL),
-		  rse(NULL)
+		  rse(NULL),
+		  dsqlWindow(false)
 	{
 	}
 
@@ -436,11 +479,10 @@ public:
 	virtual bool dsqlFieldFinder(FieldFinder& visitor);
 	virtual RecordSourceNode* dsqlFieldRemapper(FieldRemapper& visitor);
 
-	virtual bool dsqlMatch(const ExprNode* other, bool ignoreMapCast) const;
+	virtual bool dsqlMatch(DsqlCompilerScratch* dsqlScratch, const ExprNode* other, bool ignoreMapCast) const;
 	virtual void genBlr(DsqlCompilerScratch* dsqlScratch);
 
 	virtual AggregateSourceNode* copy(thread_db* tdbb, NodeCopier& copier) const;
-	virtual void ignoreDbKey(thread_db* tdbb, CompilerScratch* csb) const;
 	virtual RecordSourceNode* pass1(thread_db* tdbb, CompilerScratch* csb);
 	virtual void pass1Source(thread_db* tdbb, CompilerScratch* csb, RseNode* rse,
 		BoolExprNode** boolean, RecordSourceNodeStack& stack);
@@ -460,7 +502,7 @@ public:
 	virtual RecordSource* compile(thread_db* tdbb, OptimizerBlk* opt, bool innerSubStream);
 
 private:
-	void genMap(DsqlCompilerScratch* dsqlScratch, dsql_map* map);
+	void genMap(DsqlCompilerScratch* dsqlScratch, UCHAR blrVerb, dsql_map* map);
 
 	RecordSource* generate(thread_db* tdbb, OptimizerBlk* opt, BoolExprNodeStack* parentStack,
 		StreamType shellStream);
@@ -468,12 +510,14 @@ private:
 public:
 	NestConst<ValueListNode> dsqlGroup;
 	NestConst<RseNode> dsqlRse;
-	bool dsqlWindow;
 	NestConst<SortNode> group;
 	NestConst<MapNode> map;
 
 private:
 	NestConst<RseNode> rse;
+
+public:
+	bool dsqlWindow;
 };
 
 class UnionSourceNode : public TypedNode<RecordSourceNode, RecordSourceNode::TYPE_UNION>
@@ -481,13 +525,13 @@ class UnionSourceNode : public TypedNode<RecordSourceNode, RecordSourceNode::TYP
 public:
 	explicit UnionSourceNode(MemoryPool& pool)
 		: TypedNode<RecordSourceNode, RecordSourceNode::TYPE_UNION>(pool),
-		  dsqlAll(false),
-		  recursive(false),
 		  dsqlClauses(NULL),
 		  dsqlParentRse(NULL),
 		  clauses(pool),
 		  maps(pool),
-		  mapStream(0)
+		  mapStream(0),
+		  dsqlAll(false),
+		  recursive(false)
 	{
 	}
 
@@ -504,7 +548,6 @@ public:
 	virtual void genBlr(DsqlCompilerScratch* dsqlScratch);
 
 	virtual UnionSourceNode* copy(thread_db* tdbb, NodeCopier& copier) const;
-	virtual void ignoreDbKey(thread_db* tdbb, CompilerScratch* csb) const;
 
 	virtual RecordSourceNode* pass1(thread_db* /*tdbb*/, CompilerScratch* /*csb*/)
 	{
@@ -529,8 +572,6 @@ private:
 		FB_SIZE_T nstreams, BoolExprNodeStack* parentStack, StreamType shellStream);
 
 public:
-	bool dsqlAll;		// UNION ALL
-	bool recursive;		// union node is a recursive union
 	RecSourceListNode* dsqlClauses;
 	RseNode* dsqlParentRse;
 
@@ -538,15 +579,20 @@ private:
 	Firebird::Array<NestConst<RseNode> > clauses;	// RseNode's for union
 	Firebird::Array<NestConst<MapNode> > maps;		// RseNode's maps
 	StreamType mapStream;	// stream for next level record of recursive union
+
+public:
+	bool dsqlAll;		// UNION ALL
+	bool recursive;		// union node is a recursive union
 };
 
 class WindowSourceNode : public TypedNode<RecordSourceNode, RecordSourceNode::TYPE_WINDOW>
 {
 public:
-	struct Partition
+	struct Window
 	{
-		explicit Partition(MemoryPool&)
-			: stream(INVALID_STREAM)
+		explicit Window(MemoryPool&)
+			: stream(INVALID_STREAM),
+			  exclusion(WindowClause::Exclusion::NO_OTHERS)
 		{
 		}
 
@@ -555,19 +601,22 @@ public:
 		NestConst<SortNode> regroup;
 		NestConst<SortNode> order;
 		NestConst<MapNode> map;
+		NestConst<WindowClause::FrameExtent> frameExtent;
+		WindowClause::Exclusion exclusion;
 	};
 
 	explicit WindowSourceNode(MemoryPool& pool)
 		: TypedNode<RecordSourceNode, RecordSourceNode::TYPE_WINDOW>(pool),
 		  rse(NULL),
-		  partitions(pool)
+		  windows(pool)
 	{
 	}
 
 	static WindowSourceNode* parse(thread_db* tdbb, CompilerScratch* csb);
 
 private:
-	void parsePartitionBy(thread_db* tdbb, CompilerScratch* csb);
+	void parseLegacyPartitionBy(thread_db* tdbb, CompilerScratch* csb);
+	void parseWindow(thread_db* tdbb, CompilerScratch* csb);
 
 public:
 	virtual StreamType getStream() const
@@ -579,14 +628,13 @@ public:
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
 
 	virtual WindowSourceNode* copy(thread_db* tdbb, NodeCopier& copier) const;
-	virtual void ignoreDbKey(thread_db* tdbb, CompilerScratch* csb) const;
 	virtual RecordSourceNode* pass1(thread_db* tdbb, CompilerScratch* csb);
 	virtual void pass1Source(thread_db* tdbb, CompilerScratch* csb, RseNode* rse,
 		BoolExprNode** boolean, RecordSourceNodeStack& stack);
 	virtual RecordSourceNode* pass2(thread_db* tdbb, CompilerScratch* csb);
 	virtual void pass2Rse(thread_db* tdbb, CompilerScratch* csb);
 	virtual bool containsStream(StreamType checkStream) const;
-	virtual void collectStreams(SortedStreamList& streamList) const;
+	virtual void collectStreams(CompilerScratch* csb, SortedStreamList& streamList) const;
 
 	virtual void computeDbKeyStreams(StreamList& /*streamList*/) const
 	{
@@ -602,18 +650,19 @@ public:
 
 private:
 	NestConst<RseNode> rse;
-	Firebird::ObjectsArray<Partition> partitions;
+	Firebird::ObjectsArray<Window> windows;
 };
 
 class RseNode : public TypedNode<RecordSourceNode, RecordSourceNode::TYPE_RSE>
 {
 public:
-	static const unsigned FLAG_VARIANT			= 0x01;	// variant (not invariant?)
-	static const unsigned FLAG_SINGULAR			= 0x02;	// singleton select
-	static const unsigned FLAG_WRITELOCK		= 0x04;	// locked for write
-	static const unsigned FLAG_SCROLLABLE		= 0x08;	// scrollable cursor
-	static const unsigned FLAG_DSQL_COMPARATIVE	= 0x10;	// transformed from DSQL ComparativeBoolNode
-	static const unsigned FLAG_OPT_FIRST_ROWS	= 0x20;	// optimize retrieval for first rows
+	static const USHORT FLAG_VARIANT			= 0x01;	// variant (not invariant?)
+	static const USHORT FLAG_SINGULAR			= 0x02;	// singleton select
+	static const USHORT FLAG_WRITELOCK			= 0x04;	// locked for write
+	static const USHORT FLAG_SCROLLABLE			= 0x08;	// scrollable cursor
+	static const USHORT FLAG_DSQL_COMPARATIVE	= 0x10;	// transformed from DSQL ComparativeBoolNode
+	static const USHORT FLAG_OPT_FIRST_ROWS		= 0x20;	// optimize retrieval for first rows
+	static const USHORT FLAG_LATERAL			= 0x40;	// lateral derived table
 
 	explicit RseNode(MemoryPool& pool)
 		: TypedNode<RecordSourceNode, RecordSourceNode::TYPE_RSE>(pool),
@@ -626,27 +675,20 @@ public:
 		  dsqlJoinUsing(NULL),
 		  dsqlGroup(NULL),
 		  dsqlHaving(NULL),
+		  dsqlNamedWindows(NULL),
 		  dsqlOrder(NULL),
 		  dsqlStreams(NULL),
-		  dsqlExplicitJoin(false),
-		  rse_jointype(0),
 		  rse_invariants(NULL),
 		  rse_relations(pool),
-		  flags(0)
+		  flags(0),
+		  rse_jointype(0),
+		  dsqlExplicitJoin(false)
 	{
-		addDsqlChildNode(dsqlStreams);
-		addDsqlChildNode(dsqlWhere);
-		addDsqlChildNode(dsqlJoinUsing);
-		addDsqlChildNode(dsqlOrder);
-		addDsqlChildNode(dsqlDistinct);
-		addDsqlChildNode(dsqlSelectList);
-		addDsqlChildNode(dsqlFirst);
-		addDsqlChildNode(dsqlSkip);
 	}
 
-	RseNode* clone()
+	RseNode* clone(MemoryPool& pool)
 	{
-		RseNode* obj = FB_NEW_POOL(getPool()) RseNode(getPool());
+		RseNode* obj = FB_NEW_POOL(pool) RseNode(pool);
 
 		obj->dsqlFirst = dsqlFirst;
 		obj->dsqlSkip = dsqlSkip;
@@ -657,6 +699,7 @@ public:
 		obj->dsqlJoinUsing = dsqlJoinUsing;
 		obj->dsqlGroup = dsqlGroup;
 		obj->dsqlHaving = dsqlHaving;
+		obj->dsqlNamedWindows = dsqlNamedWindows;
 		obj->dsqlOrder = dsqlOrder;
 		obj->dsqlStreams = dsqlStreams;
 		obj->dsqlContext = dsqlContext;
@@ -677,6 +720,23 @@ public:
 		return obj;
 	}
 
+	virtual void getChildren(NodeRefsHolder& holder, bool dsql) const
+	{
+		RecordSourceNode::getChildren(holder, dsql);
+
+		if (dsql)
+		{
+			holder.add(dsqlStreams);
+			holder.add(dsqlWhere);
+			holder.add(dsqlJoinUsing);
+			holder.add(dsqlOrder);
+			holder.add(dsqlDistinct);
+			holder.add(dsqlSelectList);
+			holder.add(dsqlFirst);
+			holder.add(dsqlSkip);
+		}
+	}
+
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
 	virtual bool dsqlAggregateFinder(AggregateFinder& visitor);
 	virtual bool dsqlAggregate2Finder(Aggregate2Finder& visitor);
@@ -685,11 +745,10 @@ public:
 	virtual bool dsqlFieldFinder(FieldFinder& visitor);
 	virtual RseNode* dsqlFieldRemapper(FieldRemapper& visitor);
 
-	virtual bool dsqlMatch(const ExprNode* other, bool ignoreMapCast) const;
+	virtual bool dsqlMatch(DsqlCompilerScratch* dsqlScratch, const ExprNode* other, bool ignoreMapCast) const;
 	virtual RseNode* dsqlPass(DsqlCompilerScratch* dsqlScratch);
 
 	virtual RseNode* copy(thread_db* tdbb, NodeCopier& copier) const;
-	virtual void ignoreDbKey(thread_db* tdbb, CompilerScratch* csb) const;
 	virtual RseNode* pass1(thread_db* tdbb, CompilerScratch* csb);
 	virtual void pass1Source(thread_db* tdbb, CompilerScratch* csb, RseNode* rse,
 		BoolExprNode** boolean, RecordSourceNodeStack& stack);
@@ -708,7 +767,7 @@ public:
 	virtual void findDependentFromStreams(const OptimizerRetrieval* optRet,
 		SortedStreamList* streamList);
 
-	virtual void collectStreams(SortedStreamList& streamList) const;
+	virtual void collectStreams(CompilerScratch* csb, SortedStreamList& streamList) const;
 
 	virtual RecordSource* compile(thread_db* tdbb, OptimizerBlk* opt, bool innerSubStream);
 
@@ -726,10 +785,9 @@ public:
 	NestConst<ValueListNode> dsqlJoinUsing;
 	NestConst<ValueListNode> dsqlGroup;
 	NestConst<BoolExprNode> dsqlHaving;
+	NamedWindowsClause* dsqlNamedWindows;
 	NestConst<ValueListNode> dsqlOrder;
 	NestConst<RecSourceListNode> dsqlStreams;
-	bool dsqlExplicitJoin;
-	USHORT rse_jointype;		// inner, left, full
 	NestConst<ValueExprNode> rse_first;
 	NestConst<ValueExprNode> rse_skip;
 	NestConst<BoolExprNode> rse_boolean;
@@ -739,7 +797,9 @@ public:
 	NestConst<PlanNode> rse_plan;		// user-specified access plan
 	NestConst<VarInvariantArray> rse_invariants; // Invariant nodes bound to top-level RSE
 	Firebird::Array<NestConst<RecordSourceNode> > rse_relations;
-	unsigned flags;
+	USHORT flags;
+	USHORT rse_jointype;		// inner, left, full
+	bool dsqlExplicitJoin;
 };
 
 class SelectExprNode : public TypedNode<RecordSourceNode, RecordSourceNode::TYPE_SELECT_EXPR>
@@ -763,11 +823,6 @@ public:
 	{
 		fb_assert(false);
 		return NULL;
-	}
-
-	virtual void ignoreDbKey(thread_db* /*tdbb*/, CompilerScratch* /*csb*/) const
-	{
-		fb_assert(false);
 	}
 
 	virtual RseNode* pass1(thread_db* /*tdbb*/, CompilerScratch* /*csb*/)
@@ -816,7 +871,7 @@ public:
 	NestConst<RowsClause> rowsClause;
 	NestConst<WithClause> withClause;
 	Firebird::string alias;
-	Firebird::ObjectsArray<Firebird::MetaName>* columns;
+	Firebird::ObjectsArray<MetaName>* columns;
 };
 
 

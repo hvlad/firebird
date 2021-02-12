@@ -9,7 +9,7 @@
 #include "../common/classes/alloc.h"
 #include "../common/StatusHolder.h"
 #include "../common/classes/ImplementHelper.h"
-#include "../dsql/sqlda_pub.h"
+#include "firebird/impl/sqlda_pub.h"
 
 #else // INTERNAL_FIREBIRD
 
@@ -87,7 +87,6 @@ public:
 						getMetadataBuilder(&statusWrapper, 0);
 				check(&statusWrapper);
 				builder = bld;
-				builder->addRef();
 			}
 		}
 		catch (...)
@@ -99,7 +98,7 @@ public:
 
 	~Message()
 	{
-		delete buffer;
+		delete[] buffer;
 #ifndef INTERNAL_FIREBIRD
 		s->dispose();
 #endif
@@ -200,7 +199,6 @@ public:
 			Firebird::IMessageMetadata* aMeta = builder->getMetadata(&statusWrapper);
 			check(&statusWrapper);
 			metadata = aMeta;
-			metadata->addRef();
 			builder->release();
 			builder = NULL;
 		}
@@ -303,7 +301,7 @@ public:
 
 	~Field()
 	{
-		delete charBuffer;
+		delete[] charBuffer;
 	}
 
 	operator T()

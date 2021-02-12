@@ -23,7 +23,7 @@
 #ifndef DSQL_BOOL_NODES_H
 #define DSQL_BOOL_NODES_H
 
-#include "../jrd/blr.h"
+#include "firebird/impl/blr.h"
 #include "../dsql/Nodes.h"
 
 namespace Jrd {
@@ -39,13 +39,21 @@ public:
 
 	static DmlNode* parse(thread_db* tdbb, MemoryPool& pool, CompilerScratch* csb, const UCHAR blrOp);
 
+	virtual void getChildren(NodeRefsHolder& holder, bool dsql) const
+	{
+		BoolExprNode::getChildren(holder, dsql);
+
+		holder.add(arg1);
+		holder.add(arg2);
+	}
+
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
 	virtual BoolExprNode* dsqlPass(DsqlCompilerScratch* dsqlScratch);
 	virtual void genBlr(DsqlCompilerScratch* dsqlScratch);
 
 	virtual BoolExprNode* copy(thread_db* tdbb, NodeCopier& copier) const;
-	virtual bool dsqlMatch(const ExprNode* other, bool ignoreMapCast) const;
-	virtual bool sameAs(const ExprNode* other, bool ignoreStreams) const;
+	virtual bool dsqlMatch(DsqlCompilerScratch* dsqlScratch, const ExprNode* other, bool ignoreMapCast) const;
+	virtual bool sameAs(CompilerScratch* csb, const ExprNode* other, bool ignoreStreams) const;
 	virtual bool execute(thread_db* tdbb, jrd_req* request) const;
 
 private:
@@ -62,7 +70,7 @@ public:
 class ComparativeBoolNode : public TypedNode<BoolExprNode, ExprNode::TYPE_COMPARATIVE_BOOL>
 {
 public:
-	enum DsqlFlag
+	enum DsqlFlag : UCHAR
 	{
 		DFLAG_NONE,
 		DFLAG_ANSI_ALL,
@@ -74,18 +82,27 @@ public:
 
 	static DmlNode* parse(thread_db* tdbb, MemoryPool& pool, CompilerScratch* csb, const UCHAR blrOp);
 
+	virtual void getChildren(NodeRefsHolder& holder, bool dsql) const
+	{
+		BoolExprNode::getChildren(holder, dsql);
+
+		holder.add(arg1);
+		holder.add(arg2);
+		holder.add(arg3);
+	}
+
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
 	virtual BoolExprNode* dsqlPass(DsqlCompilerScratch* dsqlScratch);
 	virtual void genBlr(DsqlCompilerScratch* dsqlScratch);
 
-	virtual bool possiblyUnknown()
+	virtual bool possiblyUnknown(OptimizerBlk* opt)
 	{
-		return blrOp == blr_equiv ? true : BoolExprNode::possiblyUnknown();
+		return blrOp == blr_equiv ? true : BoolExprNode::possiblyUnknown(opt);
 	}
 
 	virtual BoolExprNode* copy(thread_db* tdbb, NodeCopier& copier) const;
-	virtual bool dsqlMatch(const ExprNode* other, bool ignoreMapCast) const;
-	virtual bool sameAs(const ExprNode* other, bool ignoreStreams) const;
+	virtual bool dsqlMatch(DsqlCompilerScratch* dsqlScratch, const ExprNode* other, bool ignoreMapCast) const;
+	virtual bool sameAs(CompilerScratch* csb, const ExprNode* other, bool ignoreStreams) const;
 	virtual BoolExprNode* pass1(thread_db* tdbb, CompilerScratch* csb);
 	virtual void pass2Boolean1(thread_db* tdbb, CompilerScratch* csb);
 	virtual void pass2Boolean2(thread_db* tdbb, CompilerScratch* csb);
@@ -118,11 +135,17 @@ public:
 
 	static DmlNode* parse(thread_db* tdbb, MemoryPool& pool, CompilerScratch* csb, const UCHAR blrOp);
 
+	virtual void getChildren(NodeRefsHolder& holder, bool dsql) const
+	{
+		BoolExprNode::getChildren(holder, dsql);
+		holder.add(arg);
+	}
+
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
 	virtual BoolExprNode* dsqlPass(DsqlCompilerScratch* dsqlScratch);
 	virtual void genBlr(DsqlCompilerScratch* dsqlScratch);
 
-	virtual bool possiblyUnknown()
+	virtual bool possiblyUnknown(OptimizerBlk* /*opt*/)
 	{
 		return true;
 	}
@@ -145,11 +168,17 @@ public:
 
 	static DmlNode* parse(thread_db* tdbb, MemoryPool& pool, CompilerScratch* csb, const UCHAR blrOp);
 
+	virtual void getChildren(NodeRefsHolder& holder, bool dsql) const
+	{
+		BoolExprNode::getChildren(holder, dsql);
+		holder.add(arg);
+	}
+
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
 	virtual BoolExprNode* dsqlPass(DsqlCompilerScratch* dsqlScratch);
 	virtual void genBlr(DsqlCompilerScratch* dsqlScratch);
 
-	virtual bool possiblyUnknown()
+	virtual bool possiblyUnknown(OptimizerBlk* /*opt*/)
 	{
 		return true;
 	}
@@ -173,6 +202,16 @@ public:
 
 	static DmlNode* parse(thread_db* tdbb, MemoryPool& pool, CompilerScratch* csb, const UCHAR blrOp);
 
+	virtual void getChildren(NodeRefsHolder& holder, bool dsql) const
+	{
+		BoolExprNode::getChildren(holder, dsql);
+
+		if (dsql)
+			holder.add(dsqlRse);
+		else
+			holder.add(rse);
+	}
+
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
 	virtual BoolExprNode* dsqlPass(DsqlCompilerScratch* dsqlScratch);
 	virtual void genBlr(DsqlCompilerScratch* dsqlScratch);
@@ -187,14 +226,14 @@ public:
 		return true;
 	}
 
-	virtual bool possiblyUnknown()
+	virtual bool possiblyUnknown(OptimizerBlk* /*opt*/)
 	{
 		return true;
 	}
 
 	virtual BoolExprNode* copy(thread_db* tdbb, NodeCopier& copier) const;
-	virtual bool dsqlMatch(const ExprNode* other, bool ignoreMapCast) const;
-	virtual bool sameAs(const ExprNode* other, bool ignoreStreams) const;
+	virtual bool dsqlMatch(DsqlCompilerScratch* dsqlScratch, const ExprNode* other, bool ignoreMapCast) const;
+	virtual bool sameAs(CompilerScratch* csb, const ExprNode* other, bool ignoreStreams) const;
 	virtual BoolExprNode* pass1(thread_db* tdbb, CompilerScratch* csb);
 	virtual void pass2Boolean1(thread_db* tdbb, CompilerScratch* csb);
 	virtual void pass2Boolean2(thread_db* tdbb, CompilerScratch* csb);

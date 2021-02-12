@@ -26,6 +26,8 @@
 
 //#define DEBUG_LCK
 
+#include "../lock/lock_proto.h"
+
 #ifdef DEBUG_LCK
 #include "../common/classes/SyncObject.h"
 #endif
@@ -35,7 +37,6 @@
 namespace Jrd {
 
 class Database;
-class Attachment;
 class thread_db;
 
 // Lock types
@@ -63,14 +64,17 @@ enum lck_t {
 	LCK_tt_exist,				// TextType existence lock
 	LCK_cancel,					// Cancellation lock
 	LCK_btr_dont_gc,			// Prevent removal of b-tree page from index
-	LCK_shared_counter,			// Database-wide shared counter
-	LCK_tra_pc,					// Precommitted transaction lock
 	LCK_rel_gc,					// Allow garbage collection for relation
+	LCK_tpc_init,				// TPC initializer lock
+	LCK_tpc_block,				// TPC memory block file existence lock
 	LCK_fun_exist,				// Function existence lock
 	LCK_rel_rescan,				// Relation forced rescan lock
 	LCK_crypt,					// Crypt lock for single crypt thread
 	LCK_crypt_status,			// Notifies about changed database encryption status
-	LCK_record_gc				// Record-level GC lock
+	LCK_record_gc,				// Record-level GC lock
+	LCK_alter_database,			// ALTER DATABASE lock
+	LCK_repl_state,				// Replication state lock
+	LCK_repl_tables				// Replication set lock
 };
 
 // Lock owner types
@@ -84,6 +88,7 @@ class Lock : public pool_alloc_rpt<UCHAR, type_lck>
 {
 public:
 	Lock(thread_db* tdbb, USHORT length, lck_t type, void* object = NULL, lock_ast_t ast = NULL);
+	~Lock();
 
 	Lock* detach();
 
@@ -97,7 +102,7 @@ public:
 		return lck_attachment ? lck_attachment->getHandle() : NULL;
 	}
 
-	void setLockAttachment(thread_db* tdbb, Attachment* att);
+	void setLockAttachment(Attachment* att);
 
 #ifdef DEBUG_LCK
 	Firebird::SyncObject	lck_sync;
@@ -119,6 +124,11 @@ public:
 	Lock* lck_next;					// lck_next and lck_prior form a doubly linked list of locks
 	Lock* lck_prior;				// bound to attachment
 
+#ifdef DEBUG_LCK_LIST
+	UCHAR lck_next_type;			// Lock type of next lock in list
+	UCHAR lck_prev_type;			// Lock type of prev lock in list
+#endif
+
 	Lock* lck_collision;			// Collisions in compatibility table
 	Lock* lck_identical;			// Identical locks in compatibility table
 
@@ -130,15 +140,38 @@ public:
 public:
 	UCHAR lck_logical;				// Logical lock level
 	UCHAR lck_physical;				// Physical lock level
-	SINT64 lck_data;				// Data associated with a lock
+	LOCK_DATA_T lck_data;			// Data associated with a lock
+
+private:
+
+	static const size_t KEY_STATIC_SIZE = sizeof(SINT64);
 
 	union
 	{
-		UCHAR lck_string[1];
-		SINT64 lck_long;
+		UCHAR key_string[KEY_STATIC_SIZE];
+		SINT64 key_long;
 	} lck_key;						// Lock key string
 
-	UCHAR lck_tail[1];				// Makes the allocator happy
+public:
+
+	UCHAR* getKeyPtr()
+	{
+#ifdef WORDS_BIGENDIAN
+		if (lck_length < KEY_STATIC_SIZE)
+			return &lck_key.key_string[KEY_STATIC_SIZE - lck_length];
+#endif
+		return &lck_key.key_string[0];
+	}
+
+	SINT64 getKey() const
+	{
+		return lck_key.key_long;
+	}
+
+	void setKey(SINT64 value)
+	{
+		lck_key.key_long = value;
+	}
 };
 
 } // namespace Jrd

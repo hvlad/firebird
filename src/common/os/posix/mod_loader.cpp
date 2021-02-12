@@ -27,9 +27,15 @@
 
 #include "firebird.h"
 #include "../common/os/mod_loader.h"
+#include "../common/os/os_utils.h"
+#include "../common/os/path_utils.h"
 #ifdef HAVE_UNISTD_H
 #include <unistd.h>
 #endif
+
+#include <limits.h>
+#include <stdlib.h>
+
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <dlfcn.h>
@@ -39,45 +45,79 @@
 class DlfcnModule : public ModuleLoader::Module
 {
 public:
-	DlfcnModule(void* m)
-		: module(m)
+	DlfcnModule(MemoryPool& pool, const Firebird::PathName& aFileName, void* m)
+		: ModuleLoader::Module(pool, aFileName),
+		  module(m)
 	{}
 
 	~DlfcnModule();
-	void* findSymbol(const Firebird::string&);
+	void* findSymbol(ISC_STATUS*, const Firebird::string&);
 
 private:
 	void* module;
 };
 
+static void makeErrorStatus(ISC_STATUS* status, const char* text)
+{
+	if (status)
+	{
+		status[0] = isc_arg_gds;
+		status[1] = isc_random;
+		status[2] = isc_arg_string;
+		status[3] = (ISC_STATUS) text;
+		status[4] = isc_arg_end;
+	}
+}
+
 bool ModuleLoader::isLoadableModule(const Firebird::PathName& module)
 {
-	struct stat sb;
-	if (-1 == stat(module.c_str(), &sb))
+	struct STAT sb;
+
+	if (-1 == os_utils::stat(module.c_str(), &sb))
 		return false;
+
 	if ( ! (sb.st_mode & S_IFREG) )		// Make sure it is a plain file
 		return false;
+
 	if ( -1 == access(module.c_str(), R_OK | X_OK))
 		return false;
+
 	return true;
 }
 
-void ModuleLoader::doctorModuleExtension(Firebird::PathName& name)
+bool ModuleLoader::doctorModuleExtension(Firebird::PathName& name, int& step)
 {
 	if (name.isEmpty())
-		return;
+		return false;
 
-	Firebird::PathName::size_type pos = name.rfind("." SHRLIB_EXT);
-	if (pos != name.length() - 3)
+	switch (step++)
 	{
-		name += "." SHRLIB_EXT;
+	case 0: // Step 0: append missing extension
+		{
+			Firebird::PathName::size_type pos = name.rfind("." SHRLIB_EXT);
+			if (pos != name.length() - 3)
+			{
+				pos = name.rfind("." SHRLIB_EXT ".");
+				if (pos == Firebird::PathName::npos)
+				{
+					name += "." SHRLIB_EXT;
+					return true;
+				}
+			}
+			step++; // instead of break
+		}
+	case 1: // Step 1: insert missing prefix
+		{
+			Firebird::PathName::size_type pos = name.rfind('/');
+			pos = (pos == Firebird::PathName::npos) ? 0 : pos + 1;
+			if (name.find("lib", pos) != pos)
+			{
+				name.insert(pos, "lib");
+				return true;
+			}
+		}
 	}
-	pos = name.rfind('/');
-	pos = (pos == Firebird::PathName::npos) ? 0 : pos + 1;
-	if (name.find("lib", pos) != pos)
-	{
-		name.insert(pos, "lib");
-	}
+	return false;
 }
 
 #ifdef DEV_BUILD
@@ -86,14 +126,12 @@ void ModuleLoader::doctorModuleExtension(Firebird::PathName& name)
 #define FB_RTLD_MODE RTLD_LAZY	// save time when loading library
 #endif
 
-ModuleLoader::Module* ModuleLoader::loadModule(const Firebird::PathName& modPath)
+ModuleLoader::Module* ModuleLoader::loadModule(ISC_STATUS* status, const Firebird::PathName& modPath)
 {
 	void* module = dlopen(modPath.nullStr(), FB_RTLD_MODE);
 	if (module == NULL)
 	{
-#ifdef DEV_BUILD
-//		gds__log("loadModule failed loading %s: %s", modPath.c_str(), dlerror());
-#endif
+		makeErrorStatus(status, dlerror());
 		return 0;
 	}
 
@@ -104,7 +142,13 @@ ModuleLoader::Module* ModuleLoader::loadModule(const Firebird::PathName& modPath
 	system(command.c_str());
 #endif
 
-	return FB_NEW_POOL(*getDefaultMemoryPool()) DlfcnModule(module);
+	Firebird::PathName linkPath = modPath;
+	char b[PATH_MAX];
+	const char* newPath = realpath(modPath.c_str(), b);
+	if (newPath)
+		linkPath = newPath;
+
+	return FB_NEW_POOL(*getDefaultMemoryPool()) DlfcnModule(*getDefaultMemoryPool(), linkPath, module);
 }
 
 DlfcnModule::~DlfcnModule()
@@ -113,15 +157,48 @@ DlfcnModule::~DlfcnModule()
 		dlclose(module);
 }
 
-void* DlfcnModule::findSymbol(const Firebird::string& symName)
+void* DlfcnModule::findSymbol(ISC_STATUS* status, const Firebird::string& symName)
 {
 	void* result = dlsym(module, symName.c_str());
 	if (!result)
 	{
-		Firebird::string newSym = '_' + symName;
-
+		Firebird::string newSym ='_' + symName;
 		result = dlsym(module, newSym.c_str());
 	}
+
+	if (!result)
+	{
+		makeErrorStatus(status, dlerror());
+		return NULL;
+	}
+
+#ifdef HAVE_DLADDR
+	Dl_info info;
+	if (!dladdr(result, &info))
+	{
+		makeErrorStatus(status, dlerror());
+		return NULL;
+	}
+
+	const char* errText = "Actual module name does not match requested";
+	if (PathUtils::isRelative(fileName) || PathUtils::isRelative(info.dli_fname))
+	{
+		// check only name (not path) of the library
+		Firebird::PathName dummyDir, nm1, nm2;
+		PathUtils::splitLastComponent(dummyDir, nm1, fileName);
+		PathUtils::splitLastComponent(dummyDir, nm2, info.dli_fname);
+		if (nm1 != nm2)
+		{
+			makeErrorStatus(status, errText);
+			return NULL;
+		}
+	}
+	else if (fileName != info.dli_fname)
+	{
+		makeErrorStatus(status, errText);
+		return NULL;
+	}
+#endif
+
 	return result;
 }
-

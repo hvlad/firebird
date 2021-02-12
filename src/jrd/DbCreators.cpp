@@ -38,22 +38,24 @@
 #include "../common/classes/GenericMap.h"
 #include "../common/classes/RefMutex.h"
 #include "../common/classes/SyncObject.h"
-#include "../common/classes/MetaName.h"
+#include "../jrd/MetaName.h"
 #include "../common/isc_s_proto.h"
 #include "../common/isc_proto.h"
 #include "../common/ThreadStart.h"
 #include "../common/db_alias.h"
+#include "../common/classes/ParsedList.h"
 
 #include "../jrd/DbCreators.h"
 #include "../jrd/tra.h"
 #include "../jrd/ini.h"
 #include "../jrd/status.h"
-#include "gen/ids.h"
+#include "../jrd/ids.h"
 
 #define DBC_DEBUG(A)
 
 using namespace Firebird;
 using namespace Jrd;
+using namespace Auth;
 
 namespace {
 
@@ -69,16 +71,16 @@ void check(const char* s, IStatus* st)
 
 bool openDb(const char* securityDb, RefPtr<IAttachment>& att, RefPtr<ITransaction>& tra)
 {
-	DispatcherPtr prov;
-
-	ClumpletWriter embeddedSysdba(ClumpletWriter::Tagged, MAX_DPB_SIZE, isc_dpb_version1);
-	embeddedSysdba.insertString(isc_dpb_user_name, SYSDBA_USER_NAME, fb_strlen(SYSDBA_USER_NAME));
-	embeddedSysdba.insertByte(isc_dpb_sec_attach, TRUE);
-	embeddedSysdba.insertByte(isc_dpb_no_db_triggers, TRUE);
+	ClumpletWriter embeddedAttach(ClumpletWriter::dpbList, MAX_DPB_SIZE);
+	embeddedAttach.insertString(isc_dpb_user_name, DBA_USER_NAME, fb_strlen(DBA_USER_NAME));
+	embeddedAttach.insertByte(isc_dpb_sec_attach, TRUE);
+	embeddedAttach.insertString(isc_dpb_config, ParsedList::getNonLoopbackProviders(securityDb));
+	embeddedAttach.insertByte(isc_dpb_no_db_triggers, TRUE);
 
 	FbLocalStatus st;
-	att = prov->attachDatabase(&st, securityDb,
-		embeddedSysdba.getBufferLength(), embeddedSysdba.getBuffer());
+	DispatcherPtr prov;
+	att.assignRefNoIncr(prov->attachDatabase(&st, securityDb,
+		embeddedAttach.getBufferLength(), embeddedAttach.getBuffer()));
 	if (st->getState() & IStatus::STATE_ERRORS)
 	{
 		if (!fb_utils::containsErrorCode(st->getErrors(), isc_io_error))
@@ -91,7 +93,7 @@ bool openDb(const char* securityDb, RefPtr<IAttachment>& att, RefPtr<ITransactio
 	ClumpletWriter readOnly(ClumpletWriter::Tpb, MAX_DPB_SIZE, isc_tpb_version1);
 	readOnly.insertTag(isc_tpb_read);
 	readOnly.insertTag(isc_tpb_wait);
-	tra = att->startTransaction(&st, readOnly.getBufferLength(), readOnly.getBuffer());
+	tra.assignRefNoIncr(att->startTransaction(&st, readOnly.getBufferLength(), readOnly.getBuffer()));
 	check("IAttachment::startTransaction", &st);
 
 	return true;
@@ -102,20 +104,19 @@ bool openDb(const char* securityDb, RefPtr<IAttachment>& att, RefPtr<ITransactio
 
 namespace Jrd {
 
-bool checkCreateDatabaseGrant(const string& userName, const string& trustedRole,
-	const string& sqlRole, const char* securityDb)
+bool checkCreateDatabaseGrant(const MetaString& userName, const MetaString& trustedRole,
+	const MetaString& sqlRole, const char* securityDb)
 {
-	if (userName == SYSDBA_USER_NAME)
+	if (userName == DBA_USER_NAME)
 		return true;
 
 	RefPtr<IAttachment> att;
 	RefPtr<ITransaction> tra;
-	if (!openDb(securityDb, att, tra))
-		return false;
+	bool hasDb = openDb(securityDb, att, tra);
 
 	FbLocalStatus st;
-	string role(sqlRole);
-	if (role.hasData())
+	MetaString role(sqlRole);
+	if (hasDb && role.hasData())
 	{
 		const UCHAR info[] = { isc_info_db_sql_dialect, isc_info_end };
 		UCHAR buffer[BUFFER_TINY];
@@ -140,9 +141,9 @@ bool checkCreateDatabaseGrant(const string& userName, const string& trustedRole,
 			p += length;
 		}
 
-		JRD_make_role_name(role, dialect);
+		UserId::makeRoleName(role, dialect);
 
-		// We need to check is admin role granted to userName in security DB
+		// We need to check is role granted to userName in security DB
 		const char* sql = "select count(*) from RDB$USER_PRIVILEGES "
 			"where RDB$USER = ? and RDB$RELATION_NAME = ? and RDB$PRIVILEGE = 'M'";
 
@@ -176,6 +177,10 @@ bool checkCreateDatabaseGrant(const string& userName, const string& trustedRole,
 	if (role == ADMIN_ROLE)
 		return true;
 
+	if (!hasDb)
+		return false;
+
+	// check db creators table
 	Message gr;
 	Field<ISC_SHORT> uType(gr);
 	Field<Varying> u(gr, MAX_SQL_IDENTIFIER_LEN);
@@ -204,7 +209,51 @@ bool checkCreateDatabaseGrant(const string& userName, const string& trustedRole,
 		check("IAttachment::execute", &st);
 	}
 
-	return cnt > 0;
+	if (cnt > 0)
+		return true;
+
+	if (!role.hasData())
+		role = "NONE";
+
+	Message par2;
+	Field<ISC_SHORT> uType2(par2);
+	Field<Varying> u2(par2, MAX_SQL_IDENTIFIER_LEN);
+	Field<Varying> r2(par2, MAX_SQL_IDENTIFIER_LEN);
+	uType2 = obj_user;
+	u2 = userName.c_str();
+	r2 = role.c_str();
+
+	Message res2;
+	Field<Text> priv(res2, 8);
+
+	const char* sql =
+		"with recursive role_tree as ( "
+		"   select rdb$relation_name as nm, 0 as ur from rdb$user_privileges "
+		"       where rdb$privilege = 'M' and rdb$field_name = 'D' and rdb$user_type = ? and rdb$user = ? "
+		"   union all "
+		"   select rdb$role_name as nm, 1 as ur from rdb$roles "
+		"       where rdb$role_name = ? "
+		"   union all "
+		"   select p.rdb$relation_name as nm, t.ur from rdb$user_privileges p "
+		"       join role_tree t on t.nm = p.rdb$user "
+		"       where p.rdb$privilege = 'M' and (p.rdb$field_name = 'D' or t.ur = 1)) "
+		"select r.rdb$system_privileges "
+		"   from role_tree t join rdb$roles r on t.nm = r.rdb$role_name ";
+	RefPtr<IResultSet> rs(REF_NO_INCR, att->openCursor(&st, tra, 0, sql,
+		SQL_DIALECT_V6, par2.getMetadata(), par2.getBuffer(), res2.getMetadata(), NULL, 0));
+	check("IAttachment::execute", &st);
+
+	UserId::Privileges privileges, wrk;
+
+	while (rs->fetchNext(&st, res2.getBuffer()) == IStatus::RESULT_OK)
+	{
+		wrk.load(&priv);
+		privileges |= wrk;
+	}
+
+	check("IResultSet::fetchNext", &st);
+
+	return wrk.test(CREATE_DATABASE);
 }
 
 
@@ -260,7 +309,7 @@ RecordBuffer* DbCreatorsList::getList(thread_db* tdbb, jrd_rel* relation)
 	Field<Varying> u(gr, MAX_SQL_IDENTIFIER_LEN);
 
 	FbLocalStatus st;
-	RefPtr<IResultSet> curs(att->openCursor(&st, tra, 0,
+	RefPtr<IResultSet> curs(REF_NO_INCR, att->openCursor(&st, tra, 0,
 		"select RDB$USER_TYPE, RDB$USER from RDB$DB_CREATORS",
 		SQL_DIALECT_V6, NULL, NULL, gr.getMetadata(), NULL, 0));
 

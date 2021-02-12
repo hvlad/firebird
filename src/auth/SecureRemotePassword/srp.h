@@ -2,12 +2,18 @@
 #include "../common/classes/alloc.h"
 #include "../common/classes/fb_string.h"
 #include "../common/sha.h"
+#include "../common/sha2/sha2.h"
+
+#ifndef AUTH_SRP_SRP_H
+#define AUTH_SRP_SRP_H
 
 #define SRP_DEBUG 0		// >0 - prints some debug info
 						// >1 - uses consts instead randoms, NEVER use in PRODUCTION!
 
 // for HANDSHAKE_DEBUG
 #include "../remote/remot_proto.h"
+
+#include <functional>
 
 namespace Auth {
 
@@ -46,13 +52,13 @@ namespace Auth {
 
 class RemoteGroup;
 
-class Sha1 : public Firebird::Sha1
+template <class SHA> class SecureHash : public SHA
 {
 public:
 	void getInt(Firebird::BigInteger& hash)
 	{
 		Firebird::UCharBuffer tmp;
-		getHash(tmp);
+		SHA::getHash(tmp);
 		hash.assign(tmp.getCount(), tmp.begin());
 	}
 
@@ -60,7 +66,7 @@ public:
 	{
 		Firebird::UCharBuffer bytes;
 		data.getBytes(bytes);
-		process(bytes);
+		SHA::process(bytes);
 	}
 
 	void processStrippedInt(const Firebird::BigInteger& data)
@@ -70,18 +76,23 @@ public:
 		if (bytes.getCount())
 		{
 			unsigned int n = (bytes[0] == 0) ? 1u : 0;
-			process(bytes.getCount() - n, bytes.begin() + n);
+			SHA::process(bytes.getCount() - n, bytes.begin() + n);
 		}
 	}
 };
+
 
 class RemotePassword : public Firebird::GlobalStorage
 {
 private:
 	const RemoteGroup*		group;
-	Auth::Sha1				hash;
+	Auth::SecureHash<Firebird::Sha1>	hash;
 	Firebird::BigInteger	privateKey;
 	Firebird::BigInteger	scramble;
+
+protected:
+    virtual Firebird::BigInteger makeProof(const Firebird::BigInteger n1, const Firebird::BigInteger n2,
+                const char* salt, const Firebird::UCharBuffer& sessionKey) = 0;
 
 public:
 	Firebird::BigInteger	clientPublicKey;
@@ -89,11 +100,14 @@ public:
 
 public:
 	RemotePassword();
+	virtual ~RemotePassword();
 
 	static const char* plugName;
 	static const unsigned SRP_KEY_SIZE = 128;
 	static const unsigned SRP_VERIFIER_SIZE = SRP_KEY_SIZE;
 	static const unsigned SRP_SALT_SIZE = 32;
+
+	static Firebird::string pluginName(unsigned bits);
 
 	Firebird::BigInteger getUserHash(const char* account,
 									 const char* salt,
@@ -115,6 +129,27 @@ public:
 									 const Firebird::UCharBuffer& sessionKey);
 };
 
+template <class SHA> class RemotePasswordImpl : public RemotePassword
+{
+protected:
+	Firebird::BigInteger makeProof(const Firebird::BigInteger n1, const Firebird::BigInteger n2,
+                const char* salt, const Firebird::UCharBuffer& sessionKey)
+    {
+		Auth::SecureHash<SHA> digest;
+		digest.processInt(n1);				// H(prime) ^ H(g)
+		digest.processInt(n2);				// H(I)
+		digest.process(salt);				// s
+		digest.processInt(clientPublicKey);	// A
+		digest.processInt(serverPublicKey);	// B
+		digest.process(sessionKey);			// K
+
+		Firebird::BigInteger rc;
+		digest.getInt(rc);
+		return rc;
+	}
+};
+
+
 
 #if SRP_DEBUG > 0
 void dumpIt(const char* name, const Firebird::BigInteger& bi);
@@ -128,7 +163,8 @@ void static inline dumpIt(const char* /*name*/, const Firebird::string& /*str*/)
 void static inline dumpBin(const char* /*name*/, const Firebird::string& /*str*/) { }
 #endif
 
-
-void checkStatusVectorForMissingTable(const ISC_STATUS* v);
+void checkStatusVectorForMissingTable(const ISC_STATUS* v, std::function<void ()> cleanup = nullptr);
 
 } // namespace Auth
+
+#endif // AUTH_SRP_SRP_H

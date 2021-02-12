@@ -25,7 +25,7 @@
 #include "firebird.h"
 #include "../common/MsgMetadata.h"
 #include "../common/utils_proto.h"
-#include "../common/classes/MetaName.h"
+#include "../common/classes/MetaString.h"
 #include "../common/StatusHolder.h"
 #include "../jrd/align.h"
 
@@ -44,17 +44,6 @@ MetadataBuilder::MetadataBuilder(unsigned fieldCount)
 		msgMetadata->items.grow(fieldCount);
 }
 
-int MetadataBuilder::release()
-{
-	if (--refCounter != 0)
-	{
-		return 1;
-	}
-
-	delete this;
-	return 0;
-}
-
 void MetadataBuilder::setType(CheckStatusWrapper* status, unsigned index, unsigned type)
 {
 	try
@@ -70,6 +59,7 @@ void MetadataBuilder::setType(CheckStatusWrapper* status, unsigned index, unsign
 			if (dtype < DTYPE_TYPE_MAX)
 				msgMetadata->items[index].length = type_lengths[dtype];
 		}
+		msgMetadata->items[index].nullable = type & 1;
 
 		// Setting type & length is enough for an item to be ready for use
 		if (msgMetadata->items[index].length)
@@ -129,7 +119,7 @@ void MetadataBuilder::setCharSet(CheckStatusWrapper* status, unsigned index, uns
 	}
 }
 
-void MetadataBuilder::setScale(CheckStatusWrapper* status, unsigned index, unsigned scale)
+void MetadataBuilder::setScale(CheckStatusWrapper* status, unsigned index, int scale)
 {
 	try
 	{
@@ -143,6 +133,67 @@ void MetadataBuilder::setScale(CheckStatusWrapper* status, unsigned index, unsig
 		ex.stuffException(status);
 	}
 }
+
+void MetadataBuilder::setField(CheckStatusWrapper* status, unsigned index, const char* field)
+{
+	try
+	{
+		MutexLockGuard g(mtx, FB_FUNCTION);
+
+		indexError(index, "setField");
+		msgMetadata->items[index].field = field;
+	}
+	catch (const Exception& ex)
+	{
+		ex.stuffException(status);
+	}
+}
+
+void MetadataBuilder::setRelation(CheckStatusWrapper* status, unsigned index, const char* relation)
+{
+	try
+	{
+		MutexLockGuard g(mtx, FB_FUNCTION);
+
+		indexError(index, "setRelation");
+		msgMetadata->items[index].relation = relation;
+	}
+	catch (const Exception& ex)
+	{
+		ex.stuffException(status);
+	}
+}
+
+void MetadataBuilder::setOwner(CheckStatusWrapper* status, unsigned index, const char* owner)
+{
+	try
+	{
+		MutexLockGuard g(mtx, FB_FUNCTION);
+
+		indexError(index, "setOwner");
+		msgMetadata->items[index].owner = owner;
+	}
+	catch (const Exception& ex)
+	{
+		ex.stuffException(status);
+	}
+}
+
+void MetadataBuilder::setAlias(CheckStatusWrapper* status, unsigned index, const char* alias)
+{
+	try
+	{
+		MutexLockGuard g(mtx, FB_FUNCTION);
+
+		indexError(index, "setAlias");
+		msgMetadata->items[index].alias = alias;
+	}
+	catch (const Exception& ex)
+	{
+		ex.stuffException(status);
+	}
+}
+
 
 void MetadataBuilder::truncate(CheckStatusWrapper* status, unsigned count)
 {
@@ -198,7 +249,7 @@ void MetadataBuilder::moveNameToIndex(CheckStatusWrapper* status, const char* na
 			}
 		}
 
-		(Arg::Gds(isc_random) << (string("Name not found in IMetadataBuilder: ") + name)).raise();
+		(Arg::Gds(isc_metadata_name) << name).raise();
 	}
 	catch (const Exception& ex)
 	{
@@ -273,10 +324,10 @@ void MetadataBuilder::indexError(unsigned index, const char* functionName)
 
 
 // Add an item based on a descriptor.
-void MsgMetadata::addItem(const MetaName& name, bool nullable, const dsc& desc)
+void MsgMetadata::addItem(const MetaString& name, bool nullable, const dsc& desc)
 {
 	Item& item = items.add();
-	item.field = name.c_str();
+	item.field.assign(name.c_str(), name.length());
 	item.nullable = nullable;
 
 	SLONG sqlLen, sqlSubType, sqlScale, sqlType;
@@ -286,6 +337,7 @@ void MsgMetadata::addItem(const MetaName& name, bool nullable, const dsc& desc)
 	item.subType = sqlSubType;
 	item.length = sqlLen;
 	item.scale = sqlScale;
+	item.charSet = desc.getCharSet();
 
 	item.finished = true;
 }
@@ -294,21 +346,34 @@ void MsgMetadata::addItem(const MetaName& name, bool nullable, const dsc& desc)
 // returns ~0 on success or index of not finished item
 unsigned MsgMetadata::makeOffsets()
 {
-	length = 0;
+	length = alignedLength = 0;
+	alignment = type_alignments[dtype_short];	// NULL indicator
 
 	for (unsigned n = 0; n < items.getCount(); ++n)
 	{
 		Item* param = &items[n];
 		if (!param->finished)
 		{
-			length = 0;
+			length = alignment = 0;
 			return n;
 		}
+
+		unsigned dtype;
 		length = fb_utils::sqlTypeToDsc(length, param->type, param->length,
-			NULL /*dtype*/, NULL /*length*/, &param->offset, &param->nullInd);
+			&dtype, NULL /*length*/, &param->offset, &param->nullInd);
+
+		if (dtype >= DTYPE_TYPE_MAX)
+		{
+			length = alignment = 0;
+			return n;
+		}
+
+		alignment = MAX(alignment, type_alignments[dtype]);
 	}
 
-	return ~0;
+	alignedLength = FB_ALIGN(length, alignment);
+
+	return ~0u;
 }
 
 
@@ -375,29 +440,5 @@ void MsgMetadata::assign(IMessageMetadata* from)
 
 	makeOffsets();
 }
-
-
-int MsgMetadata::release()
-{
-	if (--refCounter != 0)
-	{
-		return 1;
-	}
-
-	delete this;
-	return 0;
-}
-
-/*
-int AttMetadata::release()
-{
-	if (--refCounter != 0)
-	{
-		return 1;
-	}
-
-	delete this;
-	return 0;
-}*/
 
 }	// namespace Firebird

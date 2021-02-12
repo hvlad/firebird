@@ -36,10 +36,69 @@
 #include "SyncObject.h"
 #include "Synchronize.h"
 
+using namespace std;
+
 namespace Firebird {
 
-static const int WRITER_INCR	= 0x00010000L;
-static const int READERS_MASK	= 0x0000FFFFL;
+bool SyncObject::tryLockShared(wait_type w, const char* from)
+{
+	//while (waiters.load(memory_order_acquire) == w)
+	//while ((waiters.load(memory_order_acquire) & WAIT_WRITERS_MASK) == 0)
+	while (true)
+	{
+		if (lockState.load(memory_order_seq_cst) < 0)
+			break;
+
+		if (lockState.fetch_add(STATE_READER_INCR) >= 0)
+		{
+#ifdef DEV_BUILD
+			MutexLockGuard g(mutex, FB_FUNCTION);
+			reason(from);
+#endif
+			return true;
+		}
+
+		// fix mistake
+		if (lockState.fetch_add(-STATE_READER_INCR) == STATE_READER_INCR)
+			grantLocks();
+		else
+			YieldProcessor();
+	}
+
+	return false;
+}
+
+bool SyncObject::tryLockExclusuve(wait_type w, ThreadSync* thread, const char* from)
+{
+	//while (waiters.load(memory_order_acquire) == w)
+	while (true)
+	{
+		const wait_type val = waiters.load();
+		if ((val & WAIT_WRITERS_MASK) != w || (val & WAIT_READERS_MASK) != 0)
+			break;
+
+		if (lockState.load() != 0)
+			break;
+
+		if (lockState.fetch_add(STATE_WRITER_INCR) == 0)
+		{
+			exclusiveThread.store(thread, memory_order_relaxed);
+#ifdef DEV_BUILD
+			MutexLockGuard g(mutex, FB_FUNCTION);
+			reason(from);
+#endif
+			return true;
+		}
+
+		// fix mistake
+		if (lockState.fetch_add(-STATE_WRITER_INCR) == STATE_WRITER_INCR)
+			grantLocks();
+		else
+			YieldProcessor();
+	}
+
+	return false;
+}
 
 bool SyncObject::lock(Sync* sync, SyncType type, const char* from, int timeOut)
 {
@@ -47,46 +106,20 @@ bool SyncObject::lock(Sync* sync, SyncType type, const char* from, int timeOut)
 
 	if (type == SYNC_SHARED)
 	{
-		//while (true)
-		while (waiters == 0)	// fair locking
-		{
-			const AtomicCounter::counter_type oldState = lockState;
-			if (oldState < 0)
-				break;
-
-			const AtomicCounter::counter_type newState = oldState + 1;
-			if (lockState.compareExchange(oldState, newState))
-			{
-				WaitForFlushCache();
-#ifdef DEV_BUILD
-				MutexLockGuard g(mutex, FB_FUNCTION);
-				reason(from);
-#endif
-				return true;
-			}
-		}
+		if (tryLockShared(0, from))
+			return true;
 
 		if (timeOut == 0)
 			return false;
 
 		mutex.enter(FB_FUNCTION);
-		++waiters;
+		waiters.fetch_add(WAIT_READER_INCR, memory_order_release);
 
-		//while (true)
-		while (!waitingThreads)	// fair locking
+		if (tryLockShared(WAIT_READER_INCR, from))
 		{
-			const AtomicCounter::counter_type oldState = lockState;
-			if (oldState < 0)
-				break;
-
-			const AtomicCounter::counter_type newState = oldState + 1;
-			if (lockState.compareExchange(oldState, newState))
-			{
-				--waiters;
-				reason(from);
-				mutex.leave();
-				return true;
-			}
+			waiters.fetch_sub(WAIT_READER_INCR, memory_order_release);
+			mutex.leave();
+			return true;
 		}
 
 		thread = ThreadSync::findThread();
@@ -94,125 +127,67 @@ bool SyncObject::lock(Sync* sync, SyncType type, const char* from, int timeOut)
 	}
 	else
 	{
+		fb_assert(type == SYNC_EXCLUSIVE);
+
 		thread = ThreadSync::findThread();
 		fb_assert(thread);
 
-		if (thread == exclusiveThread)
+		if (thread == exclusiveThread.load(memory_order_relaxed))
 		{
 			++monitorCount;
+#ifdef DEV_BUILD
+			MutexLockGuard g(mutex, FB_FUNCTION);
 			reason(from);
+#endif
 			return true;
 		}
 
-		while (waiters == 0)
-		{
-			const AtomicCounter::counter_type oldState = lockState;
-			if (oldState != 0)
-				break;
-
-			if (lockState.compareExchange(oldState, -1))
-			{
-				exclusiveThread = thread;
-				WaitForFlushCache();
-#ifdef DEV_BUILD
-				MutexLockGuard g(mutex, FB_FUNCTION);
-#endif
-				reason(from);
-				return true;
-			}
-		}
+		if (tryLockExclusuve(0, thread, from))
+			return true;
 
 		if (timeOut == 0)
 			return false;
 
 		mutex.enter(FB_FUNCTION);
-		waiters += WRITER_INCR;
+		waiters.fetch_add(WAIT_WRITER_INCR, memory_order_release);
 
-		while (!waitingThreads)
+		if (tryLockExclusuve(WAIT_WRITER_INCR, thread, from))
 		{
-			const AtomicCounter::counter_type oldState = lockState;
-			if (oldState != 0)
-				break;
-
-			if (lockState.compareExchange(oldState, -1))
-			{
-				exclusiveThread = thread;
-				waiters -= WRITER_INCR;
-				reason(from);
-				mutex.leave();
-				return true;
-			}
+			waiters.fetch_sub(WAIT_WRITER_INCR, memory_order_release);
+			mutex.leave();
+			return true;
 		}
 	}
 
 	return wait(type, thread, sync, timeOut);
-#ifdef DEV_BUILD
-	MutexLockGuard g(mutex, FB_FUNCTION);
-	reason(from);
-#endif
 }
 
 bool SyncObject::lockConditional(SyncType type, const char* from)
 {
-	if (waitingThreads)
-		return false;
-
 	if (type == SYNC_SHARED)
-	{
-		while (true)
-		{
-			const AtomicCounter::counter_type oldState = lockState;
-			if (oldState < 0)
-				break;
+		return tryLockShared(0, from);
 
-			const AtomicCounter::counter_type newState = oldState + 1;
-			if (lockState.compareExchange(oldState, newState))
-			{
-				WaitForFlushCache();
+	fb_assert(type == SYNC_EXCLUSIVE);
+
+	ThreadSync* thread = ThreadSync::findThread();
+	fb_assert(thread);
+
+	if (thread == exclusiveThread.load(memory_order_relaxed))
+	{
+		++monitorCount;
 #ifdef DEV_BUILD
-				MutexLockGuard g(mutex, FB_FUNCTION);
+		MutexLockGuard g(mutex, FB_FUNCTION);
+		reason(from);
 #endif
-				reason(from);
-				return true;
-			}
-		}
+		return true;
 	}
-	else
-	{
-		ThreadSync* thread = ThreadSync::findThread();
-		fb_assert(thread);
-
-		if (thread == exclusiveThread)
-		{
-			++monitorCount;
-			reason(from);
-			return true;
-		}
-
-		while (waiters == 0)
-		{
-			const AtomicCounter::counter_type oldState = lockState;
-			if (oldState != 0)
-				break;
-
-			if (lockState.compareExchange(oldState, -1))
-			{
-				WaitForFlushCache();
-				exclusiveThread = thread;
-				reason(from);
-				return true;
-			}
-		}
-
-	}
-
-	return false;
+	return tryLockExclusuve(0, thread, from);
 }
 
 void SyncObject::unlock(Sync* /*sync*/, SyncType type)
 {
-	fb_assert((type == SYNC_SHARED && lockState > 0) ||
-			  (type == SYNC_EXCLUSIVE && lockState == -1));
+	//fb_assert((type == SYNC_SHARED && lockState > 0) ||
+	//	(type == SYNC_EXCLUSIVE && lockState == STATE_WRITER_INCR));
 
 	if (monitorCount)
 	{
@@ -221,45 +196,27 @@ void SyncObject::unlock(Sync* /*sync*/, SyncType type)
 		return;
 	}
 
-	exclusiveThread = NULL;
-	while (true)
-	{
-		const AtomicCounter::counter_type oldState = lockState;
-		const AtomicCounter::counter_type newState = (type == SYNC_SHARED) ? oldState - 1 : 0;
+	exclusiveThread.store(NULL, memory_order_relaxed);
+	const state_type incr = (type == SYNC_SHARED) ? STATE_READER_INCR : STATE_WRITER_INCR;
 
-		FlushCache();
-
-		if (lockState.compareExchange(oldState, newState))
-		{
-			if (newState == 0 && waiters)
-				grantLocks();
-
-			return;
-		}
-	}
+	if (lockState.fetch_add(-incr) == incr)
+		//if (waiters.load())
+			grantLocks();
 }
 
 void SyncObject::downgrade(SyncType type)
 {
 	fb_assert(monitorCount == 0);
 	fb_assert(type == SYNC_SHARED);
-	fb_assert(lockState == -1);
-	fb_assert(exclusiveThread);
+	fb_assert(lockState == STATE_WRITER_INCR);
+	fb_assert(exclusiveThread.load() != NULL);
 	fb_assert(exclusiveThread == ThreadSync::findThread());
 
-	exclusiveThread = NULL;
-	FlushCache();
+	exclusiveThread.store(NULL, memory_order_relaxed);
 
-	while (true)
-	{
-		if (lockState.compareExchange(-1, 1))
-		{
-			if (waiters & READERS_MASK)
-				grantLocks();
-
-			return;
-		}
-	}
+	if (lockState.fetch_add(STATE_READER_INCR - STATE_WRITER_INCR) == STATE_WRITER_INCR)
+		if (waiters.load() & WAIT_READERS_MASK)
+			grantLocks();
 }
 
 bool SyncObject::wait(SyncType type, ThreadSync* thread, Sync* sync, int timeOut)
@@ -270,13 +227,14 @@ bool SyncObject::wait(SyncType type, ThreadSync* thread, Sync* sync, int timeOut
 		fatal_exception::raise("single thread deadlock");
 	}
 
-	if (waitingThreads)
+	ThreadSync* head = waitingThreads;
+	if (head)
 	{
-		thread->prevWaiting = waitingThreads->prevWaiting;
-		thread->nextWaiting = waitingThreads;
+		thread->prevWaiting = head->prevWaiting;
+		thread->nextWaiting = head;
 
-		waitingThreads->prevWaiting->nextWaiting = thread;
-		waitingThreads->prevWaiting = thread;
+		head->prevWaiting->nextWaiting = thread;
+		head->prevWaiting = thread;
 	}
 	else
 	{
@@ -295,17 +253,17 @@ bool SyncObject::wait(SyncType type, ThreadSync* thread, Sync* sync, int timeOut
 		const int wait = timeOut > 10000 ? 10000 : timeOut;
 		wakeup = true;
 
+		static int stallMs = 500;
 		if (timeOut == -1)
-			thread->sleep();
+			wakeup = thread->sleep(stallMs);
 		else
 			wakeup = thread->sleep(wait);
 
 		if (thread->lockGranted)
 			return true;
 
-		(void) wakeup;
-		//if (!wakeup)
-		//	stalled(thread);
+		if (!wakeup)
+			stalled(thread);
 
 		if (timeOut != -1)
 			timeOut -= wait;
@@ -320,12 +278,18 @@ bool SyncObject::wait(SyncType type, ThreadSync* thread, Sync* sync, int timeOut
 
 	dequeThread(thread);
 	if (type == SYNC_SHARED)
-		--waiters;
+		waiters.fetch_sub(WAIT_READER_INCR, memory_order_release);
 	else
-		waiters -= WRITER_INCR;
+		waiters.fetch_sub(WAIT_WRITER_INCR, memory_order_release);
 
 	fb_assert(timeOut >= 0);
 	return false;
+}
+
+void SyncObject::stalled(ThreadSync* thread)
+{
+	//static int cnt = 0;
+	//cnt++;
 }
 
 ThreadSync* SyncObject::grantThread(ThreadSync* thread)
@@ -361,26 +325,28 @@ ThreadSync* SyncObject::dequeThread(ThreadSync* thread)
 
 void SyncObject::grantLocks()
 {
+	if (waiters.load() == 0)
+		return;
+
 	MutexLockGuard guard(mutex, "SyncObject::grantLocks");
-	fb_assert((waiters && waitingThreads) || (!waiters && !waitingThreads));
 
 	ThreadSync* thread = waitingThreads;
+	fb_assert((waiters && thread) || (!waiters && !thread));
+
 	if (!thread)
 		return;
 
-	if (thread->lockType == SYNC_SHARED)
+	while (true)
 	{
-		AtomicCounter::counter_type oldState = lockState;
-
-		while (oldState >= 0)
+		if (thread->lockType == SYNC_SHARED)
 		{
-			const int cntWake = waiters & READERS_MASK;
-			const AtomicCounter::counter_type newState = oldState + cntWake;
-			if (lockState.compareExchange(oldState, newState))
+			const wait_type cntWake = (waiters.load() & WAIT_READERS_MASK);
+			const state_type stateInc = cntWake * STATE_READER_INCR;
+			if (lockState.fetch_add(stateInc, memory_order_release) >= 0)
 			{
-				waiters -= cntWake;
+				waiters.fetch_sub(cntWake, memory_order_release);
 
-				for (int i = 0; i < cntWake;)
+				for (wait_type i = 0; i < cntWake;)
 				{
 					if (thread->lockType == SYNC_SHARED)
 					{
@@ -394,25 +360,26 @@ void SyncObject::grantLocks()
 						thread = thread->nextWaiting;
 					}
 				}
-
-				break;
 			}
-			oldState = lockState;
+			else if (lockState.fetch_add(-stateInc, memory_order_release) == stateInc)
+				continue;
 		}
-	}
-	else
-	{
-		while (lockState == 0)
+		else
 		{
-			if (lockState.compareExchange(0, -1))
+			if (lockState.load() > 0)
+				break;
+
+			if (lockState.fetch_add(STATE_WRITER_INCR, memory_order_release) == 0)
 			{
-				exclusiveThread = thread;
-				waiters -= WRITER_INCR;
+				exclusiveThread.store(thread, memory_order_relaxed);
+				waiters.fetch_sub(WAIT_WRITER_INCR, memory_order_release);
 				dequeThread(thread);
 				thread->grantLock(this);
-				return;
 			}
+			else if (lockState.fetch_add(-STATE_WRITER_INCR, memory_order_release) == STATE_WRITER_INCR)
+				continue;
 		}
+		break;
 	}
 }
 
@@ -429,17 +396,17 @@ void SyncObject::validate(SyncType lockType) const
 		break;
 
 	case SYNC_EXCLUSIVE:
-		fb_assert(lockState == -1);
+		fb_assert(lockState == STATE_WRITER_INCR);
 		break;
 	}
 }
 
 bool SyncObject::ourExclusiveLock() const
 {
-	if (lockState != -1)
+	if (lockState > 0)
 		return false;
 
-	return (exclusiveThread == ThreadSync::findThread());
+	return (exclusiveThread.load(memory_order_seq_cst) == ThreadSync::findThread());
 }
 
 } // namespace Firebird

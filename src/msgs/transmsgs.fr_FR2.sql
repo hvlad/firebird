@@ -608,7 +608,7 @@ segmented) blob.', 'daves', '1993-07-16 12:11:27')
 ('An exception occurred that does not have a description.  Exception number @1.', NULL, NULL, 0, 460, '#', NULL, NULL, 'truser', '1000-01-01 00:00:00')
 ('Stack overflow.  The resource requirements of the runtime stack have exceeded the memory available to it.', NULL, NULL, 0, 461, '#', NULL, NULL, 'truser', '1000-01-01 00:00:00')
 ('Segmentation Fault. The code attempted to access memory without privileges.', NULL, NULL, 0, 462, '#', NULL, NULL, 'truser', '1000-01-01 00:00:00')
-('Illegal Instruction. The Code attempted to perfrom an illegal operation.', NULL, NULL, 0, 463, '#', NULL, NULL, 'truser', '1000-01-01 00:00:00')
+('Illegal Instruction. The Code attempted to perform an illegal operation.', NULL, NULL, 0, 463, '#', NULL, NULL, 'truser', '1000-01-01 00:00:00')
 ('Bus Error. The Code caused a system bus error.', NULL, NULL, 0, 464, '#', NULL, NULL, 'truser', '1000-01-01 00:00:00')
 ('Floating Point Error. The Code caused an Arithmetic Exception or a floating point exception.', NULL, NULL, 0, 465, '#', NULL, NULL, 'truser', '1000-01-01 00:00:00')
 ('Cannot delete rows from external files.', NULL, NULL, 0, 466, '#', NULL, NULL, 'truser', '1000-01-01 00:00:00')
@@ -2395,7 +2395,7 @@ ERROR: Backup incomplete', NULL, NULL, 12, 229, '#', NULL, NULL, 'truser', '1000
 ('Current memory = !c
 Delta memory = !d
 Max memory = !x
-Elapsed time= !e sec
+Elapsed time = !e sec
 ', NULL, NULL, 17, 44, '#', NULL, NULL, 'truser', '1000-01-01 00:00:00')
 ('Cpu = !u sec
 Buffers = !b

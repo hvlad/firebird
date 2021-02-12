@@ -48,15 +48,33 @@
 class SockAddr
 {
 private:
+	struct SockAddrPrefixPosixWindows
+	{
+		uint16_t sa_family;
+	};
+
+	struct SockAddrPrefixMacOs
+	{
+		uint8_t sa_len;
+		uint8_t sa_family;
+	};
+
 	union sa_data {
 		struct sockaddr sock;
 		struct sockaddr_in inet;
 		struct sockaddr_in6 inet6;
+
+		SockAddrPrefixPosixWindows posixWindowsPrefix;
+		SockAddrPrefixMacOs macOsPrefix;
 	} data;
 	socklen_t len;
 	static const unsigned MAX_LEN = sizeof(sa_data);
 
+	void checkAndFixFamily();
+
 public:
+	void convertFromMacOsToPosixWindows();
+	void convertFromPosixWindowsToMacOs();
 	void clear();
 	const SockAddr& operator = (const SockAddr& x);
 
@@ -83,6 +101,58 @@ public:
 	void unmapV4();
 };
 
+// Definitions below taken from sources (socket.h) on the correspondent operating systems.
+// If something else arrives, it should be added here and into checkAndFixFamily() also.
+
+#define AF_INET6_POSIX		10
+#define AF_INET6_WINDOWS	23
+#define AF_INET6_DARWIN		30
+
+#if AF_INET6 == AF_INET6_POSIX
+#elif AF_INET6 == AF_INET6_WINDOWS
+#elif AF_INET6 == AF_INET6_DARWIN
+#else
+#error Unknown value of AF_INET6 !
+#endif
+
+inline void SockAddr::checkAndFixFamily()
+{
+	switch (data.sock.sa_family)
+	{
+	case AF_INET:
+		fb_assert(len == sizeof(sockaddr_in));
+		break;
+
+	case AF_INET6_POSIX:
+	case AF_INET6_WINDOWS:
+	case AF_INET6_DARWIN:
+		data.sock.sa_family = AF_INET6;
+		fb_assert(len == sizeof(sockaddr_in6));
+		break;
+
+	default:
+		fb_assert(false);
+		break;
+	}
+}
+
+inline void SockAddr::convertFromMacOsToPosixWindows()
+{
+	SockAddrPrefixMacOs macOsPrefix;
+	macOsPrefix = data.macOsPrefix;
+
+	data.posixWindowsPrefix.sa_family = macOsPrefix.sa_family;
+}
+
+inline void SockAddr::convertFromPosixWindowsToMacOs()
+{
+	SockAddrPrefixPosixWindows posixWindowsPrefix;
+	posixWindowsPrefix = data.posixWindowsPrefix;
+
+	data.macOsPrefix.sa_family = posixWindowsPrefix.sa_family;
+	data.macOsPrefix.sa_len = length();
+}
+
 
 inline void SockAddr::clear()
 {
@@ -95,6 +165,8 @@ inline const SockAddr& SockAddr::operator = (const SockAddr& x)
 {
 	memcpy(&data, &x.data, MAX_LEN);
 	len = x.len;
+
+	checkAndFixFamily();
 	return *this;
 }
 
@@ -105,6 +177,8 @@ inline SockAddr::SockAddr(const unsigned char* p_data, unsigned p_len)
 		p_len = MAX_LEN;
 	memcpy(&data, p_data, p_len);
 	len = p_len;
+
+	checkAndFixFamily();
 }
 
 

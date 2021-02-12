@@ -26,12 +26,12 @@
 
 #include "firebird.h"
 #include <string.h>
-//#include "../remote/remote.h"
 #include "../common/xdr.h"
-//#include "../remote/proto_proto.h"
 #include "../common/xdr_proto.h"
 #include "../yvalve/gds_proto.h"
 #include "../common/gdsassert.h"
+#include "../common/DecFloat.h"
+#include "../common/Int128.h"
 
 inline UCHAR* XDR_ALLOC(ULONG size)
 {
@@ -65,11 +65,11 @@ inline void DEBUG_XDR_FREE(XDR*, const void*, const void*, ULONG)
 // sufficient.
 // This setting may be related to our max DSQL statement size.
 
-const u_int MAXSTRING_FOR_WRAPSTRING	= 65535;
+const unsigned MAXSTRING_FOR_WRAPSTRING	= 65535;
 
 
-static bool_t mem_getbytes(XDR*, SCHAR*, u_int);
-static bool_t mem_putbytes(XDR*, const SCHAR*, u_int);
+static bool_t mem_getbytes(XDR*, SCHAR*, unsigned);
+static bool_t mem_putbytes(XDR*, const SCHAR*, unsigned);
 
 
 static const XDR::xdr_ops mem_ops =
@@ -106,20 +106,13 @@ bool_t xdr_hyper( XDR* xdrs, void* pi64)
 {
 /**************************************
  *
- *	x d r _ h y p e r       ( n o n - S O L A R I S )
+ *	x d r _ h y p e r
  *
  **************************************
  *
  * Functional description
  *	Map a 64-bit Integer from external to internal representation
  *      (or vice versa).
- *
- *      Enable this for all platforms except Solaris (since it is
- *      available in the XDR library on Solaris). This function (normally)
- *      would have been implemented in REMOTE/xdr.c. Since some system
- *      XDR libraries (HP-UX) do not implement this function, we have it
- *      in this module. At a later date, when the function is available
- *      on all platforms, we can start using the system-provided version.
  *
  *      Handles "swapping" of the 2 long's to be "Endian" sensitive.
  *
@@ -249,6 +242,24 @@ bool_t xdr_datum( XDR* xdrs, const dsc* desc, UCHAR* buffer)
 			return FALSE;
 		break;
 
+	case dtype_sql_time_tz:
+		fb_assert(desc->dsc_length >= sizeof(SLONG) + sizeof(SSHORT));
+		if (!xdr_long(xdrs, reinterpret_cast<SLONG*>(p)))
+			return FALSE;
+		if (!xdr_short(xdrs, reinterpret_cast<SSHORT*>(p + sizeof(SLONG))))
+			return FALSE;
+		break;
+
+	case dtype_ex_time_tz:
+		fb_assert(desc->dsc_length >= sizeof(SLONG) + 2 * sizeof(SSHORT));
+		if (!xdr_long(xdrs, reinterpret_cast<SLONG*>(p)))
+			return FALSE;
+		if (!xdr_short(xdrs, reinterpret_cast<SSHORT*>(p + sizeof(SLONG))))
+			return FALSE;
+		if (!xdr_short(xdrs, reinterpret_cast<SSHORT*>(p + sizeof(SLONG) + sizeof(SSHORT))))
+			return FALSE;
+		break;
+
 	case dtype_real:
 		fb_assert(desc->dsc_length >= sizeof(float));
 		if (!xdr_float(xdrs, reinterpret_cast<float*>(p)))
@@ -261,11 +272,51 @@ bool_t xdr_datum( XDR* xdrs, const dsc* desc, UCHAR* buffer)
 			return FALSE;
 		break;
 
+	case dtype_dec64:
+		fb_assert(desc->dsc_length >= sizeof(Firebird::Decimal64));
+		if (!xdr_dec64(xdrs, reinterpret_cast<Firebird::Decimal64*>(p)))
+			return FALSE;
+		break;
+
+	case dtype_dec128:
+		fb_assert(desc->dsc_length >= sizeof(Firebird::Decimal128));
+		if (!xdr_dec128(xdrs, reinterpret_cast<Firebird::Decimal128*>(p)))
+			return FALSE;
+		break;
+
+	case dtype_int128:
+		fb_assert(desc->dsc_length >= sizeof(Firebird::Int128));
+		if (!xdr_int128(xdrs, reinterpret_cast<Firebird::Int128*>(p)))
+			return FALSE;
+		break;
+
 	case dtype_timestamp:
 		fb_assert(desc->dsc_length >= 2 * sizeof(SLONG));
 		if (!xdr_long(xdrs, &((SLONG*) p)[0]))
 			return FALSE;
 		if (!xdr_long(xdrs, &((SLONG*) p)[1]))
+			return FALSE;
+		break;
+
+	case dtype_timestamp_tz:
+		fb_assert(desc->dsc_length >= 2 * sizeof(SLONG) + 1);
+		if (!xdr_long(xdrs, &((SLONG*) p)[0]))
+			return FALSE;
+		if (!xdr_long(xdrs, &((SLONG*) p)[1]))
+			return FALSE;
+		if (!xdr_short(xdrs, reinterpret_cast<SSHORT*>(p + 2 * sizeof(SLONG))))
+			return FALSE;
+		break;
+
+	case dtype_ex_timestamp_tz:
+		fb_assert(desc->dsc_length >= 2 * sizeof(SLONG) + 2 * sizeof(SSHORT));
+		if (!xdr_long(xdrs, &((SLONG*) p)[0]))
+			return FALSE;
+		if (!xdr_long(xdrs, &((SLONG*) p)[1]))
+			return FALSE;
+		if (!xdr_short(xdrs, reinterpret_cast<SSHORT*>(p + 2 * sizeof(SLONG))))
+			return FALSE;
+		if (!xdr_short(xdrs, reinterpret_cast<SSHORT*>(p + 2 * sizeof(SLONG) + sizeof(SSHORT))))
 			return FALSE;
 		break;
 
@@ -336,6 +387,38 @@ bool_t xdr_double(XDR* xdrs, double* ip)
 	}
 
 	return FALSE;
+}
+
+
+bool_t xdr_dec64(XDR* xdrs, Firebird::Decimal64* ip)
+{
+	return xdr_hyper(xdrs, ip->getBytes());
+}
+
+
+bool_t xdr_dec128(XDR* xdrs, Firebird::Decimal128* ip)
+{
+	UCHAR* bytes = ip->getBytes();
+
+#ifndef WORDS_BIGENDIAN
+	return xdr_hyper(xdrs, &bytes[8]) && xdr_hyper(xdrs, &bytes[0]);
+#else
+	fb_assert(false);			// Dec64/128 XDR not tested on bigendians!
+	return xdr_hyper(xdrs, &bytes[0]) && xdr_hyper(xdrs, &bytes[8]);
+#endif
+}
+
+
+bool_t xdr_int128(XDR* xdrs, Firebird::Int128* ip)
+{
+	UCHAR* bytes = ip->getBytes();
+
+#ifndef WORDS_BIGENDIAN
+	return xdr_hyper(xdrs, &bytes[8]) && xdr_hyper(xdrs, &bytes[0]);
+#else
+	fb_assert(false);			// Dec64/128 XDR not tested on bigendians!
+	return xdr_hyper(xdrs, &bytes[0]) && xdr_hyper(xdrs, &bytes[8]);
+#endif
 }
 
 
@@ -466,7 +549,7 @@ bool_t xdr_long(XDR* xdrs, SLONG* ip)
 }
 
 
-bool_t xdr_opaque(XDR* xdrs, SCHAR* p, u_int len)
+bool_t xdr_opaque(XDR* xdrs, SCHAR* p, unsigned len)
 {
 /**************************************
  *
@@ -581,7 +664,7 @@ bool_t xdr_short(XDR* xdrs, SSHORT* ip)
 }
 
 
-bool_t xdr_string(XDR* xdrs, SCHAR** sp, u_int maxlength)
+bool_t xdr_string(XDR* xdrs, SCHAR** sp, unsigned maxlength)
 {
 /**************************************
  *
@@ -644,7 +727,7 @@ bool_t xdr_string(XDR* xdrs, SCHAR** sp, u_int maxlength)
 }
 
 
-bool_t xdr_u_int(XDR* xdrs, u_int* ip)
+bool_t xdr_u_int(XDR* xdrs, unsigned* ip)
 {
 /**************************************
  *
@@ -733,7 +816,7 @@ bool_t xdr_u_short(XDR* xdrs, u_short* ip)
 	case XDR_DECODE:
 		if (!GETLONG(xdrs, &temp))
 			return FALSE;
-		*ip = (u_int) temp;
+		*ip = (unsigned) temp;
 		return TRUE;
 
 	case XDR_FREE:
@@ -761,7 +844,7 @@ bool_t xdr_wrapstring(XDR* xdrs, SCHAR** strp)
 }
 
 
-int xdrmem_create(	XDR* xdrs, SCHAR* addr, u_int len, xdr_op x_op)
+int xdrmem_create(	XDR* xdrs, SCHAR* addr, unsigned len, xdr_op x_op)
 {
 /**************************************
  *
@@ -783,7 +866,7 @@ int xdrmem_create(	XDR* xdrs, SCHAR* addr, u_int len, xdr_op x_op)
 }
 
 
-static bool_t mem_getbytes(	XDR* xdrs, SCHAR* buff, u_int count)
+static bool_t mem_getbytes(	XDR* xdrs, SCHAR* buff, unsigned bytecount)
 {
 /**************************************
  *
@@ -795,18 +878,14 @@ static bool_t mem_getbytes(	XDR* xdrs, SCHAR* buff, u_int count)
  *	Get a bunch of bytes from a memory stream if it fits.
  *
  **************************************/
-	const SLONG bytecount = count;
-
-	if ((xdrs->x_handy -= bytecount) < 0)
-	{
-		xdrs->x_handy += bytecount;
+	if (xdrs->x_handy < bytecount)
 		return FALSE;
-	}
 
 	if (bytecount)
 	{
 		memcpy(buff, xdrs->x_private, bytecount);
 		xdrs->x_private += bytecount;
+		xdrs->x_handy -= bytecount;
 	}
 
 	return TRUE;
@@ -834,7 +913,7 @@ SLONG xdr_peek_long(const XDR* xdrs, const void* data, size_t size)
 }
 
 
-static bool_t mem_putbytes(XDR* xdrs, const SCHAR* buff, u_int count)
+static bool_t mem_putbytes(XDR* xdrs, const SCHAR* buff, unsigned bytecount)
 {
 /**************************************
  *
@@ -846,18 +925,14 @@ static bool_t mem_putbytes(XDR* xdrs, const SCHAR* buff, u_int count)
  *	Put a bunch of bytes to a memory stream if it fits.
  *
  **************************************/
-	const SLONG bytecount = count;
-
-	if ((xdrs->x_handy -= bytecount) < 0)
-	{
-		xdrs->x_handy += bytecount;
+	if (xdrs->x_handy < bytecount)
 		return FALSE;
-	}
 
 	if (bytecount)
 	{
 		memcpy(xdrs->x_private, buff, bytecount);
 		xdrs->x_private += bytecount;
+		xdrs->x_handy -= bytecount;
 	}
 
 	return TRUE;

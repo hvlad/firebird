@@ -5,3 +5,8 @@ ipch/
 *.suo
 *.user
 *.y
+*.VC.db
+*.VC.opendb
+*.vsp
+*.psess
+.vs/

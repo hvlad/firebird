@@ -57,7 +57,7 @@ static void drop(IAttachment** att)
 
 	// drop database (will close interface)
 	(*att)->dropDatabase(&status);
-	if (status.getState() && IStatus::STATE_ERRORS)
+	if (status.getState() & IStatus::STATE_ERRORS)
 	{
 		errPrint(&status);
 		fprintf(stderr, "*** Drop database failed - do it manually before next run ***\n");

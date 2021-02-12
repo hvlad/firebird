@@ -28,7 +28,7 @@
 #  Adriano dos Santos Fernandes
 #
 
-ROOT=$(shell cd ../..; pwd)
+ROOT=$(shell cd ..; pwd)
 
 ifeq ($(IsDeveloper), Y)
   DefaultTarget := Debug
@@ -50,19 +50,12 @@ include     $(ROOT)/gen/make.shared.variables
 @SET_MAKE@
 
 
-# Override make.defaults
-LINK_PLUGIN_SYMBOLS = $(call LIB_LINK_MAPFILE,../$(PLUGIN_VERS))
-
-
 .PHONY: all udrcpp_example dc_example kh_example crypt_app
 
 all: udrcpp_example dc_example kh_example crypt_app
 
 
-UDR_Objects = $(call makeObjects,../examples/udr,Functions.cpp)	\
-	$(call makeObjects,../examples/udr,Procedures.cpp)	\
-	$(call makeObjects,../examples/udr,Triggers.cpp)
-
+UDR_Objects = $(call dirObjects,../examples/udr)
 UDR_Plugin = $(PLUGINS)/udr/$(LIB_PREFIX)udrcpp_example.$(SHRLIB_EXT)
 AllObjects = $(UDR_Objects)
 
@@ -80,33 +73,35 @@ endif
 
 
 DC_Objects = $(call makeObjects,../examples/dbcrypt,DbCrypt.cpp)
-DC_Plugin = $(call makePluginName,DbCrypt_example)
+DC_Plugin = $(call makePluginName,fbSampleDbCrypt)
 AllObjects += $(DC_Objects)
 
 dc_example: $(DC_Plugin)
 
 $(DC_Plugin):	$(DC_Objects)
 	$(LINK_PLUGIN) $(call LIB_LINK_SONAME,$(notdir $@).0) -o $@ $^ $(LINK_PLUG_LIBS) $(FIREBIRD_LIBRARY_LINK)
+	$(CP) $(EXA_ROOT)/dbcrypt/fbSampleDbCrypt.conf $(PLUGINS)
 
 
 KH_Objects = $(call makeObjects,../examples/dbcrypt,CryptKeyHolder.cpp)
-KH_Plugin = $(call makePluginName,CryptKeyHolder_example)
+KH_Plugin = $(call makePluginName,fbSampleKeyHolder)
 AllObjects += $(KH_Objects)
 
 kh_example: $(KH_Plugin)
 
 $(KH_Plugin):	$(KH_Objects)
 	$(LINK_PLUGIN) $(call LIB_LINK_SONAME,$(notdir $@).0) -o $@ $^ $(LINK_PLUG_LIBS) $(FIREBIRD_LIBRARY_LINK)
+	$(CP) $(EXA_ROOT)/dbcrypt/fbSampleKeyHolder.conf $(PLUGINS)
 
 
 CA_Objects = $(call makeObjects,../examples/dbcrypt,CryptApplication.cpp)
-CRYPT_APP = $(BIN)/cryptAppSample$(EXEC_EXT)
+CRYPT_APP = $(BIN)/fbSampleDbCryptApp$(EXEC_EXT)
 AllObjects += $(CA_Objects)
 
 crypt_app: $(CRYPT_APP)
 
 $(CRYPT_APP):	$(CA_Objects)
-	$(EXE_LINK) $^ -o $@ $(FIREBIRD_LIBRARY_LINK)
+	$(EXE_LINK) $(LSB_UNDEF) $^ -o $@ $(FIREBIRD_LIBRARY_LINK)
 
 
 include $(ROOT)/gen/make.shared.targets

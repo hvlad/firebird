@@ -76,6 +76,9 @@
 /* plugins DIR (PREFIX) */
 #define FB_PLUGDIR ""
 
+/* tzdata DIR (PREFIX) */
+#define FB_TZDATADIR ""
+
 /* Installation path prefix */
 #define FB_PREFIX "/opt/firebird"
 
@@ -96,9 +99,6 @@
 
 /* Inet service port */
 #define FB_SERVICE_PORT 3050
-
-/* UDF DIR (PREFIX/UDF) */
-#define FB_UDFDIR ""
 
 /* Define this if OS is FreeBSD */
 /* #undef FREEBSD */
@@ -212,6 +212,9 @@
 /* Define to 1 if you have the `gmtime_r' function. */
 #define HAVE_GMTIME_R 1
 
+/* Define to 1 if you have the `ctime_r' function. */
+#define HAVE_CTIME_R 1
+
 /* Define to 1 if you have the <grp.h> header file. */
 #define HAVE_GRP_H 1
 
@@ -226,9 +229,6 @@
 
 /* Define to 1 if you have the `atomic_ops' library (-latomic_ops). */
 /* #undef HAVE_LIBATOMIC_OPS */
-
-/* Define to 1 if you have the <libio.h> header file. */
-/* #undef HAVE_LIBIO_H */
 
 /* Define to 1 if you have the `m' library (-lm). */
 #define HAVE_LIBM 1
@@ -479,7 +479,8 @@
 #define HAVE_SYS_STAT_H 1
 
 /* Define to 1 if you have the <sys/timeb.h> header file. */
-#define HAVE_SYS_TIMEB_H 1
+/* Deprecated in android-24 */
+#undef HAVE_SYS_TIMEB_H
 
 /* Define to 1 if you have the <sys/types.h> header file. */
 #define HAVE_SYS_TYPES_H 1

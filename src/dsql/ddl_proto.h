@@ -57,11 +57,18 @@ const USHORT blr_dtypes[] = {
 	blr_short,					// dtype_array
 	blr_int64,					// dtype_int64
 	0,							// DB_KEY
-	blr_bool					// dtype_boolean
+	blr_bool,					// dtype_boolean
+	blr_dec64,					// dtype_dec64
+	blr_dec128,					// dtype_dec128
+	blr_int128,					// dtype_int128
+	blr_sql_time_tz,			// dtype_sql_time_tz
+	blr_timestamp_tz,			// dtype_timestamp_tz
+	blr_ex_time_tz,				// dtype_ex_time_tz
+	blr_ex_timestamp_tz			// dtype_ex_timestamp_tz
 };
 
 bool DDL_ids(const Jrd::DsqlCompilerScratch*);
-void DDL_resolve_intl_type(Jrd::DsqlCompilerScratch*, Jrd::dsql_fld*, const Firebird::MetaName&,
+void DDL_resolve_intl_type(Jrd::DsqlCompilerScratch*, Jrd::dsql_fld*, const Jrd::MetaName&,
 	bool = false);
 
 #endif // DSQL_DDL_PROTO_H

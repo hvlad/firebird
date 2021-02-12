@@ -28,7 +28,7 @@
 #include "../common/classes/ImplementHelper.h"
 #include "../common/classes/GetPlugins.h"
 #include "../common/classes/array.h"
-#include "../common/classes/MetaName.h"
+#include "../common/classes/MetaString.h"
 #include "../common/classes/objects_array.h"
 
 namespace Auth {
@@ -160,7 +160,7 @@ class UserData :
 {
 public:
 	UserData()
-		: op(0), trustedAuth(0), authenticationBlock(*getDefaultMemoryPool())
+		: op(0), trustedAuth(0), silent(false), authenticationBlock(*getDefaultMemoryPool())
 	{ }
 
 	// IUser implementation
@@ -219,12 +219,13 @@ public:
 
 	unsigned int op;
 	int trustedAuth;
+	bool silent;
 	CharField user, pass, first, last, middle, com, attr;
 	IntField adm, act;
 	CharField database, dba, dbaPassword, role;
 	AuthenticationBlock authenticationBlock;
 
-	Firebird::MetaName plugin;
+	Firebird::MetaString plugin;
 
 	// deprecated
 	CharField group;
@@ -259,18 +260,11 @@ public:
 class Get : public Firebird::GetPlugins<Firebird::IManagement>
 {
 public:
-	explicit Get(Config* firebirdConf);
-	Get(Config* firebirdConf, const char* plugName);
+	explicit Get(const Firebird::Config* firebirdConf);
+	Get(const Firebird::Config* firebirdConf, const char* plugName);
 };
 
 int setGsecCode(int code, unsigned int operation);
-
-// tools to operate lists of security-related plugins
-typedef Firebird::ObjectsArray<Firebird::PathName> ParsedList;
-void parseList(ParsedList& parsed, Firebird::PathName list);
-void makeList(Firebird::PathName& list, const ParsedList& parsed);
-void mergeLists(Firebird::PathName& list, const Firebird::PathName& serverList,
-	const Firebird::PathName& clientList);
 
 } // namespace Auth
 

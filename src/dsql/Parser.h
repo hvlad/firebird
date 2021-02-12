@@ -37,7 +37,15 @@
 
 #include "gen/parse.h"
 
+namespace Firebird {
+namespace Arg {
+	class StatusVector;
+} // namespace
+} // namespace
+
 namespace Jrd {
+
+class CharSet;
 
 class Parser : public Firebird::PermanentStorage
 {
@@ -51,6 +59,8 @@ private:
 		ULONG lastColumn;
 		const char* firstPos;
 		const char* lastPos;
+		const char* leadingFirstPos;
+		const char* trailingLastPos;
 	};
 
 	typedef Position YYPOSN;
@@ -81,6 +91,7 @@ private:
 
 		// Actual lexer state begins from here
 
+		const TEXT* leadingPtr;
 		const TEXT* ptr;
 		const TEXT* end;
 		const TEXT* last_token;
@@ -119,8 +130,8 @@ public:
 	static const int MAX_TOKEN_LEN = 256;
 
 public:
-	Parser(MemoryPool& pool, DsqlCompilerScratch* aScratch, USHORT aClientDialect,
-		USHORT aDbDialect, USHORT aParserVersion, const TEXT* string, size_t length,
+	Parser(thread_db* tdbb, MemoryPool& pool, DsqlCompilerScratch* aScratch, USHORT aClientDialect,
+		USHORT aDbDialect, const TEXT* string, size_t length,
 		SSHORT characterSet);
 	~Parser();
 
@@ -140,6 +151,11 @@ public:
 	Firebird::string* newString(const Firebird::string& s)
 	{
 		return FB_NEW_POOL(getPool()) Firebird::string(getPool(), s);
+	}
+
+	Lim64String* newLim64String(const Firebird::string& s, int scale)
+	{
+		return FB_NEW_POOL(getPool()) Lim64String(getPool(), s, scale);
 	}
 
 	IntlString* newIntlString(const Firebird::string& s, const char* charSet = NULL)
@@ -188,8 +204,7 @@ public:
 private:
 	template <typename T> T* setupNode(Node* node)
 	{
-		node->line = yyposn.firstLine;
-		node->column = yyposn.firstColumn;
+		setNodeLineColumn(node);
 		return static_cast<T*>(node);
 	}
 
@@ -207,7 +222,7 @@ private:
 
 	BoolExprNode* valueToBool(ValueExprNode* value)
 	{
-		BoolAsValueNode* node = value->as<BoolAsValueNode>();
+		BoolAsValueNode* node = nodeAs<BoolAsValueNode>(value);
 		if (node)
 			return node->boolean;
 
@@ -218,25 +233,32 @@ private:
 		return cmpNode;
 	}
 
+	MemoryPool& getStatementPool()
+	{
+		return scratch->getStatement()->getPool();
+	}
+
 	void yyReducePosn(YYPOSN& ret, YYPOSN* termPosns, YYSTYPE* termVals,
 		int termNo, int stkPos, int yychar, YYPOSN& yyposn, void*);
 
 	int yylex();
 	bool yylexSkipSpaces();
+	bool yylexSkipEol();	// returns true if EOL is detected and skipped
 	int yylexAux();
 
 	void yyerror(const TEXT* error_string);
 	void yyerror_detailed(const TEXT* error_string, int yychar, YYSTYPE&, YYPOSN&);
-	void yyerrorIncompleteCmd();
+	void yyerrorIncompleteCmd(const YYPOSN& pos);
 
 	void check_bound(const char* const to, const char* const string);
 	void check_copy_incr(char*& to, const char ch, const char* const string);
 
-	void yyabandon(SLONG, ISC_STATUS);
+	void yyabandon(const Position& position, SLONG, ISC_STATUS);
+	void yyabandon(const Position& position, SLONG, const Firebird::Arg::StatusVector& status);
 
-	Firebird::MetaName optName(Firebird::MetaName* name)
+	MetaName optName(MetaName* name)
 	{
-		return (name ? *name : Firebird::MetaName());
+		return (name ? *name : MetaName());
 	}
 
 	void transformString(const char* start, unsigned length, Firebird::string& dest);
@@ -252,7 +274,7 @@ private:
 		clause = value;
 	}
 
-	template <typename T, typename Delete>
+	template <typename T, template <typename C> class Delete>
 	void setClause(Firebird::AutoPtr<T, Delete>& clause, const char* duplicateMsg, T* value)
 	{
 		checkDuplicateClause(clause, duplicateMsg);
@@ -264,6 +286,16 @@ private:
 	{
 		checkDuplicateClause(clause, duplicateMsg);
 		clause = value;
+	}
+
+	template <typename T>
+	void setClause(BaseNullable<T>& clause, const char* duplicateMsg, const BaseNullable<T>& value)
+	{
+		if (value.specified)
+		{
+			checkDuplicateClause(clause, duplicateMsg);
+			clause = value.value;
+		}
 	}
 
 	template <typename T1, typename T2>
@@ -307,7 +339,7 @@ private:
 		return clause != 0;
 	}
 
-	bool isDuplicateClause(const Firebird::MetaName& clause)
+	bool isDuplicateClause(const MetaName& clause)
 	{
 		return clause.hasData();
 	}
@@ -324,6 +356,8 @@ private:
 		return clause.hasData();
 	}
 
+	void checkTimeDialect();
+
 // start - defined in btyacc_fb.ske
 private:
 	static void yySCopy(YYSTYPE* to, YYSTYPE* from, int size);
@@ -332,6 +366,8 @@ private:
 
 	void yyMoreStack(yyparsestate* yyps);
 	yyparsestate* yyNewState(int size);
+
+	void setNodeLineColumn(Node* node);
 
 private:
 	int parseAux();
@@ -345,6 +381,7 @@ private:
 	USHORT db_dialect;
 	USHORT parser_version;
 
+	CharSet* metadataCharSet;
 	Firebird::string transformedString;
 	Firebird::GenericMap<Firebird::NonPooled<IntlString*, StrMark> > strMarks;
 	bool stmt_ambiguous;
@@ -359,6 +396,7 @@ private:
 	Position yyretposn;
 
 	int yynerrs;
+	int yym;	// ASF: moved from local variable of Parser::parseAux()
 
 	// Current parser state
 	yyparsestate* yyps;

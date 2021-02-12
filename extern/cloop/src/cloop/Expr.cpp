@@ -29,15 +29,18 @@ using std::string;
 //--------------------------------------
 
 
-IntLiteralExpr::IntLiteralExpr(int value)
-	: value(value)
+IntLiteralExpr::IntLiteralExpr(int value, bool hex)
+	: value(value), hex(hex)
 {
 }
 
 string IntLiteralExpr::generate(Language language, const string& prefix)
 {
 	char buffer[64];
-	sprintf(buffer, "%d", value);
+	if (hex)
+		sprintf(buffer, "%s%x", language == LANGUAGE_PASCAL ? "$" : "0x", value);
+	else
+		sprintf(buffer, "%d", value);
 	return buffer;
 }
 

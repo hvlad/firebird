@@ -33,6 +33,7 @@
 #include "../jrd/EngineInterface.h"
 #include "../common/classes/array.h"
 #include "../common/classes/File.h"
+#include "../common/classes/auto.h"
 
 #include "firebird/Interface.h"
 #include "../common/classes/ImplementHelper.h"
@@ -55,7 +56,7 @@ class jrd_tra;
 class vcl;
 class thread_db;
 struct win;
-class ValueExprNode;
+struct record_param;
 class ArrayField;
 struct impure_value;
 
@@ -72,7 +73,7 @@ public:
 	{
 	}
 
-	jrd_rel*	blb_relation;		// Relation, if known
+	jrd_rel* blb_relation;			// Relation, if known
 	JBlob* blb_interface;
 
 	ULONG blb_length;				// Total length of data sans segments
@@ -97,8 +98,9 @@ public:
 	// end inline
 
 	void	BLB_cancel(thread_db* tdbb);
+	void	BLB_cancel();
 	void	BLB_check_well_formed(thread_db*, const dsc* desc);
-	void	BLB_close(thread_db*);
+	bool	BLB_close(thread_db*);
 	static blb*	create(thread_db*, jrd_tra*, bid*);
 	static blb*	create2(thread_db*, jrd_tra*, bid*, USHORT, const UCHAR*, bool = false);
 	static Jrd::blb* get_array(Jrd::thread_db*, Jrd::jrd_tra*, const Jrd::bid*, Ods::InternalArrayDesc*);
@@ -107,7 +109,7 @@ public:
 	static SLONG get_slice(Jrd::thread_db*, Jrd::jrd_tra*, const Jrd::bid*, const UCHAR*, USHORT,
 					const UCHAR*, SLONG, UCHAR*);
 	SLONG	BLB_lseek(USHORT, SLONG);
-	static void	move(thread_db* tdbb, dsc* from_desc, dsc* to_desc, const ValueExprNode* field);
+	static void	move(thread_db* tdbb, dsc* from_desc, dsc* to_desc, const record_param* rpb = NULL, USHORT fieldId = 0);
 	static blb* open(thread_db*, jrd_tra*, const bid*);
 	static blb* open2(thread_db*, jrd_tra*, const bid*, USHORT, const UCHAR*, bool = false);
 	void	BLB_put_data(thread_db*, const UCHAR*, SLONG);
@@ -157,6 +159,9 @@ private:
 	USHORT blb_pg_space_id;			// page space
 	USHORT blb_fragment_size;		// Residual fragment size
 	USHORT blb_max_segment;			// Longest segment
+#ifdef CHECK_BLOB_FIELD_ACCESS_FOR_SELECT
+	USHORT blb_fld_id;				// Field ID
+#endif
 	bool blb_has_buffer;
 };
 
@@ -241,5 +246,18 @@ inline USHORT blb::getMaxSegment() const
 
 
 } //namespace Jrd
+
+
+namespace Firebird {
+
+template <>
+inline void SimpleDelete<Jrd::blb>::clear(Jrd::blb* b)
+{
+	if (b)
+		b->BLB_cancel();
+}
+
+} //namespace Firebird
+
 
 #endif // JRD_BLB_H

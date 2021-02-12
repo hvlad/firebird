@@ -1,7 +1,7 @@
 /*
  *	PROGRAM:		Firebird authentication.
- *	MODULE:			SrpClient.cpp
- *	DESCRIPTION:	SPR authentication plugin.
+ *	MODULE:			Arc4.cpp
+ *	DESCRIPTION:	RC4 wire compression plugin.
  *
  *  The contents of this file are subject to the Initial
  *  Developer's Public License Version 1.0 (the "License");
@@ -103,23 +103,14 @@ public:
 	void setKey(CheckStatusWrapper* status, ICryptKey* key);
 	void encrypt(CheckStatusWrapper* status, unsigned int length, const void* from, void* to);
 	void decrypt(CheckStatusWrapper* status, unsigned int length, const void* from, void* to);
-	int release();
+	const unsigned char* getSpecificData(CheckStatusWrapper* status, const char* type, unsigned* len);
+	void setSpecificData(CheckStatusWrapper* status, const char* type, unsigned len, const unsigned char* data);
 
 private:
 	Cypher* createCypher(unsigned int l, const void* key);
 	Cypher* en;
 	Cypher* de;
 };
-
-int Arc4::release()
-{
-	if (--refCounter == 0)
-	{
-		delete this;
-		return 0;
-	}
-	return 1;
-}
 
 void Arc4::setKey(CheckStatusWrapper* status, ICryptKey* key)
 {
@@ -162,6 +153,14 @@ const char* Arc4::getKnownTypes(CheckStatusWrapper* status)
 	return "Symmetric";
 }
 
+const unsigned char* Arc4::getSpecificData(CheckStatusWrapper* status, const char*, unsigned*)
+{
+	return nullptr;
+}
+
+void Arc4::setSpecificData(CheckStatusWrapper* status, const char*, unsigned, const unsigned char*)
+{
+}
 
 namespace
 {

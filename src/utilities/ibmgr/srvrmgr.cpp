@@ -36,7 +36,7 @@
 #endif
 
 
-#include "../jrd/ibase.h"
+#include "ibase.h"
 #include "../yvalve/gds_proto.h"
 #include "../common/gdsassert.h"
 #include "../jrd/svc_undoc.h"
@@ -325,12 +325,12 @@ static bool attach_service( ibmgr_data_t* data)
 	TEXT spb[SPB_BUFLEN];
 	TEXT* p = spb;
 
-	if (!strcmp(data->user, SYSDBA_USER_NAME))
+	if (!strcmp(data->user, DBA_USER_NAME))
 	{
 		*p++ = isc_spb_version1;
 		*p++ = isc_spb_user_name;
-		*p++ = strlen(SYSDBA_USER_NAME);
-		strcpy(p, SYSDBA_USER_NAME);
+		*p++ = strlen(DBA_USER_NAME);
+		strcpy(p, DBA_USER_NAME);
 		p += strlen(p);
 		*p++ = isc_spb_password;
 		*p++ = strlen(data->password);

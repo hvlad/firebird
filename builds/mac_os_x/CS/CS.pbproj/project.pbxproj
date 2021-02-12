@@ -4411,11 +4411,6 @@
 			path = ids.h;
 			refType = 4;
 		};
-		F616C6050200B0CF01EF0ADE = {
-			isa = PBXFileReference;
-			path = ids.m;
-			refType = 4;
-		};
 		F616C6060200B0CF01EF0ADE = {
 			isa = PBXFileReference;
 			path = idx.cpp;
@@ -4976,16 +4971,6 @@
 		F616C67D0200B0D001EF0ADE = {
 			isa = PBXFileReference;
 			path = par_proto.h;
-			refType = 4;
-		};
-		F616C67E0200B0D001EF0ADE = {
-			isa = PBXFileReference;
-			path = pcmet.epp;
-			refType = 4;
-		};
-		F616C67F0200B0D001EF0ADE = {
-			isa = PBXFileReference;
-			path = pcmet_proto.h;
 			refType = 4;
 		};
 		F616C6800200B0D001EF0ADE = {
@@ -10610,11 +10595,6 @@
 		F6B2812C0200CC3601EF0ADE = {
 			isa = PBXFileReference;
 			path = met.cpp;
-			refType = 4;
-		};
-		F6B281360200CC3601EF0ADE = {
-			isa = PBXFileReference;
-			path = pcmet.cpp;
 			refType = 4;
 		};
 		F6B281400200CC3601EF0ADE = {

@@ -1,8 +1,9 @@
 # Helper functions
-doObjects= $(patsubst %.y,%.o,$(patsubst %.epp,%.o,$(patsubst %.c,%.o,$(1:.cpp=.o))))
-makeObjects= $(addprefix $(OBJ)/$(1)/,$(call doObjects,$2))
-dirFiles= $(notdir $(wildcard ../src/$(1)/*.cpp)) $(notdir $(wildcard ../src/$(1)/*.c)) \
-		  $(notdir $(wildcard ../src/$(1)/*.epp)) $(notdir $(wildcard ../src/$(1)/*.y))
+doObjects= $(patsubst %.cc,%.o,$(patsubst %.y,%.o,$(patsubst %.epp,%.o,$(patsubst %.c,%.o,$(1:.cpp=.o)))))
+makeObjects= $(addprefix $(OBJ)/$(patsubst ../%,%,$(1))/,$(call doObjects,$2))
+dirFiles= $(sort $(notdir $(wildcard ../src/$(1)/*.cpp)) $(notdir $(wildcard ../src/$(1)/*.c)) \
+		  $(notdir $(wildcard ../src/$(1)/*.epp)) $(notdir $(wildcard ../src/$(1)/*.y)) \
+		  $(notdir $(wildcard ../src/$(1)/*.cc)))
 dirInPath= $(call makeObjects,$(1),$(call dirFiles,$(1)))
 
 dirMaster= $(call dirInPath,$(1))
@@ -27,10 +28,11 @@ AllObjects=
 CO1:= $(call dirObjects,common)
 CO2:= $(call dirObjects,common/classes)
 CO3:= $(call dirObjects,common/config)
-#CO4:= $(call dirObjects,common/exceptions)
-#CO5:= $(call dirObjects,common/sync)
-Common_Objects:= $(CO1) $(CO2) $(CO3) 
-# $(CO4) $(CO5)
+CO4:= $(call dirObjects,common/sha2)
+#CO5:= $(call dirObjects,common/exceptions)
+#CO6:= $(call dirObjects,common/sync)
+Common_Objects:= $(CO1) $(CO2) $(CO3) $(CO4)
+# $(CO5) $(CO6)
 
 AllObjects += $(Common_Objects)
 
@@ -51,9 +53,14 @@ YValve_Objects:= $(call dirObjects,yvalve) $(call dirObjects,yvalve/config)
 AllObjects += $(YValve_Objects)
 
 
+# Authentication database connections cache
+SecDbCache:= $(call makeObjects,auth,SecDbCache.cpp)
+
+
 # Remote
 Remote_Common:= $(call dirObjects,remote) $(call dirObjects,auth/SecureRemotePassword)
-Remote_Server:= $(call dirObjects,remote/server) $(call dirObjects,auth/SecureRemotePassword/server)
+Remote_Server:= $(call dirObjects,remote/server) $(call dirObjects,auth/SecureRemotePassword/server) \
+				$(call makeObjects,jrd/replication,Config.cpp Utils.cpp) $(SecDbCache)
 Remote_Client:= $(call dirObjects,remote/client) $(call dirObjects,auth/SecureRemotePassword/client) \
 				$(call makeObjects,auth/SecurityDatabase,LegacyClient.cpp) \
 				$(call dirObjects,plugins/crypt/arc4)
@@ -63,9 +70,14 @@ Remote_Client_Objects:= $(Remote_Common) $(Remote_Client)
 AllObjects += $(Remote_Common) $(Remote_Server) $(Remote_Client)
 
 
+# Chacha plugin
+Chacha_Objects:= $(call dirObjects,plugins/crypt/chacha)
+
+AllObjects += $(Chacha_Objects)
+
 # Engine
 Engine_Objects:= $(call dirObjects,jrd) $(call dirObjects,dsql) $(call dirObjects,jrd/extds) \
-				 $(call dirObjects,jrd/recsrc) $(call dirObjects,jrd/trace) \
+				 $(call dirObjects,jrd/recsrc) $(call dirObjects,jrd/replication) $(call dirObjects,jrd/trace) \
 				 $(call dirObjects,jrd/os) $(call makeObjects,lock,lock.cpp)
 
 AllObjects += $(Engine_Objects)
@@ -170,7 +182,7 @@ AllObjects += $(LEGACY_USERS_MANAGE_Objects)
 
 
 # Legacy authentication on server
-LEGACY_AUTH_SERVER_Objects:= $(call makeObjects,auth/SecurityDatabase,LegacyServer.cpp)
+LEGACY_AUTH_SERVER_Objects:= $(call makeObjects,auth/SecurityDatabase,LegacyServer.cpp) $(SecDbCache)
 
 AllObjects += $(LEGACY_AUTH_SERVER_Objects)
 
@@ -195,11 +207,14 @@ AllObjects += $(UDRENG_Objects)
 
 
 # UDF support
-IBUDF_Objects:= $(call makeObjects,extlib,ib_udf.cpp)
-FBUDF_Objects:= $(call makeObjects,extlib/fbudf,fbudf.cpp)
 UTIL_Objects:= $(call makeObjects,extlib,ib_util.cpp)
 
-AllObjects += $(IBUDF_Objects) $(FBUDF_Objects) $(UTIL_Objects)
+# UDR backward compatible with distributed UDFs
+COMPAT_Objects:= $(call makeObjects,extlib,UdfBackwardCompatibility.cpp)
+SRC_COMPAT_SQL:= $(SRC_ROOT)/extlib/UdfBackwardCompatibility.sql
+COMPAT_SQL:= $(PLUGINS)/udr/udf_compat.sql
+
+AllObjects += $(UTIL_Objects) $(COMPAT_Objects)
 
 
 # Regenerate error codes

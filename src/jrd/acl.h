@@ -73,7 +73,9 @@ const int id_sql_role		= 11;		// SQL role
 const int id_package		= 12;		// Package name
 const int id_function		= 13;		// Function name
 const int id_filter			= 14;		// Filter name
-const int id_max			= 15;
+// New in FB4
+const int id_privilege		= 15;		// System privilege
+const int id_max			= 16;
 
 /* Format of access control list:
 

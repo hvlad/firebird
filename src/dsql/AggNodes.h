@@ -23,7 +23,7 @@
 #ifndef DSQL_AGG_NODES_H
 #define DSQL_AGG_NODES_H
 
-#include "../jrd/blr.h"
+#include "firebird/impl/blr.h"
 #include "../dsql/Nodes.h"
 #include "../dsql/NodePrinter.h"
 
@@ -36,6 +36,16 @@ public:
 	explicit AvgAggNode(MemoryPool& pool, bool aDistinct, bool aDialect1, ValueExprNode* aArg = NULL);
 
 	static DmlNode* parse(thread_db* tdbb, MemoryPool& pool, CompilerScratch* csb, const UCHAR blrOp);
+
+	virtual const char* getCompatDialectVerb()
+	{
+		return "avg";
+	}
+
+	virtual unsigned getCapabilities() const
+	{
+		return CAP_RESPECTS_WINDOW_FRAME | CAP_WANTS_AGG_CALLS;
+	}
 
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
 	virtual void make(DsqlCompilerScratch* dsqlScratch, dsc* desc);
@@ -62,20 +72,23 @@ public:
 
 	static DmlNode* parse(thread_db* tdbb, MemoryPool& pool, CompilerScratch* csb, const UCHAR blrOp);
 
+	virtual unsigned getCapabilities() const
+	{
+		return CAP_WANTS_AGG_CALLS;
+	}
+
+	virtual void getChildren(NodeRefsHolder& holder, bool dsql) const
+	{
+		AggNode::getChildren(holder, dsql);
+		holder.add(delimiter);
+	}
+
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
 	virtual void make(DsqlCompilerScratch* dsqlScratch, dsc* desc);
 	virtual bool setParameterType(DsqlCompilerScratch* dsqlScratch,
-		const dsc* desc, bool forceVarChar);
+		std::function<void (dsc*)> makeDesc, bool forceVarChar);
 	virtual void getDesc(thread_db* tdbb, CompilerScratch* csb, dsc* desc);
 	virtual ValueExprNode* copy(thread_db* tdbb, NodeCopier& copier) const;
-
-	virtual void checkOrderedWindowCapable() const
-	{
-		Firebird::status_exception::raise(
-			Firebird::Arg::Gds(isc_wish_list) <<
-			Firebird::Arg::Gds(isc_random) <<
-				"LIST is not supported in ordered windows");
-	}
 
 	virtual void aggInit(thread_db* tdbb, jrd_req* request) const;
 	virtual void aggPass(thread_db* tdbb, jrd_req* request, dsc* desc) const;
@@ -94,6 +107,11 @@ public:
 	explicit CountAggNode(MemoryPool& pool, bool aDistinct, bool aDialect1, ValueExprNode* aArg = NULL);
 
 	static DmlNode* parse(thread_db* tdbb, MemoryPool& pool, CompilerScratch* csb, const UCHAR blrOp);
+
+	virtual unsigned getCapabilities() const
+	{
+		return CAP_RESPECTS_WINDOW_FRAME | CAP_WANTS_AGG_CALLS;
+	}
 
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
 	virtual void make(DsqlCompilerScratch* dsqlScratch, dsc* desc);
@@ -115,6 +133,16 @@ public:
 	explicit SumAggNode(MemoryPool& pool, bool aDistinct, bool aDialect1, ValueExprNode* aArg = NULL);
 
 	static DmlNode* parse(thread_db* tdbb, MemoryPool& pool, CompilerScratch* csb, const UCHAR blrOp);
+
+	virtual const char* getCompatDialectVerb()
+	{
+		return "sum";
+	}
+
+	virtual unsigned getCapabilities() const
+	{
+		return CAP_RESPECTS_WINDOW_FRAME | CAP_WANTS_AGG_CALLS;
+	}
 
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
 	virtual void make(DsqlCompilerScratch* dsqlScratch, dsc* desc);
@@ -141,6 +169,11 @@ public:
 	explicit MaxMinAggNode(MemoryPool& pool, MaxMinType aType, ValueExprNode* aArg = NULL);
 
 	static DmlNode* parse(thread_db* tdbb, MemoryPool& pool, CompilerScratch* csb, const UCHAR blrOp);
+
+	virtual unsigned getCapabilities() const
+	{
+		return CAP_RESPECTS_WINDOW_FRAME | CAP_WANTS_AGG_CALLS;
+	}
 
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
 	virtual void make(DsqlCompilerScratch* dsqlScratch, dsc* desc);
@@ -169,12 +202,24 @@ public:
 		TYPE_VAR_POP
 	};
 
-	struct StdDevImpure
+	union StdDevImpure
 	{
-		double x, x2;
+		struct
+		{
+			double x, x2;
+		} dbl;
+		struct
+		{
+			Firebird::Decimal128 x, x2;
+		} dec;
 	};
 
 	explicit StdDevAggNode(MemoryPool& pool, StdDevType aType, ValueExprNode* aArg = NULL);
+
+	virtual unsigned getCapabilities() const
+	{
+		return CAP_RESPECTS_WINDOW_FRAME | CAP_WANTS_AGG_CALLS;
+	}
 
 	virtual void parseArgs(thread_db* tdbb, CompilerScratch* csb, unsigned count);
 
@@ -208,15 +253,33 @@ public:
 		TYPE_CORR
 	};
 
-	struct CorrImpure
+	union CorrImpure
 	{
-		double x, x2, y, y2, xy;
+		struct
+		{
+			double x, x2, y, y2, xy;
+		} dbl;
+		struct
+		{
+			Firebird::Decimal128 x, x2, y, y2, xy;
+		} dec;
 	};
 
 	explicit CorrAggNode(MemoryPool& pool, CorrType aType,
 		ValueExprNode* aArg = NULL, ValueExprNode* aArg2 = NULL);
 
+	virtual unsigned getCapabilities() const
+	{
+		return CAP_RESPECTS_WINDOW_FRAME | CAP_WANTS_AGG_CALLS;
+	}
+
 	virtual void parseArgs(thread_db* tdbb, CompilerScratch* csb, unsigned count);
+
+	virtual void getChildren(NodeRefsHolder& holder, bool dsql) const
+	{
+		AggNode::getChildren(holder, dsql);
+		holder.add(arg2);
+	}
 
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
 	virtual void make(DsqlCompilerScratch* dsqlScratch, dsc* desc);
@@ -255,15 +318,33 @@ public:
 		TYPE_REGR_SYY
 	};
 
-	struct RegrImpure
+	union RegrImpure
 	{
-		double x, x2, y, y2, xy;
+		struct
+		{
+			double x, x2, y, y2, xy;
+		} dbl;
+		struct
+		{
+			Firebird::Decimal128 x, x2, y, y2, xy;
+		} dec;
 	};
 
 	explicit RegrAggNode(MemoryPool& pool, RegrType aType,
 		ValueExprNode* aArg = NULL, ValueExprNode* aArg2 = NULL);
 
+	virtual unsigned getCapabilities() const
+	{
+		return CAP_RESPECTS_WINDOW_FRAME | CAP_WANTS_AGG_CALLS;
+	}
+
 	virtual void parseArgs(thread_db* tdbb, CompilerScratch* csb, unsigned count);
+
+	virtual void getChildren(NodeRefsHolder& holder, bool dsql) const
+	{
+		AggNode::getChildren(holder, dsql);
+		holder.add(arg2);
+	}
 
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
 	virtual void make(DsqlCompilerScratch* dsqlScratch, dsc* desc);
@@ -293,7 +374,18 @@ public:
 	explicit RegrCountAggNode(MemoryPool& pool,
 		ValueExprNode* aArg = NULL, ValueExprNode* aArg2 = NULL);
 
+	virtual unsigned getCapabilities() const
+	{
+		return CAP_RESPECTS_WINDOW_FRAME | CAP_WANTS_AGG_CALLS;
+	}
+
 	virtual void parseArgs(thread_db* tdbb, CompilerScratch* csb, unsigned count);
+
+	virtual void getChildren(NodeRefsHolder& holder, bool dsql) const
+	{
+		AggNode::getChildren(holder, dsql);
+		holder.add(arg2);
+	}
 
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
 	virtual void make(DsqlCompilerScratch* dsqlScratch, dsc* desc);

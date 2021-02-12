@@ -31,23 +31,25 @@
 #define JRD_CHARSET_H
 
 #include "CsConvert.h"
+#include "IntlUtil.h"
+
+namespace Firebird {
+
+	template <>
+	inline void SimpleDelete<charset>::clear(charset* cs)
+	{
+		Firebird::IntlUtil::finiCharset(cs);
+		delete cs;
+	}
+
+}
+
 
 namespace Jrd {
 
 class CharSet
 {
 public:
-	class Delete
-	{
-	public:
-		static void clear(charset* cs)
-		{
-			if (cs->charset_fn_destroy)
-				cs->charset_fn_destroy(cs);
-			delete cs;
-		}
-	};
-
 	static CharSet* createInstance(Firebird::MemoryPool& pool, USHORT id, charset* cs);
 
 protected:
@@ -116,8 +118,7 @@ public:
 
 	void destroy()
 	{
-		if (cs->charset_fn_destroy)
-			cs->charset_fn_destroy(cs);
+		Firebird::IntlUtil::finiCharset(cs);
 	}
 
 	const UCHAR* getSqlMatchAny() const { return sqlMatchAny; }
@@ -127,17 +128,7 @@ public:
 
 	charset* getStruct() const { return cs; }
 
-	ULONG removeTrailingSpaces(ULONG srcLen, const UCHAR* src) const
-	{
-		const UCHAR* p = src + srcLen - getSpaceLength();
-
-		while (p >= src && memcmp(p, getSpace(), getSpaceLength()) == 0)
-			p -= getSpaceLength();
-
-		p += getSpaceLength();
-
-		return p - src;
-	}
+	ULONG removeTrailingSpaces(ULONG srcLen, const UCHAR* src) const;
 
 	virtual ULONG length(ULONG srcLen, const UCHAR* src, bool countTrailingSpaces) const = 0;
 	virtual ULONG substring(const ULONG srcLen, const UCHAR* src, const ULONG dstLen, UCHAR* dst,

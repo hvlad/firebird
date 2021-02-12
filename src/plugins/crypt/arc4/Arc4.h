@@ -1,7 +1,7 @@
 /*
  *	PROGRAM:		Firebird authentication.
- *	MODULE:			SrpClient.h
- *	DESCRIPTION:	SPR authentication plugin.
+ *	MODULE:			Arc4.h
+ *	DESCRIPTION:	RC4 wire compression plugin.
  *
  *  The contents of this file are subject to the Initial
  *  Developer's Public License Version 1.0 (the "License");

@@ -176,13 +176,16 @@ static const struct ini_idx_t indices[] =
 		SEGMENT(f_coll_id, idx_numeric),		// collation id
 		SEGMENT(f_coll_cs_id, idx_numeric)		// character set id
 	}},
-	// define index RDB$INDEX_27 for RDB$DEPENDENCIES RDB$DEPENDENT_NAME;
-	INDEX(27, rel_dpds, 0, 1)
-		SEGMENT(f_dpd_name, idx_metadata)		// dependent name
+	// define index RDB$INDEX_27 for RDB$DEPENDENCIES RDB$DEPENDENT_NAME, RDB$DEPENDENT_TYPE;
+	INDEX(27, rel_dpds, 0, 2)
+		SEGMENT(f_dpd_name, idx_metadata),		// dependent name
+		SEGMENT(f_dpd_type, idx_numeric)		// dependent type
 	}},
-	// define index RDB$INDEX_28 for RDB$DEPENDENCIES RDB$DEPENDED_ON_NAME;
-	INDEX(28, rel_dpds, 0, 1)
-		SEGMENT(f_dpd_o_name, idx_metadata)		// dependent on name
+	// define index RDB$INDEX_28 for RDB$DEPENDENCIES RDB$DEPENDED_ON_NAME, RDB$DEPENDED_ON_TYPE, RDB$FIELD_NAME;
+	INDEX(28, rel_dpds, 0, 3)
+		SEGMENT(f_dpd_o_name, idx_metadata),	// dependent on name
+		SEGMENT(f_dpd_o_type, idx_numeric),		// dependent on type
+		SEGMENT(f_dpd_f_name, idx_metadata)		// field name
 	}},
 	// define index RDB$INDEX_29 for RDB$USER_PRIVILEGES RDB$RELATION_NAME;
 	INDEX(29, rel_priv, 0, 1)
@@ -291,6 +294,15 @@ static const struct ini_idx_t indices[] =
 	// define index RDB$INDEX_54 for RDB$BACKUP_HISTORY RDB$GUID;
 	INDEX(54, rel_backup_history, idx_unique, 1)
 		SEGMENT(f_backup_guid, idx_string)		// backup guid
+	}},
+	// define index RDB$INDEX_55 for RDB$PUBLICATIONS unique RDB$PUBLICATION_NAME;
+	INDEX(55, rel_pubs, idx_unique, 1)
+		SEGMENT(f_pub_name, idx_string)		// publication name
+	}},
+	// define index RDB$INDEX_56 for RDB$PUBLICATION_TABLES unique RDB$TABLE_NAME, RDB$PUBLICATION_NAME;
+	INDEX(56, rel_pub_tables, idx_unique, 2)
+		SEGMENT(f_pubtab_tab_name, idx_string),		// table name
+		SEGMENT(f_pubtab_pub_name, idx_string)		// publication name
 	}},
 };
 

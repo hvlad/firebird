@@ -19,7 +19,7 @@
  */
 
 #include <stdlib.h>
-#include "ib_udf.h"
+#include "ib_util.h"
 #include "firebird.h"
 
 typedef void* VoidPtr;

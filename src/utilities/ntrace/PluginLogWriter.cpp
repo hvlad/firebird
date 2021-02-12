@@ -27,6 +27,8 @@
 
 #include "PluginLogWriter.h"
 #include "../common/classes/init.h"
+#include "../common/classes/RefMutex.h"
+#include "../common/os/os_utils.h"
 
 #ifndef S_IREAD
 #define S_IREAD S_IRUSR
@@ -42,8 +44,8 @@ using namespace Firebird;
 #ifndef HAVE_STRERROR_R
 void strerror_r(int err, char* buf, size_t bufSize)
 {
-	static Firebird::GlobalPtr<Firebird::Mutex> mutex;
-	Firebird::MutexLockGuard guard(mutex, FB_FUNCTION);
+	static GlobalPtr<Mutex> mutex;
+	MutexLockGuard guard(mutex, FB_FUNCTION);
 	strncpy(buf, strerror(err), bufSize);
 }
 #endif
@@ -60,11 +62,17 @@ PluginLogWriter::PluginLogWriter(const char* fileName, size_t maxSize) :
 	mutexName.append(m_fileName);
 
 	checkMutex("init", ISC_mutex_init(&m_mutex, mutexName.c_str()));
+	Guard guard(this);
 #endif
+
+	reopen();
 }
 
 PluginLogWriter::~PluginLogWriter()
 {
+	if (m_idleTimer)
+		m_idleTimer->stop();
+
 	if (m_fileHandle != -1)
 		::close(m_fileHandle);
 
@@ -75,11 +83,7 @@ PluginLogWriter::~PluginLogWriter()
 
 SINT64 PluginLogWriter::seekToEnd()
 {
-#ifdef WIN_NT
-	SINT64 nFileLen = _lseeki64(m_fileHandle, 0, SEEK_END);
-#else
-	off_t nFileLen = lseek(m_fileHandle, 0, SEEK_END);
-#endif
+	const SINT64 nFileLen = os_utils::lseek(m_fileHandle, 0, SEEK_END);
 
 	if (nFileLen < 0)
 		checkErrno("lseek");
@@ -104,7 +108,7 @@ void PluginLogWriter::reopen()
 		);
 	m_fileHandle = _open_osfhandle((intptr_t) hFile, 0);
 #else
-	m_fileHandle = ::open(m_fileName.c_str(), O_CREAT | O_APPEND | O_RDWR, S_IREAD | S_IWRITE);
+	m_fileHandle = os_utils::open(m_fileName.c_str(), O_CREAT | O_APPEND | O_RDWR, S_IREAD | S_IWRITE);
 #endif
 
 	if (m_fileHandle < 0)
@@ -113,6 +117,9 @@ void PluginLogWriter::reopen()
 
 FB_SIZE_T PluginLogWriter::write(const void* buf, FB_SIZE_T size)
 {
+	MutexLockGuard guardIdle(m_idleMutex, FB_FUNCTION);
+	setupIdleTimer(true);
+
 #ifdef WIN_NT
 	Guard guard(this);
 #endif
@@ -179,7 +186,22 @@ FB_SIZE_T PluginLogWriter::write(const void* buf, FB_SIZE_T size)
 	if (written != size)
 		checkErrno("write");
 
+	setupIdleTimer(false);
 	return written;
+}
+
+FB_SIZE_T PluginLogWriter::write_s(CheckStatusWrapper* status, const void* buf, FB_SIZE_T size)
+{
+	try
+	{
+		return write(buf, size);
+	}
+	catch (Exception &ex)
+	{
+		ex.stuffException(status);
+	}
+
+	return 0;
 }
 
 void PluginLogWriter::checkErrno(const char* operation)
@@ -224,3 +246,40 @@ void PluginLogWriter::unlock()
 	checkMutex("unlock", ISC_mutex_unlock(&m_mutex));
 }
 #endif // WIN_NT
+
+
+const unsigned int IDLE_TIMEOUT = 30; // seconds
+
+void PluginLogWriter::setupIdleTimer(bool clear)
+{
+	unsigned int timeout = clear ? 0 : IDLE_TIMEOUT;
+	if (!timeout)
+	{
+		if (m_idleTimer)
+			m_idleTimer->reset(0);
+	}
+	else
+	{
+		if (!m_idleTimer)
+		{
+			m_idleTimer = FB_NEW IdleTimer();
+			m_idleTimer->setOnTimer(this, &PluginLogWriter::onIdleTimer);
+		}
+
+		m_idleTimer->reset(timeout);
+	}
+}
+
+void PluginLogWriter::onIdleTimer(TimerImpl*)
+{
+	MutexEnsureUnlock lockIdle(m_idleMutex, FB_FUNCTION);
+
+	if (!lockIdle.tryEnter())
+		return;
+
+	if (m_fileHandle == -1)
+		return;
+
+	::close(m_fileHandle);
+	m_fileHandle = -1;
+}

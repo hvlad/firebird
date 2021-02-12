@@ -62,6 +62,7 @@
 #include "../common/utils_proto.h"
 #include "../common/StatusArg.h"
 #include "../common/ThreadData.h"
+#include "../common/ThreadStart.h"
 #include "../common/classes/rwlock.h"
 #include "../common/classes/GenericMap.h"
 #include "../common/classes/RefMutex.h"
@@ -238,6 +239,8 @@ namespace {
 		explicit FileLockHolder(FileLock* l)
 			: lock(l)
 		{
+			if (!lock)
+				return;
 			LocalStatus ls;
 			CheckStatusWrapper status(&ls);
 			if (!lock->setlock(&status, FileLock::FLM_EXCLUSIVE))
@@ -246,7 +249,8 @@ namespace {
 
 		~FileLockHolder()
 		{
-			lock->unlock();
+			if (lock)
+				lock->unlock();
 		}
 
 	private:
@@ -255,8 +259,8 @@ namespace {
 
 	DevNode getNode(const char* name)
 	{
-		struct stat statistics;
-		if (stat(name, &statistics) != 0)
+		struct STAT statistics;
+		if (os_utils::stat(name, &statistics) != 0)
 		{
 			if (errno == ENOENT)
 			{
@@ -272,11 +276,9 @@ namespace {
 
 	DevNode getNode(int fd)
 	{
-		struct stat statistics;
-		if (fstat(fd, &statistics) != 0)
-		{
+		struct STAT statistics;
+		if (os_utils::fstat(fd, &statistics) != 0)
 			system_call_failed::raise("stat");
-		}
 
 		return DevNode(statistics.st_dev, statistics.st_ino);
 	}
@@ -447,7 +449,7 @@ int FileLock::setlock(const LockMode mode)
 
 #ifdef USE_FCNTL
 	// Take lock on a file
-	struct flock lock;
+	struct FLOCK lock;
 	lock.l_type = shared ? F_RDLCK : F_WRLCK;
 	lock.l_whence = SEEK_SET;
 	lock.l_start = lStart;
@@ -545,7 +547,7 @@ void FileLock::unlock()
 	}
 
 #ifdef USE_FCNTL
-	struct flock lock;
+	struct FLOCK lock;
 	lock.l_type = F_UNLCK;
 	lock.l_whence = SEEK_SET;
 	lock.l_start = lStart;
@@ -719,7 +721,7 @@ namespace {
 				return;
 			}
 
-			FB_UNUSED(ftruncate(fdSem, sizeof(*this)));
+			FB_UNUSED(os_utils::ftruncate(fdSem, sizeof(*this)));
 
 			for (int i = 0; i < N_SETS; ++i)
 			{
@@ -982,17 +984,6 @@ public:
 		}
 	}
 
-	int release()
-	{
-		if (--refCounter == 0)
-		{
-			delete this;
-			return 0;
-		}
-
-		return 1;
-	}
-
 	bool operator== (Sys5Semaphore& sem)
 	{
 		return semId == sem.getId() && semNum == sem.semNum;
@@ -1086,7 +1077,7 @@ namespace {
 #define PTHREAD_ERRNO(x) { int tmpState = (x); if (isPthreadError(tmpState, #x)) return tmpState; }
 #define LOG_PTHREAD_ERROR(x) isPthreadError((x), #x)
 #define PTHREAD_ERR_STATUS(x, v) { int tmpState = (x); if (tmpState) { error(v, #x, tmpState); return false; } }
-#define PTHREAD_ERR_RAISE(x) { int tmpState = (x); if (tmpState) { system_call_failed(#x, tmpState); } }
+#define PTHREAD_ERR_RAISE(x) { int tmpState = (x); if (tmpState) { system_call_failed::raise(#x, tmpState); } }
 
 #endif // USE_SHARED_FUTEX
 
@@ -1516,7 +1507,7 @@ ULONG ISC_exception_post(ULONG sig_num, const TEXT* err_msg, ISC_STATUS& /*isc_e
 	case SIGILL:
 
 		sprintf(log_msg, "%s Illegal Instruction.\n"
-				"\t\tThe code attempted to perfrom an\n"
+				"\t\tThe code attempted to perform an\n"
 				"\t\tillegal operation."
 				"\tThis exception will cause the Firebird server\n"
 				"\tto terminate abnormally.", err_msg);
@@ -1732,11 +1723,19 @@ ULONG ISC_exception_post(ULONG except_code, const TEXT* err_msg, ISC_STATUS& isc
 
 void SharedMemoryBase::removeMapFile()
 {
+	fb_assert(sh_mem_header);
+
+	if (!sh_mem_header->isDeleted())
+	{
 #ifndef WIN_NT
-	unlinkFile();
+		unlinkFile();
 #else
-	sh_mem_unlink = true;
+		fb_assert(!sh_mem_unlink);
+		sh_mem_unlink = true;
 #endif // WIN_NT
+
+		sh_mem_header->markAsDeleted();
+	}
 }
 
 void SharedMemoryBase::unlinkFile()
@@ -1784,7 +1783,7 @@ void SharedMemoryBase::internalUnmap()
 	}
 }
 
-SharedMemoryBase::SharedMemoryBase(const TEXT* filename, ULONG length, IpcObject* callback)
+SharedMemoryBase::SharedMemoryBase(const TEXT* filename, ULONG length, IpcObject* callback, bool skipLock)
 	:
 #ifdef HAVE_SHARED_MUTEX_SECTION
 	sh_mem_mutex(0),
@@ -1828,9 +1827,11 @@ SharedMemoryBase::SharedMemoryBase(const TEXT* filename, ULONG length, IpcObject
 	// open the init lock file
 	MutexLockGuard guard(openFdInit, FB_FUNCTION);
 
-	initFile.reset(FB_NEW_POOL(*getDefaultMemoryPool()) FileLock(init_filename));
+	if (!skipLock)
+		initFile.reset(FB_NEW_POOL(*getDefaultMemoryPool()) FileLock(init_filename));
 
-	// get an exclusive lock on the INIT file with blocking
+	// get an exclusive lock on the INIT file with blocking except TransactionStatusBlock
+	// since its initialized under FileLock
 	FileLockHolder initLock(initFile);
 
 #ifdef USE_SYS5SEMAPHORE
@@ -1839,11 +1840,10 @@ SharedMemoryBase::SharedMemoryBase(const TEXT* filename, ULONG length, IpcObject
 	public:
 		static void init(int fd)
 		{
-			void* sTab = mmap(0, sizeof(SemTable), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+			void* sTab = os_utils::mmap(0, sizeof(SemTable), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+
 			if ((U_IPTR) sTab == (U_IPTR) -1)
-			{
 				system_call_failed::raise("mmap");
-			}
 
 			semTable = (SemTable*) sTab;
 			initCache();
@@ -1878,11 +1878,11 @@ SharedMemoryBase::SharedMemoryBase(const TEXT* filename, ULONG length, IpcObject
 	if (length == 0)
 	{
 		// Get and use the existing length of the shared segment
-		struct stat file_stat;
-		if (fstat(mainLock->getFd(), &file_stat) == -1)
-		{
+		struct STAT file_stat;
+
+		if (os_utils::fstat(mainLock->getFd(), &file_stat) == -1)
 			system_call_failed::raise("fstat");
-		}
+
 		length = file_stat.st_size;
 
 		if (length == 0)
@@ -1893,7 +1893,9 @@ SharedMemoryBase::SharedMemoryBase(const TEXT* filename, ULONG length, IpcObject
 	}
 
 	// map file to memory
-	void* const address = mmap(0, length, PROT_READ | PROT_WRITE, MAP_SHARED, mainLock->getFd(), 0);
+	void* const address = os_utils::mmap(0, length,
+		PROT_READ | PROT_WRITE, MAP_SHARED, mainLock->getFd(), 0);
+
 	if ((U_IPTR) address == (U_IPTR) -1)
 	{
 		system_call_failed::raise("mmap", errno);
@@ -1958,11 +1960,10 @@ SharedMemoryBase::SharedMemoryBase(const TEXT* filename, ULONG length, IpcObject
 	if (mainLock->setlock(&statusVector, FileLock::FLM_TRY_EXCLUSIVE))
 	{
 		if (trunc_flag)
-			FB_UNUSED(ftruncate(mainLock->getFd(), length));
+			FB_UNUSED(os_utils::ftruncate(mainLock->getFd(), length));
 
 		if (callback->initialize(this, true))
 		{
-
 #ifdef HAVE_SHARED_MUTEX_SECTION
 #ifdef USE_SYS5SEMAPHORE
 
@@ -2024,7 +2025,7 @@ SharedMemoryBase::SharedMemoryBase(const TEXT* filename, ULONG length, IpcObject
 #ifdef BUGGY_LINUX_MUTEX
 				}
 #endif
-#endif
+#endif // HAVE_PTHREAD_MUTEXATTR_SETPROTOCOL
 
 #ifdef USE_ROBUST_MUTEX
 #ifdef BUGGY_LINUX_MUTEX
@@ -2045,7 +2046,7 @@ SharedMemoryBase::SharedMemoryBase(const TEXT* filename, ULONG length, IpcObject
 #ifdef BUGGY_LINUX_MUTEX
 					&& (state != ENOTSUP || bugFlag)
 #endif
-						 )
+					)
 				{
 					iscLogStatus("Pthread Error", (Arg::Gds(isc_sys_request) <<
 						"pthread_mutex_init" << Arg::Unix(state)).value());
@@ -2111,7 +2112,7 @@ SharedMemoryBase::SharedMemoryBase(const TEXT* filename, ULONG length, IpcObject
 
 
 #ifdef WIN_NT
-SharedMemoryBase::SharedMemoryBase(const TEXT* filename, ULONG length, IpcObject* cb)
+SharedMemoryBase::SharedMemoryBase(const TEXT* filename, ULONG length, IpcObject* cb, bool /*skipLock*/)
   :	sh_mem_mutex(0), sh_mem_length_mapped(0),
 	sh_mem_handle(0), sh_mem_object(0), sh_mem_interest(0), sh_mem_hdr_object(0),
 	sh_mem_hdr_address(0), sh_mem_header(NULL), sh_mem_callback(cb), sh_mem_unlink(false)
@@ -2207,12 +2208,14 @@ SharedMemoryBase::SharedMemoryBase(const TEXT* filename, ULONG length, IpcObject
 
 	if (file_handle == INVALID_HANDLE_VALUE)
 	{
-		if ((err == ERROR_SHARING_VIOLATION))
+		if ((err == ERROR_SHARING_VIOLATION) || (err == ERROR_ACCESS_DENIED))
 		{
 			if (!init_flag) {
 				CloseHandle(event_handle);
 			}
-			goto retry;
+
+			if (retry_count < 200)	// 2 sec
+				goto retry;
 		}
 
 		CloseHandle(event_handle);
@@ -2245,7 +2248,12 @@ SharedMemoryBase::SharedMemoryBase(const TEXT* filename, ULONG length, IpcObject
 				CloseHandle(file_handle);
 
 				if (err == ERROR_USER_MAPPED_FILE)
+				{
+					if (retry_count < 50)	// 0.5 sec
+						goto retry;
+
 					Arg::Gds(isc_instance_conflict).raise();
+				}
 				else
 					system_call_failed::raise("SetFilePointer", err);
 			}
@@ -2350,6 +2358,8 @@ SharedMemoryBase::SharedMemoryBase(const TEXT* filename, ULONG length, IpcObject
 	else
 		length = header_address[0];
 
+	fb_assert(length);
+
 	// Create the real file mapping object.
 
 	TEXT mapping_name[64]; // enough for int32 as text
@@ -2397,12 +2407,6 @@ SharedMemoryBase::SharedMemoryBase(const TEXT* filename, ULONG length, IpcObject
 
 	sh_mem_header = (MemoryHeader*) address;
 	sh_mem_length_mapped = length;
-
-	if (!sh_mem_length_mapped)
-	{
-		(Arg::Gds(isc_random) << "sh_mem_length_mapped is 0").raise();
-	}
-
 	sh_mem_handle = file_handle;
 	sh_mem_object = file_obj;
 	sh_mem_interest = event_handle;
@@ -2423,6 +2427,12 @@ SharedMemoryBase::SharedMemoryBase(const TEXT* filename, ULONG length, IpcObject
 		SetEvent(event_handle);
 		if (err)
 		{
+			UnmapViewOfFile(address);
+			CloseHandle(file_obj);
+			UnmapViewOfFile(header_address);
+			CloseHandle(header_obj);
+			CloseHandle(event_handle);
+			CloseHandle(file_handle);
 			system_call_failed::raise("FlushViewOfFile", err);
 		}
 	}
@@ -2470,7 +2480,8 @@ UCHAR* SharedMemoryBase::mapObject(CheckStatusWrapper* statusVector, ULONG objec
 	const ULONG end = FB_ALIGN(object_offset + object_length, page_size);
 	const ULONG length = end - start;
 
-	UCHAR* address = (UCHAR*) mmap(0, length, PROT_READ | PROT_WRITE, MAP_SHARED, mainLock->getFd(), start);
+	UCHAR* address = (UCHAR*) os_utils::mmap(0, length,
+		PROT_READ | PROT_WRITE, MAP_SHARED, mainLock->getFd(), start);
 
 	if ((U_IPTR) address == (U_IPTR) -1)
 	{
@@ -2811,7 +2822,7 @@ static bool initializeFastMutex(FAST_MUTEX* lpMutex, LPSECURITY_ATTRIBUTES lpAtt
 
 	LPCSTR name = lpName;
 
-	if (strlen(lpName) + strlen(FAST_MUTEX_EVT_NAME) - 2 >= MAXPATHLEN)
+	if (lpName && strlen(lpName) + strlen(FAST_MUTEX_EVT_NAME) - 2 >= MAXPATHLEN)
 	{
 		// this is the same error which CreateEvent will return for long name
 		SetLastError(ERROR_FILENAME_EXCED_RANGE);
@@ -2896,7 +2907,7 @@ static bool openFastMutex(FAST_MUTEX* lpMutex, DWORD DesiredAccess, LPCSTR lpNam
 {
 	LPCSTR name = lpName;
 
-	if (strlen(lpName) + strlen(FAST_MUTEX_EVT_NAME) - 2 >= MAXPATHLEN)
+	if (lpName && strlen(lpName) + strlen(FAST_MUTEX_EVT_NAME) - 2 >= MAXPATHLEN)
 	{
 		SetLastError(ERROR_FILENAME_EXCED_RANGE);
 		return false;
@@ -3085,10 +3096,11 @@ bool SharedMemoryBase::remapFile(CheckStatusWrapper* statusVector, ULONG new_len
 	}
 
 	if (flag)
-		FB_UNUSED(ftruncate(mainLock->getFd(), new_length));
+		FB_UNUSED(os_utils::ftruncate(mainLock->getFd(), new_length));
 
-	MemoryHeader* const address = (MemoryHeader*)
-		mmap(0, new_length, PROT_READ | PROT_WRITE, MAP_SHARED, mainLock->getFd(), 0);
+	MemoryHeader* const address = (MemoryHeader*) os_utils::mmap(0, new_length,
+		PROT_READ | PROT_WRITE, MAP_SHARED, mainLock->getFd(), 0);
+
 	if ((U_IPTR) address == (U_IPTR) -1)
 	{
 		error(statusVector, "mmap() failed", errno);
@@ -3290,8 +3302,8 @@ static SLONG create_semaphores(CheckStatusWrapper* statusVector, SLONG key, int 
 			// We want to limit access to semaphores, created here
 			// Reasonable access rights to them - exactly like security database has
 			const char* secDb = Config::getDefaultConfig()->getSecurityDatabase();
-			struct stat st;
-			if (stat(secDb, &st) == 0)
+			struct STAT st;
+			if (os_utils::stat(secDb, &st) == 0)
 			{
 				union semun arg;
 				semid_ds ds;

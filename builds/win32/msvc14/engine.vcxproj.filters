@@ -40,6 +40,9 @@
     <Filter Include="DSQL\preprocesed">
       <UniqueIdentifier>{f8ad7750-3087-4a0c-9679-a44b5d0f38dd}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Replication">
+      <UniqueIdentifier>{686cba10-1e4f-44f7-b044-972ef8327197}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\..\..\src\jrd\recsrc\WindowedStream.cpp">
@@ -219,6 +222,9 @@
     <ClCompile Include="..\..\..\src\jrd\Collation.cpp">
       <Filter>JRD files</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\jrd\ConfigTable.cpp">
+      <Filter>JRD files</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\jrd\cvt2.cpp">
       <Filter>JRD files</Filter>
     </ClCompile>
@@ -354,13 +360,13 @@
     <ClCompile Include="..\..\..\src\jrd\svc.cpp">
       <Filter>JRD files</Filter>
     </ClCompile>
-    <ClCompile Include="..\..\..\src\jrd\svc_tab.cpp">
-      <Filter>JRD files</Filter>
-    </ClCompile>
     <ClCompile Include="..\..\..\src\jrd\SysFunction.cpp">
       <Filter>JRD files</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\jrd\TempSpace.cpp">
+      <Filter>JRD files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\jrd\TimeZone.cpp">
       <Filter>JRD files</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\jrd\tpc.cpp">
@@ -420,9 +426,6 @@
     <ClCompile Include="..\..\..\gen\jrd\met.cpp">
       <Filter>JRD files\GPRE cpp</Filter>
     </ClCompile>
-    <ClCompile Include="..\..\..\gen\jrd\pcmet.cpp">
-      <Filter>JRD files\GPRE cpp</Filter>
-    </ClCompile>
     <ClCompile Include="..\..\..\gen\dsql\DdlNodes.cpp">
       <Filter>DSQL\preprocesed</Filter>
     </ClCompile>
@@ -461,6 +464,42 @@
     </ClCompile>
     <ClCompile Include="..\..\..\src\jrd\extds\ValidatePassword.cpp">
       <Filter>JRD files\EXTDS</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\jrd\Savepoint.cpp">
+      <Filter>JRD files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\dsql\DsqlBatch.cpp">
+      <Filter>DSQL</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\jrd\SystemPackages.cpp">
+      <Filter>JRD files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\jrd\replication\Applier.cpp">
+      <Filter>Replication</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\jrd\replication\ChangeLog.cpp">
+      <Filter>Replication</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\jrd\replication\Config.cpp">
+      <Filter>Replication</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\jrd\replication\Manager.cpp">
+      <Filter>Replication</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\jrd\replication\Publisher.cpp">
+      <Filter>Replication</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\jrd\replication\Replicator.cpp">
+      <Filter>Replication</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\jrd\replication\Utils.cpp">
+      <Filter>Replication</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\jrd\Coercion.cpp">
+      <Filter>JRD files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\jrd\MetaName.cpp">
+      <Filter>JRD files</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -636,6 +675,9 @@
       <Filter>Header files</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\jrd\Collation.h">
+      <Filter>Header files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\jrd\ConfigTable.h">
       <Filter>Header files</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\jrd\constants.h">
@@ -845,9 +887,6 @@
     <ClInclude Include="..\..\..\src\jrd\par_proto.h">
       <Filter>Header files</Filter>
     </ClInclude>
-    <ClInclude Include="..\..\..\src\jrd\pcmet_proto.h">
-      <Filter>Header files</Filter>
-    </ClInclude>
     <ClInclude Include="..\..\..\src\jrd\PreparedStatement.h">
       <Filter>Header files</Filter>
     </ClInclude>
@@ -911,9 +950,6 @@
     <ClInclude Include="..\..\..\src\jrd\shut_proto.h">
       <Filter>Header files</Filter>
     </ClInclude>
-    <ClInclude Include="..\..\..\src\jrd\SimilarToMatcher.h">
-      <Filter>Header files</Filter>
-    </ClInclude>
     <ClInclude Include="..\..\..\src\jrd\sort.h">
       <Filter>Header files</Filter>
     </ClInclude>
@@ -926,9 +962,6 @@
     <ClInclude Include="..\..\..\src\jrd\svc.h">
       <Filter>Header files</Filter>
     </ClInclude>
-    <ClInclude Include="..\..\..\src\jrd\svc_tab.h">
-      <Filter>Header files</Filter>
-    </ClInclude>
     <ClInclude Include="..\..\..\src\jrd\svc_undoc.h">
       <Filter>Header files</Filter>
     </ClInclude>
@@ -936,6 +969,9 @@
       <Filter>Header files</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\jrd\TempSpace.h">
+      <Filter>Header files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\jrd\TimeZone.h">
       <Filter>Header files</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\jrd\tpc_proto.h">
@@ -992,6 +1028,21 @@
     <ClInclude Include="..\..\..\src\jrd\extds\ValidatePassword.h">
       <Filter>Header files</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\dsql\DsqlBatch.h">
+      <Filter>Header files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\jrd\SystemPackages.h">
+      <Filter>Header files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\jrd\Coercion.h">
+      <Filter>Header files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\jrd\MetaName.h">
+      <Filter>Header files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\jrd\QualifiedName.h">
+      <Filter>Header files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="..\..\..\src\dsql\DdlNodes.epp">
@@ -1025,9 +1076,6 @@
       <Filter>JRD files\GPRE files</Filter>
     </None>
     <None Include="..\..\..\src\jrd\met.epp">
-      <Filter>JRD files\GPRE files</Filter>
-    </None>
-    <None Include="..\..\..\src\jrd\pcmet.epp">
       <Filter>JRD files\GPRE files</Filter>
     </None>
     <None Include="..\..\..\src\jrd\scl.epp">

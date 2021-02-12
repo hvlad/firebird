@@ -30,8 +30,7 @@
 #include "../common/StatusArg.h"
 #include "../common/utils_proto.h"
 
-#include "../common/classes/fb_string.h"
-#include "../common/classes/MetaName.h"
+#include "../common/classes/MetaString.h"
 #include "../common/classes/alloc.h"
 #include "fb_exception.h"
 #include "gen/iberror.h"
@@ -53,14 +52,15 @@ namespace Firebird {
 
 namespace Arg {
 
-Base::Base(ISC_STATUS k, ISC_STATUS c) throw(Firebird::BadAlloc) :
+Base::Base(ISC_STATUS k, ISC_STATUS c) :
 	implementation(FB_NEW_POOL(*getDefaultMemoryPool()) ImplBase(k, c))
 {
 }
 
 StatusVector::ImplStatusVector::ImplStatusVector(const ISC_STATUS* s) throw()
 	: Base::ImplBase(0, 0),
-	  m_status_vector(*getDefaultMemoryPool())
+	  m_status_vector(*getDefaultMemoryPool()),
+	  m_strings(*getDefaultMemoryPool())
 {
 	fb_assert(s);
 
@@ -73,7 +73,8 @@ StatusVector::ImplStatusVector::ImplStatusVector(const ISC_STATUS* s) throw()
 
 StatusVector::ImplStatusVector::ImplStatusVector(const IStatus* s) throw()
 	: Base::ImplBase(0, 0),
-	  m_status_vector(*getDefaultMemoryPool())
+	  m_status_vector(*getDefaultMemoryPool()),
+	  m_strings(*getDefaultMemoryPool())
 {
 	fb_assert(s);
 
@@ -87,35 +88,36 @@ StatusVector::ImplStatusVector::ImplStatusVector(const IStatus* s) throw()
 
 StatusVector::ImplStatusVector::ImplStatusVector(const Exception& ex) throw()
 	: Base::ImplBase(0, 0),
-	  m_status_vector(*getDefaultMemoryPool())
+	  m_status_vector(*getDefaultMemoryPool()),
+	  m_strings(*getDefaultMemoryPool())
 {
 	clear();
 
 	assign(ex);
 }
 
-StatusVector::StatusVector(ISC_STATUS k, ISC_STATUS c) throw(Firebird::BadAlloc) :
+StatusVector::StatusVector(ISC_STATUS k, ISC_STATUS c) :
 	Base(FB_NEW_POOL(*getDefaultMemoryPool()) ImplStatusVector(k, c))
 {
 	operator<<(*(static_cast<Base*>(this)));
 }
 
-StatusVector::StatusVector(const ISC_STATUS* s) throw(Firebird::BadAlloc) :
+StatusVector::StatusVector(const ISC_STATUS* s) :
 	Base(FB_NEW_POOL(*getDefaultMemoryPool()) ImplStatusVector(s))
 {
 }
 
-StatusVector::StatusVector(const IStatus* s) throw(Firebird::BadAlloc) :
+StatusVector::StatusVector(const IStatus* s) :
 	Base(FB_NEW_POOL(*getDefaultMemoryPool()) ImplStatusVector(s))
 {
 }
 
-StatusVector::StatusVector(const Exception& ex) throw(Firebird::BadAlloc) :
+StatusVector::StatusVector(const Exception& ex) :
 	Base(FB_NEW_POOL(*getDefaultMemoryPool()) ImplStatusVector(ex))
 {
 }
 
-StatusVector::StatusVector() throw(Firebird::BadAlloc) :
+StatusVector::StatusVector() :
 	Base(FB_NEW_POOL(*getDefaultMemoryPool()) ImplStatusVector(0, 0))
 {
 }
@@ -125,6 +127,7 @@ void StatusVector::ImplStatusVector::clear() throw()
 	m_warning = 0;
 	m_status_vector.clear();
 	m_status_vector.push(isc_arg_end);
+	m_strings.erase();
 }
 
 bool StatusVector::ImplStatusVector::compare(const StatusVector& v) const throw()
@@ -142,6 +145,53 @@ void StatusVector::ImplStatusVector::assign(const Exception& ex) throw()
 {
 	clear();
 	ex.stuffException(m_status_vector);
+	putStrArg(0);
+}
+
+void StatusVector::ImplStatusVector::putStrArg(unsigned startWith)
+{
+	for (ISC_STATUS* arg = m_status_vector.begin() + startWith; *arg != isc_arg_end; arg += fb_utils::nextArg(*arg))
+	{
+		if (!fb_utils::isStr(*arg))
+			continue;
+
+		const char** ptr = reinterpret_cast<const char**>(&arg[fb_utils::nextArg(*arg) - 1]);
+		unsigned pos = m_strings.length();
+		const char* oldBase = m_strings.c_str();
+
+		if (*arg == isc_arg_cstring)
+		{
+			m_strings.reserve(m_strings.length() + arg[1] + 1);
+			m_strings.append(*ptr, arg[1]);
+			m_strings.append(1, '\0');
+		}
+		else
+			 m_strings.append(*ptr, strlen(*ptr) + 1);
+
+		*ptr = &m_strings[pos];
+		setStrPointers(oldBase);
+	}
+}
+
+void StatusVector::ImplStatusVector::setStrPointers(const char* oldBase)
+{
+	const char* const newBase = m_strings.c_str();
+	if (newBase == oldBase)
+		return;
+
+	const char* const newEnd = m_strings.end();
+
+	for (ISC_STATUS* arg = m_status_vector.begin(); *arg != isc_arg_end; arg += fb_utils::nextArg(*arg))
+	{
+		if (!fb_utils::isStr(*arg))
+			continue;
+
+		const char** ptr = reinterpret_cast<const char**>(&arg[fb_utils::nextArg(*arg) - 1]);
+		if (*ptr >= newBase && *ptr < newEnd)
+			break;
+
+		*ptr = &newBase[*ptr - oldBase];
+	}
 }
 
 void StatusVector::ImplStatusVector::append(const StatusVector& v) throw()
@@ -176,6 +226,16 @@ void StatusVector::ImplStatusVector::prepend(const StatusVector& v) throw()
 	*this = newVector;
 }
 
+StatusVector::ImplStatusVector& StatusVector::ImplStatusVector::operator=(const StatusVector::ImplStatusVector& src)
+{
+	m_status_vector = src.m_status_vector;
+	m_warning = src.m_warning;
+	m_strings = src.m_strings;
+	setStrPointers(src.m_strings.c_str());
+
+	return *this;
+}
+
 bool StatusVector::ImplStatusVector::appendErrors(const ImplBase* const v) throw()
 {
 	return append(v->value(), v->firstWarning() ? v->firstWarning() : v->length());
@@ -201,6 +261,7 @@ bool StatusVector::ImplStatusVector::append(const ISC_STATUS* const from, const 
 		fb_utils::copyStatus(&s[lenBefore], count + 1, from, count);
 	if (copied < count)
 		m_status_vector.shrink(lenBefore + copied + 1);
+	putStrArg(lenBefore);
 
 	if (!m_warning)
 	{
@@ -229,6 +290,8 @@ void StatusVector::ImplStatusVector::shiftLeft(const Base& arg) throw()
 	m_status_vector[length()] = arg.getKind();
 	m_status_vector.push(arg.getCode());
 	m_status_vector.push(isc_arg_end);
+
+	putStrArg(length() - 2);
 }
 
 void StatusVector::ImplStatusVector::shiftLeft(const Warning& arg) throw()
@@ -249,7 +312,7 @@ void StatusVector::ImplStatusVector::shiftLeft(const AbstractString& text) throw
 	shiftLeft(Str(text));
 }
 
-void StatusVector::ImplStatusVector::shiftLeft(const MetaName& text) throw()
+void StatusVector::ImplStatusVector::shiftLeft(const MetaString& text) throw()
 {
 	shiftLeft(Str(text));
 }
@@ -298,6 +361,32 @@ void StatusVector::ImplStatusVector::copyTo(IStatus* dest) const throw()
 	}
 }
 
+void StatusVector::ImplStatusVector::appendTo(IStatus* dest) const throw()
+{
+	if (hasData())
+	{
+		ImplStatusVector tmpVector(dest);
+		ImplStatusVector newVector(getKind(), getCode());
+
+		if (newVector.appendErrors(&tmpVector))
+		{
+			if (newVector.appendErrors(this))
+			{
+				if (newVector.appendWarnings(&tmpVector))
+					newVector.appendWarnings(this);
+			}
+		}
+
+		// take special care about strings safety
+		// that's why tmpStatus is needed here
+		AutoPtr<IStatus, SimpleDispose> tmpStatus(dest->clone());
+		newVector.copyTo(tmpStatus);
+
+		dest->setErrors(tmpStatus->getErrors());
+		dest->setWarnings(tmpStatus->getWarnings());
+	}
+}
+
 Gds::Gds(ISC_STATUS s) throw() :
 	StatusVector(isc_arg_gds, s) { }
 
@@ -306,6 +395,24 @@ PrivateDyn::PrivateDyn(ISC_STATUS codeWithoutFacility) throw() :
 
 Num::Num(ISC_STATUS s) throw() :
 	Base(isc_arg_number, s) { }
+
+Int64::Int64(SINT64 val) throw() :
+	Str(text)
+{
+	sprintf(text, "%" SQUADFORMAT, val);
+}
+
+Int64::Int64(FB_UINT64 val) throw() :
+	Str(text)
+{
+	sprintf(text, "%" UQUADFORMAT, val);
+}
+
+Quad::Quad(const ISC_QUAD* quad) throw() :
+	Str(text)
+{
+	sprintf(text, "%x:%x", quad->gds_quad_high, quad->gds_quad_low);
+}
 
 Interpreted::Interpreted(const char* text) throw() :
 	StatusVector(isc_arg_interpreted, (ISC_STATUS)(IPTR) text) { }
@@ -332,7 +439,7 @@ Str::Str(const char* text) throw() :
 Str::Str(const AbstractString& text) throw() :
 	Base(isc_arg_string, (ISC_STATUS)(IPTR) text.c_str()) { }
 
-Str::Str(const MetaName& text) throw() :
+Str::Str(const MetaString& text) throw() :
 	Base(isc_arg_string, (ISC_STATUS)(IPTR) text.c_str()) { }
 
 SqlState::SqlState(const char* text) throw() :

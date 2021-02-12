@@ -35,7 +35,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "memory_routines.h"
-#include "../jrd/ibase.h"
+#include "ibase.h"
 #include "../alice/alice.h"
 #include "../common/classes/Switches.h"
 #include "../alice/aliceswi.h"
@@ -185,7 +185,7 @@ bool TDR_attach_database(ISC_STATUS* status_vector, tdr* trans, const TEXT* path
 	if (tdgbl->ALICE_data.ua_debug)
 		ALICE_print(68, SafeArg() << pathname); // msg 68: ATTACH_DATABASE: attempted attach of %s
 
-	Firebird::ClumpletWriter dpb(Firebird::ClumpletReader::Tagged, MAX_DPB_SIZE, isc_dpb_version1);
+	Firebird::ClumpletWriter dpb(Firebird::ClumpletReader::dpbList, MAX_DPB_SIZE);
 	dpb.insertTag(isc_dpb_no_garbage_collect);
 	dpb.insertTag(isc_dpb_gfix_attach);
 	tdgbl->uSvc->fillDpb(dpb);

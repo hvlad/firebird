@@ -1459,7 +1459,6 @@ static INTL_BOOL cs_unicode_fss_init(charset* csptr,
 
 	IntlUtil::initNarrowCharset(csptr, "UNICODE_FSS");
 	csptr->charset_max_bytes_per_char = 3;
-	csptr->charset_flags |= CHARSET_LEGACY_SEMANTICS;
 
 	IntlUtil::initConvert(&csptr->charset_to_unicode, internal_fss_to_unicode);
 	IntlUtil::initConvert(&csptr->charset_from_unicode, internal_unicode_to_fss);
@@ -1718,7 +1717,7 @@ ULONG INTL_builtin_setup_attributes(const ASCII* textTypeName, const ASCII* char
 	// the preprocessor, but this is a task for another day.
 	if (strstr(textTypeName, "UNICODE") && strcmp(textTypeName, "UNICODE_FSS") != 0)
 	{
-		Firebird::AutoPtr<charset, Jrd::CharSet::Delete> cs(FB_NEW charset);
+		Firebird::AutoPtr<charset> cs(FB_NEW charset);
 		memset(cs, 0, sizeof(*cs));
 
 		// test if that charset exists

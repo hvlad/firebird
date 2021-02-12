@@ -35,6 +35,8 @@
 
 namespace Jrd
 {
+	class Database;
+
 	class Module
 	{
 	private:
@@ -54,7 +56,7 @@ namespace Jrd
 				{
 					return 0;
 				}
-				return handle->findSymbol(name);
+				return handle->findSymbol(NULL, name);
 			}
 
 			InternalModule(MemoryPool& p,
@@ -102,8 +104,10 @@ namespace Jrd
 			: interMod(m.interMod)
 		{ }
 
+		~Module();
+
 		// used for UDF/BLOB Filter
-		static FPTR_INT lookup(const char*, const char*, Firebird::SortedObjectsArray<Module>&);
+		static FPTR_INT lookup(const char*, const char*, Database*);
 
 		bool operator>(const Module &im) const;
 

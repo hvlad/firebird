@@ -810,6 +810,169 @@ static const struct {
 	{335545107, -902}, /* 787 already_opened */
 	{335545108, -902}, /* 788 bad_crypt_key */
 	{335545109, -901}, /* 789 encrypt_error */
+	{335545110, -904}, /* 790 max_idx_depth */
+	{335545111, -901}, /* 791 wrong_prvlg */
+	{335545112, -902}, /* 792 miss_prvlg */
+	{335545113, -902}, /* 793 crypt_checksum */
+	{335545114, -902}, /* 794 not_dba */
+	{335545115, -901}, /* 795 no_cursor */
+	{335545116, -104}, /* 796 dsql_window_incompat_frames */
+	{335545117, -104}, /* 797 dsql_window_range_multi_key */
+	{335545118, -104}, /* 798 dsql_window_range_inv_key_type */
+	{335545119, -104}, /* 799 dsql_window_frame_value_inv_type */
+	{335545120, -833}, /* 800 window_frame_value_invalid */
+	{335545121, -833}, /* 801 dsql_window_not_found */
+	{335545122, -833}, /* 802 dsql_window_cant_overr_part */
+	{335545123, -833}, /* 803 dsql_window_cant_overr_order */
+	{335545124, -833}, /* 804 dsql_window_cant_overr_frame */
+	{335545125, -833}, /* 805 dsql_window_duplicate */
+	{335545126, -902}, /* 806 sql_too_long */
+	{335545127, -901}, /* 807 cfg_stmt_timeout */
+	{335545128, -901}, /* 808 att_stmt_timeout */
+	{335545129, -901}, /* 809 req_stmt_timeout */
+	{335545130, -902}, /* 810 att_shut_killed */
+	{335545131, -902}, /* 811 att_shut_idle */
+	{335545132, -902}, /* 812 att_shut_db_down */
+	{335545133, -902}, /* 813 att_shut_engine */
+	{335545134, -902}, /* 814 overriding_without_identity */
+	{335545135, -902}, /* 815 overriding_system_invalid */
+	{335545136, -902}, /* 816 overriding_user_invalid */
+	{335545137, -902}, /* 817 overriding_system_missing */
+	{335545138, -842}, /* 818 decprecision_err */
+	{335545139, -901}, /* 819 decfloat_divide_by_zero */
+	{335545140, -901}, /* 820 decfloat_inexact_result */
+	{335545141, -901}, /* 821 decfloat_invalid_operation */
+	{335545142, -901}, /* 822 decfloat_overflow */
+	{335545143, -901}, /* 823 decfloat_underflow */
+	{335545144, -901}, /* 824 subfunc_notdef */
+	{335545145, -901}, /* 825 subproc_notdef */
+	{335545146, -901}, /* 826 subfunc_signat */
+	{335545147, -901}, /* 827 subproc_signat */
+	{335545148, -901}, /* 828 subfunc_defvaldecl */
+	{335545149, -901}, /* 829 subproc_defvaldecl */
+	{335545150, -901}, /* 830 subfunc_not_impl */
+	{335545151, -901}, /* 831 subproc_not_impl */
+	{335545152, -901}, /* 832 sysf_invalid_hash_algorithm */
+	{335545153, -901}, /* 833 expression_eval_index */
+	{335545154, -901}, /* 834 invalid_decfloat_trap */
+	{335545155, -901}, /* 835 invalid_decfloat_round */
+	{335545156, -833}, /* 836 sysf_invalid_first_last_part */
+	{335545157, -833}, /* 837 sysf_invalid_date_timestamp */
+	{335545158, -842}, /* 838 precision_err2 */
+	{335545159, -901}, /* 839 bad_batch_handle */
+	{335545160, -901}, /* 840 intl_char */
+	{335545161, -901}, /* 841 null_block */
+	{335545162, -901}, /* 842 mixed_info */
+	{335545163, -901}, /* 843 unknown_info */
+	{335545164, -901}, /* 844 bpb_version */
+	{335545165, -901}, /* 845 user_manager */
+	{335545166, -902}, /* 846 icu_entrypoint */
+	{335545167, -902}, /* 847 icu_library */
+	{335545168, -901}, /* 848 metadata_name */
+	{335545169, -901}, /* 849 tokens_parse */
+	{335545170, -902}, /* 850 iconv_open */
+	{335545171, -901}, /* 851 batch_compl_range */
+	{335545172, -901}, /* 852 batch_compl_detail */
+	{335545173, -902}, /* 853 deflate_init */
+	{335545174, -902}, /* 854 inflate_init */
+	{335545175, -901}, /* 855 big_segment */
+	{335545176, -901}, /* 856 batch_policy */
+	{335545177, -901}, /* 857 batch_defbpb */
+	{335545178, -901}, /* 858 batch_align */
+	{335545179, -901}, /* 859 multi_segment_dup */
+	{335545180, -902}, /* 860 non_plugin_protocol */
+	{335545181, -901}, /* 861 message_format */
+	{335545182, -901}, /* 862 batch_param_version */
+	{335545183, -901}, /* 863 batch_msg_long */
+	{335545184, -901}, /* 864 batch_open */
+	{335545185, -901}, /* 865 batch_type */
+	{335545186, -901}, /* 866 batch_param */
+	{335545187, -901}, /* 867 batch_blobs */
+	{335545188, -901}, /* 868 batch_blob_append */
+	{335545189, -901}, /* 869 batch_stream_align */
+	{335545190, -901}, /* 870 batch_rpt_blob */
+	{335545191, -901}, /* 871 batch_blob_buf */
+	{335545192, -901}, /* 872 batch_small_data */
+	{335545193, -901}, /* 873 batch_cont_bpb */
+	{335545194, -901}, /* 874 batch_big_bpb */
+	{335545195, -901}, /* 875 batch_big_segment */
+	{335545196, -901}, /* 876 batch_big_seg2 */
+	{335545197, -901}, /* 877 batch_blob_id */
+	{335545198, -901}, /* 878 batch_too_big */
+	{335545199, -901}, /* 879 num_literal */
+	{335545200, -902}, /* 880 map_event */
+	{335545201, -902}, /* 881 map_overflow */
+	{335545202, -901}, /* 882 hdr_overflow */
+	{335545203, -901}, /* 883 vld_plugins */
+	{335545204, -902}, /* 884 db_crypt_key */
+	{335545205, -104}, /* 885 no_keyholder_plugin */
+	{335545206, -901}, /* 886 ses_reset_err */
+	{335545207, -901}, /* 887 ses_reset_open_trans */
+	{335545208, -901}, /* 888 ses_reset_warn */
+	{335545209, -901}, /* 889 ses_reset_tran_rollback */
+	{335545210, -901}, /* 890 plugin_name */
+	{335545211, -901}, /* 891 parameter_name */
+	{335545212, -901}, /* 892 file_starting_page_err */
+	{335545213, -901}, /* 893 invalid_timezone_offset */
+	{335545214, -901}, /* 894 invalid_timezone_region */
+	{335545215, -901}, /* 895 invalid_timezone_id */
+	{335545216, -901}, /* 896 tom_decode64len */
+	{335545217, -901}, /* 897 tom_strblob */
+	{335545218, -901}, /* 898 tom_reg */
+	{335545219, -901}, /* 899 tom_algorithm */
+	{335545220, -901}, /* 900 tom_mode_miss */
+	{335545221, -901}, /* 901 tom_mode_bad */
+	{335545222, -901}, /* 902 tom_no_mode */
+	{335545223, -901}, /* 903 tom_iv_miss */
+	{335545224, -901}, /* 904 tom_no_iv */
+	{335545225, -901}, /* 905 tom_ctrtype_bad */
+	{335545226, -901}, /* 906 tom_no_ctrtype */
+	{335545227, -901}, /* 907 tom_ctr_big */
+	{335545228, -901}, /* 908 tom_no_ctr */
+	{335545229, -901}, /* 909 tom_iv_length */
+	{335545230, -901}, /* 910 tom_error */
+	{335545231, -901}, /* 911 tom_yarrow_start */
+	{335545232, -901}, /* 912 tom_yarrow_setup */
+	{335545233, -901}, /* 913 tom_init_mode */
+	{335545234, -901}, /* 914 tom_crypt_mode */
+	{335545235, -901}, /* 915 tom_decrypt_mode */
+	{335545236, -901}, /* 916 tom_init_cip */
+	{335545237, -901}, /* 917 tom_crypt_cip */
+	{335545238, -901}, /* 918 tom_decrypt_cip */
+	{335545239, -901}, /* 919 tom_setup_cip */
+	{335545240, -901}, /* 920 tom_setup_chacha */
+	{335545241, -901}, /* 921 tom_encode */
+	{335545242, -901}, /* 922 tom_decode */
+	{335545243, -901}, /* 923 tom_rsa_import */
+	{335545244, -901}, /* 924 tom_oaep */
+	{335545245, -901}, /* 925 tom_hash_bad */
+	{335545246, -901}, /* 926 tom_rsa_make */
+	{335545247, -901}, /* 927 tom_rsa_export */
+	{335545248, -901}, /* 928 tom_rsa_sign */
+	{335545249, -901}, /* 929 tom_rsa_verify */
+	{335545250, -901}, /* 930 tom_chacha_key */
+	{335545251, -901}, /* 931 bad_repl_handle */
+	{335545252, -901}, /* 932 tra_snapshot_does_not_exist */
+	{335545253, -901}, /* 933 eds_input_prm_not_used */
+	{335545254, -551}, /* 934 effective_user */
+	{335545255, -901}, /* 935 invalid_time_zone_bind */
+	{335545256, -901}, /* 936 invalid_decfloat_bind */
+	{335545257, -901}, /* 937 odd_hex_len */
+	{335545258, -901}, /* 938 invalid_hex_digit */
+	{335545259, -902}, /* 939 bind_err */
+	{335545260, -902}, /* 940 bind_statement */
+	{335545261, -901}, /* 941 bind_convert */
+	{335545262, -402}, /* 942 cannot_update_old_blob */
+	{335545263, -402}, /* 943 cannot_read_new_blob */
+	{335545264, -901}, /* 944 dyn_no_create_priv */
+	{335545265, -901}, /* 945 suspend_without_returns */
+	{335545266,  304}, /* 946 truncate_warn */
+	{335545267,  304}, /* 947 truncate_monitor */
+	{335545268,  304}, /* 948 truncate_context */
+	{335545269, -811}, /* 949 merge_dup_update */
+	{335545270, -902}, /* 950 wrong_page */
+	{335545271, -902}, /* 951 repl_error */
+	{335545272, -902}, /* 952 ses_reset_failed */
 	{335740929, -901}, /*   1 gfix_db_name */
 	{335740930, -901}, /*   2 gfix_invalid_sw */
 	{335740932, -901}, /*   4 gfix_incmp_sw */
@@ -875,6 +1038,8 @@ static const struct {
 	{336003109, -802}, /*  37 dsql_no_input_sqlda */
 	{336003110, -802}, /*  38 dsql_no_output_sqlda */
 	{336003111, -313}, /*  39 dsql_wrong_param_num */
+	{336003112, -817}, /*  40 dsql_invalid_drop_ss_clause */
+	{336003113, -313}, /*  41 upd_ins_cannot_default */
 	{336068645, -901}, /*  37 dyn_filter_not_found */
 	{336068649, -901}, /*  41 dyn_func_not_found */
 	{336068656, -901}, /*  48 dyn_index_not_found */
@@ -951,6 +1116,19 @@ static const struct {
 	{336068896, -901}, /* 288 dyn_cant_use_zero_increment */
 	{336068897, -901}, /* 289 dyn_cant_use_in_foreignkey */
 	{336068898, -901}, /* 290 dyn_defvaldecl_package_func */
+	{336068900, -901}, /* 292 dyn_cyclic_role */
+	{336068904, -901}, /* 296 dyn_cant_use_zero_inc_ident */
+	{336068907, -901}, /* 299 dyn_no_ddl_grant_opt_priv */
+	{336068908, -901}, /* 300 dyn_no_grant_opt_priv */
+	{336068909, -901}, /* 301 dyn_func_not_exist */
+	{336068910, -901}, /* 302 dyn_proc_not_exist */
+	{336068911, -901}, /* 303 dyn_pack_not_exist */
+	{336068912, -901}, /* 304 dyn_trig_not_exist */
+	{336068913, -901}, /* 305 dyn_view_not_exist */
+	{336068914, -901}, /* 306 dyn_rel_not_exist */
+	{336068915, -901}, /* 307 dyn_exc_not_exist */
+	{336068916, -901}, /* 308 dyn_gen_not_exist */
+	{336068917, -901}, /* 309 dyn_fld_not_exist */
 	{336330753, -901}, /*   1 gbak_unknown_switch */
 	{336330754, -901}, /*   2 gbak_page_size_missing */
 	{336330755, -901}, /*   3 gbak_page_size_toobig */
@@ -1178,6 +1356,7 @@ static const struct {
 	{336397331, -901}, /* 1043 dsql_string_byte_length */
 	{336397332, -901}, /* 1044 dsql_string_char_length */
 	{336397333, -901}, /* 1045 dsql_max_nesting */
+	{336397334, -901}, /* 1046 dsql_recreate_user_failed */
 	{336723983, -901}, /*  15 gsec_cant_open_db */
 	{336723984, -901}, /*  16 gsec_switches_error */
 	{336723985, -901}, /*  17 gsec_no_op_spec */
@@ -1228,6 +1407,10 @@ static const struct {
 	{336986161, -901}, /*  49 fbsvcmgr_fp_read */
 	{336986162, -901}, /*  50 fbsvcmgr_fp_empty */
 	{336986164, -901}, /*  52 fbsvcmgr_bad_arg */
+	{336986170, -901}, /*  58 fbsvcmgr_info_limbo */
+	{336986171, -901}, /*  59 fbsvcmgr_limbo_state */
+	{336986172, -901}, /*  60 fbsvcmgr_limbo_advise */
+	{336986173, -901}, /*  61 fbsvcmgr_bad_rm */
 	{337051649, -901}, /*   1 utl_trusted_switch */
 	{337117213, -901}, /*  29 nbackup_missing_param */
 	{337117214, -901}, /*  30 nbackup_allowed_switches */
@@ -1270,6 +1453,7 @@ static const struct {
 	{337117257, -901}, /*  73 nbackup_user_stop */
 	{337117259, -901}, /*  75 nbackup_deco_parse */
 	{337117261, -901}, /*  77 nbackup_lostrec_guid_db */
+	{337117265, -901}, /*  81 nbackup_seq_misuse */
 	{337182750, -901}, /*  30 trace_conflict_acts */
 	{337182751, -901}, /*  31 trace_act_notfound */
 	{337182752, -901}, /*  32 trace_switch_once */

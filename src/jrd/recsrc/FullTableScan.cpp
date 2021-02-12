@@ -22,6 +22,7 @@
 #include "../jrd/req.h"
 #include "../jrd/cmp_proto.h"
 #include "../jrd/dpm_proto.h"
+#include "../jrd/evl_proto.h"
 #include "../jrd/vio_proto.h"
 #include "../jrd/rlck_proto.h"
 #include "../jrd/Attachment.h"
@@ -36,10 +37,14 @@ using namespace Jrd;
 // -------------------------------------------
 
 FullTableScan::FullTableScan(CompilerScratch* csb, const string& alias,
-							 StreamType stream, jrd_rel* relation)
-	: RecordStream(csb, stream), m_alias(csb->csb_pool, alias), m_relation(relation)
+							 StreamType stream, jrd_rel* relation,
+							 const Array<DbKeyRangeNode*>& dbkeyRanges)
+	: RecordStream(csb, stream),
+	  m_alias(csb->csb_pool, alias),
+	  m_relation(relation),
+	  m_dbkeyRanges(csb->csb_pool, dbkeyRanges)
 {
-	m_impure = CMP_impure(csb, sizeof(Impure));
+	m_impure = csb->allocImpure<Impure>();
 }
 
 void FullTableScan::open(thread_db* tdbb) const
@@ -51,6 +56,8 @@ void FullTableScan::open(thread_db* tdbb) const
 
 	impure->irsb_flags = irsb_open;
 	impure->irsb_prfInfo.reset(false);
+
+	RLCK_reserve_relation(tdbb, request->req_transaction, m_relation, false);
 
 	record_param* const rpb = &request->req_rpb[m_stream];
 	rpb->getWindow(tdbb).win_flags = 0;
@@ -81,9 +88,29 @@ void FullTableScan::open(thread_db* tdbb) const
 		}
 	}
 
-	RLCK_reserve_relation(tdbb, request->req_transaction, m_relation, false);
-
 	rpb->rpb_number.setValue(BOF_NUMBER);
+
+	if (m_dbkeyRanges.hasData())
+	{
+		impure->irsb_lower.setValid(false);
+		impure->irsb_upper.setValid(false);
+
+		EVL_dbkey_bounds(tdbb, m_dbkeyRanges, rpb->rpb_relation,
+			impure->irsb_lower, impure->irsb_upper);
+
+		if (impure->irsb_lower.isValid())
+		{
+			auto number = impure->irsb_lower.getValue();
+
+			const auto ppages = rpb->rpb_relation->getPages(tdbb)->rel_pages;
+			const auto maxRecno = (SINT64) ppages->count() *
+				dbb->dbb_dp_per_pp * dbb->dbb_max_records - 1;
+			if (number > maxRecno)
+				number = maxRecno;
+
+			rpb->rpb_number.setValue(number - 1); // position prior to the starting one
+		}
+	}
 }
 
 void FullTableScan::close(thread_db* tdbb) const
@@ -109,8 +136,7 @@ void FullTableScan::close(thread_db* tdbb) const
 
 bool FullTableScan::getRecord(thread_db* tdbb) const
 {
-	if (--tdbb->tdbb_quantum < 0)
-		JRD_reschedule(tdbb, 0, true);
+	JRD_reschedule(tdbb);
 
 	jrd_req* const request = tdbb->getRequest();
 	record_param* const rpb = &request->req_rpb[m_stream];
@@ -124,6 +150,12 @@ bool FullTableScan::getRecord(thread_db* tdbb) const
 
 	if (VIO_next_record(tdbb, rpb, request->req_transaction, request->req_pool, false))
 	{
+		if (impure->irsb_upper.isValid() && rpb->rpb_number > impure->irsb_upper)
+		{
+			rpb->rpb_number.setValid(false);
+			return false;
+		}
+
 		rpb->rpb_number.setValid(true);
 		return true;
 	}
@@ -136,8 +168,26 @@ void FullTableScan::print(thread_db* tdbb, string& plan, bool detailed, unsigned
 {
 	if (detailed)
 	{
+		auto lowerBounds = 0, upperBounds = 0;
+		for (const auto range : m_dbkeyRanges)
+		{
+			if (range->lower)
+				lowerBounds++;
+
+			if (range->upper)
+				upperBounds++;
+		}
+
+		string bounds;
+		if (lowerBounds && upperBounds)
+			bounds += " (lower bound, upper bound)";
+		else if (lowerBounds)
+			bounds += " (lower bound)";
+		else if (upperBounds)
+			bounds += " (upper bound)";
+
 		plan += printIndent(++level) + "Table " +
-			printName(tdbb, m_relation->rel_name.c_str(), m_alias) + " Full Scan";
+			printName(tdbb, m_relation->rel_name.c_str(), m_alias) + " Full Scan" + bounds;
 	}
 	else
 	{

@@ -113,7 +113,7 @@ copyFiles() {
     mkdir $DestDir/UDF
     mkdir $DestDir/misc
     mkdir $DestDir/misc/upgrade
-    for i in ib_udf metadata security; do
+    for i in metadata security; do
         mkdir $DestDir/misc/upgrade/$i
     done
 
@@ -184,15 +184,7 @@ copyFiles() {
 
     cp $BuiltFBDir/intl/libfbintl.so $DestDir/intl/fbintl
 
-    cp $BuiltFBDir/UDF/ib_udf.so $DestDir/UDF/
-    cp $BuiltFBDir/UDF/fbudf.so $DestDir/UDF/
-
 #   Note that the following items copy files from outside the build tree
-
-#   Copy the sql-declarations into the UDF-directory
-    cp $BuildRootDir/src/extlib/ib_udf.sql $DestDir/UDF/
-    cp $BuildRootDir/src/extlib/ib_udf2.sql $DestDir/UDF/
-    cp $BuildRootDir/src/extlib/fbudf/fbudf.sql $DestDir/UDF/
 
 #   Copy various documentation
     ls $BuildRootDir/doc/*.pdf >/dev/null 2>&1 && cp $BuildRootDir/doc/*.pdf $DestDir/doc

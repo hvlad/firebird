@@ -37,7 +37,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "../dsql/dsql.h"
-#include "../jrd/ibase.h"
+#include "ibase.h"
 #include "../jrd/align.h"
 #include "../jrd/intl.h"
 #include "../common/intlobj_new.h"
@@ -64,11 +64,13 @@
 #include "../jrd/opt_proto.h"
 #include "../jrd/tra_proto.h"
 #include "../jrd/recsrc/RecordSource.h"
+#include "../jrd/replication/Publisher.h"
 #include "../jrd/trace/TraceManager.h"
 #include "../jrd/trace/TraceDSQLHelpers.h"
 #include "../common/classes/init.h"
 #include "../common/utils_proto.h"
 #include "../common/StatusArg.h"
+#include "../dsql/DsqlBatch.h"
 
 #ifdef HAVE_CTYPE_H
 #include <ctype.h>
@@ -80,9 +82,6 @@ using namespace Firebird;
 
 static ULONG	get_request_info(thread_db*, dsql_req*, ULONG, UCHAR*);
 static dsql_dbb*	init(Jrd::thread_db*, Jrd::Attachment*);
-static void		map_in_out(Jrd::thread_db*, dsql_req*, bool, const dsql_msg*, IMessageMetadata*, UCHAR*,
-	const UCHAR* = NULL);
-static USHORT	parse_metadata(dsql_req*, IMessageMetadata*, const Array<dsql_par*>&);
 static dsql_req* prepareRequest(thread_db*, dsql_dbb*, jrd_tra*, ULONG, const TEXT*, USHORT, bool);
 static dsql_req* prepareStatement(thread_db*, dsql_dbb*, jrd_tra*, ULONG, const TEXT*, USHORT, bool);
 static UCHAR*	put_item(UCHAR, const USHORT, const UCHAR*, UCHAR*, const UCHAR* const);
@@ -104,8 +103,6 @@ static inline bool reqTypeWithCursor(DsqlCompiledStatement::Type type)
 
 	return false;
 }
-
-const USHORT PARSER_VERSION = 2;
 
 #ifdef DSQL_DEBUG
 unsigned DSQL_debug = 0;
@@ -149,9 +146,11 @@ void DSQL_execute(thread_db* tdbb,
 		          Arg::Gds(isc_bad_req_handle));
 	}
 
-	// Only allow NULL trans_handle if we're starting a transaction
+	// Only allow NULL trans_handle if we're starting a transaction or set session properties
 
-	if (!*tra_handle && statement->getType() != DsqlCompiledStatement::TYPE_START_TRANS)
+	if (!*tra_handle &&
+		statement->getType() != DsqlCompiledStatement::TYPE_START_TRANS &&
+		statement->getType() != DsqlCompiledStatement::TYPE_SESSION_MANAGEMENT)
 	{
 		ERRD_post(Arg::Gds(isc_sqlerr) << Arg::Num(-901) <<
 				  Arg::Gds(isc_bad_trans_handle));
@@ -210,14 +209,20 @@ DsqlCursor* DSQL_open(thread_db* tdbb,
 	// Validate statement type
 
 	if (!reqTypeWithCursor(statement->getType()))
-		(Arg::Gds(isc_random) << "Cannot open non-SELECT statement").raise();
+		Arg::Gds(isc_no_cursor).raise();
 
-	// Validate cursor being not already open
+	// Validate cursor or batch being not already open
 
 	if (request->req_cursor)
 	{
 		ERRD_post(Arg::Gds(isc_sqlerr) << Arg::Num(-502) <<
 				  Arg::Gds(isc_dsql_cursor_open_err));
+	}
+
+	if (request->req_batch)
+	{
+		ERRD_post(Arg::Gds(isc_sqlerr) << Arg::Num(-502) <<
+				  Arg::Gds(isc_batch_open));
 	}
 
 	request->req_transaction = *tra_handle;
@@ -229,7 +234,7 @@ DsqlCursor* DSQL_open(thread_db* tdbb,
 
 
 // Provide backward-compatibility
-void DsqlDmlRequest::setDelayedFormat(thread_db* tdbb, Firebird::IMessageMetadata* metadata)
+void DsqlDmlRequest::setDelayedFormat(thread_db* tdbb, IMessageMetadata* metadata)
 {
 	if (!needDelayedFormat)
 	{
@@ -276,8 +281,24 @@ bool DsqlDmlRequest::fetch(thread_db* tdbb, UCHAR* msgBuffer)
 	Jrd::Attachment* att = req_dbb->dbb_attachment;
 	TraceDSQLFetch trace(att, this);
 
+	thread_db::TimerGuard timerGuard(tdbb, req_timer, false);
+	if (req_timer && req_timer->expired())
+		tdbb->checkCancelState();
+
 	UCHAR* dsqlMsgBuffer = req_msg_buffers[message->msg_buffer_number];
-	JRD_receive(tdbb, req_request, message->msg_number, message->msg_length, dsqlMsgBuffer);
+	if (!firstRowFetched && needRestarts())
+	{
+		// Note: tra_handle can't be changed by executeReceiveWithRestarts below 
+		// and outMetadata and outMsg in not used there, so passing NULL's is safe.
+		jrd_tra* tra = req_transaction;
+
+		executeReceiveWithRestarts(tdbb, &tra, NULL, NULL, false, false, true);
+		fb_assert(tra == req_transaction);
+	}
+	else
+		JRD_receive(tdbb, req_request, message->msg_number, message->msg_length, dsqlMsgBuffer);
+
+	firstRowFetched = true;
 
 	const dsql_par* const eof = statement->getEof();
 	const USHORT* eofPtr = eof ? (USHORT*) (dsqlMsgBuffer + (IPTR) eof->par_desc.dsc_address) : NULL;
@@ -285,11 +306,15 @@ bool DsqlDmlRequest::fetch(thread_db* tdbb, UCHAR* msgBuffer)
 
 	if (eofReached)
 	{
+		if (req_timer)
+			req_timer->stop();
+
+		delayedFormat = NULL;
 		trace.fetch(true, ITracePlugin::RESULT_SUCCESS);
 		return false;
 	}
 
-	map_in_out(tdbb, this, true, message, delayedFormat, msgBuffer);
+	mapInOut(tdbb, true, message, delayedFormat, msgBuffer);
 	delayedFormat = NULL;
 
 	trace.fetch(false, ITracePlugin::RESULT_SUCCESS);
@@ -401,7 +426,7 @@ dsql_req* DSQL_prepare(thread_db* tdbb,
 
 		return request;
 	}
-	catch (const Firebird::Exception&)
+	catch (const Exception&)
 	{
 		if (request)
 		{
@@ -520,8 +545,8 @@ void DSQL_sql_info(thread_db* tdbb,
 // Common part of prepare and execute a statement.
 void DSQL_execute_immediate(thread_db* tdbb, Jrd::Attachment* attachment, jrd_tra** tra_handle,
 	ULONG length, const TEXT* string, USHORT dialect,
-	Firebird::IMessageMetadata* in_meta, const UCHAR* in_msg,
-	Firebird::IMessageMetadata* out_meta, UCHAR* out_msg,
+	IMessageMetadata* in_meta, const UCHAR* in_msg,
+	IMessageMetadata* out_meta, UCHAR* out_msg,
 	bool isInternalRequest)
 {
 	SET_TDBB(tdbb);
@@ -536,9 +561,11 @@ void DSQL_execute_immediate(thread_db* tdbb, Jrd::Attachment* attachment, jrd_tr
 
 		const DsqlCompiledStatement* statement = request->getStatement();
 
-		// Only allow NULL trans_handle if we're starting a transaction
+		// Only allow NULL trans_handle if we're starting a transaction or set session properties
 
-		if (!*tra_handle && statement->getType() != DsqlCompiledStatement::TYPE_START_TRANS)
+		if (!*tra_handle &&
+			statement->getType() != DsqlCompiledStatement::TYPE_START_TRANS &&
+			statement->getType() != DsqlCompiledStatement::TYPE_SESSION_MANAGEMENT)
 		{
 			ERRD_post(Arg::Gds(isc_sqlerr) << Arg::Num(-901) <<
 					  Arg::Gds(isc_bad_trans_handle));
@@ -546,8 +573,13 @@ void DSQL_execute_immediate(thread_db* tdbb, Jrd::Attachment* attachment, jrd_tr
 
 		Jrd::ContextPoolHolder context(tdbb, &request->getPool());
 
-		// A select with a non zero output length is a singleton select
-		const bool singleton = reqTypeWithCursor(statement->getType()) && out_msg;
+		// A select having cursor is a singleton select when executed immediate
+		const bool singleton = reqTypeWithCursor(statement->getType());
+		if (singleton && !(out_msg && out_meta))
+		{
+			ERRD_post(Arg::Gds(isc_dsql_sqlda_err) <<
+					  Arg::Gds(isc_dsql_no_output_sqlda));
+		}
 
 		request->req_transaction = *tra_handle;
 
@@ -555,7 +587,7 @@ void DSQL_execute_immediate(thread_db* tdbb, Jrd::Attachment* attachment, jrd_tr
 
 		dsql_req::destroy(tdbb, request, true);
 	}
-	catch (const Firebird::Exception&)
+	catch (const Exception&)
 	{
 		if (request)
 		{
@@ -567,10 +599,13 @@ void DSQL_execute_immediate(thread_db* tdbb, Jrd::Attachment* attachment, jrd_tr
 }
 
 
-void DsqlDmlRequest::dsqlPass(thread_db* tdbb, DsqlCompilerScratch* scratch,
+void DsqlDmlRequest::dsqlPass(thread_db* tdbb, DsqlCompilerScratch* scratch, bool* destroyScratchPool,
 	ntrace_result_t* traceResult)
 {
-	node = Node::doDsqlPass(scratch, node);
+	{	// scope
+		Jrd::ContextPoolHolder scratchContext(tdbb, &scratch->getPool());
+		node = Node::doDsqlPass(scratch, node);
+	}
 
 	if (scratch->clientDialect > SQL_DIALECT_V5)
 		scratch->getStatement()->setBlrVersion(5);
@@ -586,7 +621,7 @@ void DsqlDmlRequest::dsqlPass(thread_db* tdbb, DsqlCompilerScratch* scratch,
 
 		// Allocate buffer for message
 		const ULONG newLen = message->msg_length + FB_DOUBLE_ALIGN - 1;
-		UCHAR* msgBuffer = FB_NEW_POOL(*tdbb->getDefaultPool()) UCHAR[newLen];
+		UCHAR* msgBuffer = FB_NEW_POOL(scratch->getStatement()->getPool()) UCHAR[newLen];
 		msgBuffer = FB_ALIGN(msgBuffer, FB_DOUBLE_ALIGN);
 		message->msg_buffer_number = req_msg_buffers.add(msgBuffer);
 	}
@@ -648,29 +683,25 @@ void DsqlDmlRequest::dsqlPass(thread_db* tdbb, DsqlCompilerScratch* scratch,
 
 	if (status)
 		status_exception::raise(tdbb->tdbb_status_vector);
+
+	// We don't need the scratch pool anymore. Tell our caller to delete it.
+	node = NULL;
+	*destroyScratchPool = true;
 }
 
-// Execute a dynamic SQL statement.
-void DsqlDmlRequest::execute(thread_db* tdbb, jrd_tra** traHandle,
-	Firebird::IMessageMetadata* inMetadata, const UCHAR* inMsg,
-	Firebird::IMessageMetadata* outMetadata, UCHAR* outMsg,
+bool DsqlDmlRequest::needRestarts()
+{
+	return (req_transaction && (req_transaction->tra_flags & TRA_read_consistency) &&
+		statement->getType() != DsqlCompiledStatement::TYPE_SAVEPOINT);
+};
+
+// Execute a dynamic SQL statement
+void DsqlDmlRequest::doExecute(thread_db* tdbb, jrd_tra** traHandle,
+	IMessageMetadata* outMetadata, UCHAR* outMsg,
 	bool singleton)
 {
-	if (!req_request)
-	{
-		ERRD_post(Arg::Gds(isc_sqlerr) << Arg::Num(-504) <<
-				  Arg::Gds(isc_unprepared_stmt));
-	}
-
-	// If there is no data required, just start the request
-
+	firstRowFetched = false;
 	const dsql_msg* message = statement->getSendMsg();
-	if (message)
-		map_in_out(tdbb, this, false, message, inMetadata, NULL, inMsg);
-
-	// we need to map_in_out before tracing of execution start to let trace
-	// manager know statement parameters values
-	TraceDSQLExecute trace(req_dbb->dbb_attachment, this);
 
 	if (!message)
 		JRD_start(tdbb, req_request, req_transaction);
@@ -700,7 +731,7 @@ void DsqlDmlRequest::execute(thread_db* tdbb, jrd_tra** traHandle,
 	}
 
 	if (outMetadata && message)
-		parse_metadata(this, outMetadata, message->msg_parameters);
+		parseMetadata(outMetadata, message->msg_parameters);
 
 	if ((outMsg && message) || isBlock)
 	{
@@ -723,7 +754,7 @@ void DsqlDmlRequest::execute(thread_db* tdbb, jrd_tra** traHandle,
 		JRD_receive(tdbb, req_request, message->msg_number, message->msg_length, msgBuffer);
 
 		if (outMsg)
-			map_in_out(tdbb, this, true, message, NULL, outMsg);
+			mapInOut(tdbb, true, message, NULL, outMsg);
 
 		// if this is a singleton select, make sure there's in fact one record
 
@@ -752,7 +783,7 @@ void DsqlDmlRequest::execute(thread_db* tdbb, jrd_tra** traHandle,
 						message->msg_length, message_buffer);
 					status = FB_SUCCESS;
 				}
-				catch (Firebird::Exception&)
+				catch (Exception&)
 				{
 					status = tdbb->tdbb_status_vector->getErrors()[1];
 				}
@@ -793,14 +824,132 @@ void DsqlDmlRequest::execute(thread_db* tdbb, jrd_tra** traHandle,
 			}
 			break;
 	}
+}
 
+// Execute a dynamic SQL statement with tracing, restart and timeout handler
+void DsqlDmlRequest::execute(thread_db* tdbb, jrd_tra** traHandle,
+	IMessageMetadata* inMetadata, const UCHAR* inMsg,
+	IMessageMetadata* outMetadata, UCHAR* outMsg,
+	bool singleton)
+{
+	if (!req_request)
+	{
+		ERRD_post(Arg::Gds(isc_sqlerr) << Arg::Num(-504) <<
+				  Arg::Gds(isc_unprepared_stmt));
+	}
+
+	// If there is no data required, just start the request
+
+	const dsql_msg* message = statement->getSendMsg();
+	if (message)
+		mapInOut(tdbb, false, message, inMetadata, NULL, inMsg);
+
+	// we need to mapInOut() before tracing of execution start to let trace
+	// manager know statement parameters values
+	TraceDSQLExecute trace(req_dbb->dbb_attachment, this);
+
+	// Setup and start timeout timer
 	const bool have_cursor = reqTypeWithCursor(statement->getType()) && !singleton;
+
+	setupTimer(tdbb);
+	thread_db::TimerGuard timerGuard(tdbb, req_timer, !have_cursor);
+
+	if (needRestarts())
+		executeReceiveWithRestarts(tdbb, traHandle, outMetadata, outMsg, singleton, true, false);
+	else {
+		doExecute(tdbb, traHandle, outMetadata, outMsg, singleton);
+	}
+
 	trace.finish(have_cursor, ITracePlugin::RESULT_SUCCESS);
 }
 
-void DsqlDdlRequest::dsqlPass(thread_db* tdbb, DsqlCompilerScratch* scratch,
+void DsqlDmlRequest::executeReceiveWithRestarts(thread_db* tdbb, jrd_tra** traHandle,
+	IMessageMetadata* outMetadata, UCHAR* outMsg,
+	bool singleton, bool exec, bool fetch)
+{
+	req_request->req_flags &= ~req_update_conflict;
+	int numTries = 0;
+	const int MAX_RESTARTS = 10;
+
+	while (true)
+	{
+		AutoSavePoint savePoint(tdbb, req_transaction);
+
+		// Don't set req_restart_ready flag at last attempt to restart request.
+		// It allows to raise update conflict error (if any) as usual and
+		// handle error by PSQL handler.
+		const ULONG flag = (numTries >= MAX_RESTARTS) ? 0 : req_restart_ready;
+		AutoSetRestoreFlag<ULONG> restartReady(&req_request->req_flags, flag, true);
+		try
+		{
+			if (exec)
+				doExecute(tdbb, traHandle, outMetadata, outMsg, singleton);
+
+			if (fetch)
+			{
+				fb_assert(reqTypeWithCursor(statement->getType()));
+
+				const dsql_msg* message = statement->getReceiveMsg();
+
+				UCHAR* dsqlMsgBuffer = req_msg_buffers[message->msg_buffer_number];
+				JRD_receive(tdbb, req_request, message->msg_number, message->msg_length, dsqlMsgBuffer);
+			}
+		}
+		catch (const status_exception&)
+		{
+			if (!(req_transaction->tra_flags & TRA_ex_restart))
+			{
+				req_request->req_flags &= ~req_update_conflict;
+				throw;
+			}
+		}
+
+		if (!(req_request->req_flags & req_update_conflict))
+		{
+			fb_assert((req_transaction->tra_flags & TRA_ex_restart) == 0);
+			req_transaction->tra_flags &= ~TRA_ex_restart;
+
+#ifdef DEV_BUILD
+			if (numTries > 0)
+			{
+				string s;
+				s.printf("restarts = %d", numTries);
+
+				ERRD_post_warning(Arg::Warning(isc_random) << Arg::Str(s));
+			}
+#endif
+			savePoint.release();	// everything is ok
+			break;
+		}
+
+		fb_assert((req_transaction->tra_flags & TRA_ex_restart) != 0);
+
+		req_request->req_flags &= ~req_update_conflict;
+		req_transaction->tra_flags &= ~TRA_ex_restart;
+		fb_utils::init_status(tdbb->tdbb_status_vector);
+
+		// Undo current savepoint but preserve already taken locks.
+		// Savepoint will be restarted at the next loop iteration.
+		savePoint.rollback(true);
+
+		numTries++;
+		if (numTries >= MAX_RESTARTS)
+		{
+			gds__log("Update conflict: unable to get a stable set of rows in the source tables\n"
+				"\tafter %d attempts of restart.\n"
+				"\tQuery:\n%s\n", numTries, req_request->getStatement()->sqlText->c_str() );
+		}
+
+		// When restart we must execute query 
+		exec = true;
+	}
+}
+
+void DsqlDdlRequest::dsqlPass(thread_db* tdbb, DsqlCompilerScratch* scratch, bool* destroyScratchPool,
 	ntrace_result_t* traceResult)
 {
+	Database* const dbb = tdbb->getDatabase();
+
 	internalScratch = scratch;
 
 	scratch->flags |= DsqlCompilerScratch::FLAG_DDL;
@@ -814,15 +963,26 @@ void DsqlDdlRequest::dsqlPass(thread_db* tdbb, DsqlCompilerScratch* scratch,
 		rethrowDdlException(ex, false);
 	}
 
-	if (scratch->getAttachment()->dbb_read_only)
+	if (dbb->readOnly())
 		ERRD_post(Arg::Gds(isc_read_only_database));
 
+	// In read-only replica, only replicator is allowed to execute DDL.
+	// As an exception, not replicated DDL statements are also allowed.
+	if (dbb->isReplica(REPLICA_READ_ONLY) &&
+		!(tdbb->tdbb_flags & TDBB_replicator) &&
+		node->mustBeReplicated())
+	{
+		ERRD_post(Arg::Gds(isc_read_only_trans));
+	}
+
+	const auto dbDialect =
+		(dbb->dbb_flags & DBB_DB_SQL_dialect_3) ? SQL_DIALECT_V6 : SQL_DIALECT_V5;
+
 	if ((scratch->flags & DsqlCompilerScratch::FLAG_AMBIGUOUS_STMT) &&
-		scratch->getAttachment()->dbb_db_SQL_dialect != scratch->clientDialect)
+		dbDialect != scratch->clientDialect)
 	{
 		ERRD_post(Arg::Gds(isc_sqlerr) << Arg::Num(-817) <<
-				  Arg::Gds(isc_ddl_not_allowed_by_db_sql_dial) <<
-					  Arg::Num(scratch->getAttachment()->dbb_db_SQL_dialect));
+				  Arg::Gds(isc_ddl_not_allowed_by_db_sql_dial) << Arg::Num(dbDialect));
 	}
 
 	if (scratch->clientDialect > SQL_DIALECT_V5)
@@ -833,8 +993,8 @@ void DsqlDdlRequest::dsqlPass(thread_db* tdbb, DsqlCompilerScratch* scratch,
 
 // Execute a dynamic SQL statement.
 void DsqlDdlRequest::execute(thread_db* tdbb, jrd_tra** traHandle,
-	Firebird::IMessageMetadata* inMetadata, const UCHAR* inMsg,
-	Firebird::IMessageMetadata* outMetadata, UCHAR* outMsg,
+	IMessageMetadata* inMetadata, const UCHAR* inMsg,
+	IMessageMetadata* outMetadata, UCHAR* outMsg,
 	bool singleton)
 {
 	TraceDSQLExecute trace(req_dbb->dbb_attachment, this);
@@ -847,7 +1007,12 @@ void DsqlDdlRequest::execute(thread_db* tdbb, jrd_tra** traHandle,
 
 		try
 		{
+			AutoSetRestoreFlag<ULONG> execDdl(&tdbb->tdbb_flags, TDBB_repl_in_progress, true);
+
 			node->executeDdl(tdbb, internalScratch, req_transaction);
+
+			if (node->mustBeReplicated())
+				REPL_exec_sql(tdbb, req_transaction, getStatement()->getOrgText());
 		}
 		catch (status_exception& ex)
 		{
@@ -860,6 +1025,11 @@ void DsqlDdlRequest::execute(thread_db* tdbb, jrd_tra** traHandle,
 	JRD_autocommit_ddl(tdbb, req_transaction);
 
 	trace.finish(false, ITracePlugin::RESULT_SUCCESS);
+}
+
+bool DsqlDdlRequest::mustBeReplicated() const
+{
+	return node->mustBeReplicated();
 }
 
 // Rethrow an exception with isc_no_meta_update and prefix codes.
@@ -883,7 +1053,7 @@ void DsqlDdlRequest::rethrowDdlException(status_exception& ex, bool metadataUpda
 }
 
 
-void DsqlTransactionRequest::dsqlPass(thread_db* tdbb, DsqlCompilerScratch* scratch,
+void DsqlTransactionRequest::dsqlPass(thread_db* tdbb, DsqlCompilerScratch* scratch, bool* destroyScratchPool,
 	ntrace_result_t* /*traceResult*/)
 {
 	node = Node::doDsqlPass(scratch, node);
@@ -894,11 +1064,29 @@ void DsqlTransactionRequest::dsqlPass(thread_db* tdbb, DsqlCompilerScratch* scra
 
 // Execute a dynamic SQL statement.
 void DsqlTransactionRequest::execute(thread_db* tdbb, jrd_tra** traHandle,
-	Firebird::IMessageMetadata* inMetadata, const UCHAR* inMsg,
-	Firebird::IMessageMetadata* outMetadata, UCHAR* outMsg,
-	bool singleton)
+	IMessageMetadata* /*inMetadata*/, const UCHAR* /*inMsg*/,
+	IMessageMetadata* /*outMetadata*/, UCHAR* /*outMsg*/,
+	bool /*singleton*/)
 {
 	node->execute(tdbb, this, traHandle);
+}
+
+
+void DsqlSessionManagementRequest::dsqlPass(thread_db* tdbb, DsqlCompilerScratch* scratch, bool* destroyScratchPool,
+	ntrace_result_t* /*traceResult*/)
+{
+	node = Node::doDsqlPass(scratch, node);
+}
+
+// Execute a dynamic SQL statement.
+void DsqlSessionManagementRequest::execute(thread_db* tdbb, jrd_tra** traHandle,
+	IMessageMetadata* inMetadata, const UCHAR* inMsg,
+	IMessageMetadata* outMetadata, UCHAR* outMsg,
+	bool singleton)
+{
+	TraceDSQLExecute trace(req_dbb->dbb_attachment, this);
+	node->execute(tdbb, this, traHandle);
+	trace.finish(false, ITracePlugin::RESULT_SUCCESS);
 }
 
 
@@ -926,7 +1114,7 @@ static ULONG get_request_info(thread_db* tdbb, dsql_req* request, ULONG buffer_l
 		return INF_request_info(request->req_request, sizeof(record_info), record_info,
 			buffer_length, buffer);
 	}
-	catch (Firebird::Exception&)
+	catch (Exception&)
 	{
 		return 0;
 	}
@@ -957,15 +1145,6 @@ static dsql_dbb* init(thread_db* tdbb, Jrd::Attachment* attachment)
 
 	INI_init_dsql(tdbb, database);
 
-	Database* const dbb = tdbb->getDatabase();
-	database->dbb_db_SQL_dialect =
-		(dbb->dbb_flags & DBB_DB_SQL_dialect_3) ? SQL_DIALECT_V6 : SQL_DIALECT_V5;
-
-	database->dbb_ods_version = dbb->dbb_ods_version;
-	database->dbb_minor_version = dbb->dbb_minor_version;
-
-	database->dbb_read_only = dbb->readOnly();
-
 #ifdef DSQL_DEBUG
 	DSQL_debug = Config::getTraceDSQL();
 #endif
@@ -976,7 +1155,7 @@ static dsql_dbb* init(thread_db* tdbb, Jrd::Attachment* attachment)
 
 /**
 
- 	map_in_out
+ 	mapInOut
 
     @brief	Map data from external world into message or
  	from message to external world.
@@ -990,10 +1169,10 @@ static dsql_dbb* init(thread_db* tdbb, Jrd::Attachment* attachment)
     @param in_dsql_msg_buf
 
  **/
-static void map_in_out(thread_db* tdbb, dsql_req* request, bool toExternal, const dsql_msg* message,
+void dsql_req::mapInOut(thread_db* tdbb, bool toExternal, const dsql_msg* message,
 	IMessageMetadata* meta, UCHAR* dsql_msg_buf, const UCHAR* in_dsql_msg_buf)
 {
-	USHORT count = parse_metadata(request, meta, message->msg_parameters);
+	USHORT count = parseMetadata(meta, message->msg_parameters);
 
 	// Sanity check
 
@@ -1028,7 +1207,7 @@ static void map_in_out(thread_db* tdbb, dsql_req* request, bool toExternal, cons
 			 // Make sure the message given to us is long enough
 
 			dsc desc;
-			if (!request->req_user_descs.get(parameter, desc))
+			if (!req_user_descs.get(parameter, desc))
 				desc.clear();
 
 			/***
@@ -1046,14 +1225,14 @@ static void map_in_out(thread_db* tdbb, dsql_req* request, bool toExternal, cons
 					Arg::Gds(isc_dsql_sqlvar_index) << Arg::Num(parameter->par_index-1));
 			}
 
-			UCHAR* msgBuffer = request->req_msg_buffers[parameter->par_message->msg_buffer_number];
+			UCHAR* msgBuffer = req_msg_buffers[parameter->par_message->msg_buffer_number];
 
 			SSHORT* flag = NULL;
 			dsql_par* const null_ind = parameter->par_null;
 			if (null_ind != NULL)
 			{
 				dsc userNullDesc;
-				if (!request->req_user_descs.get(null_ind, userNullDesc))
+				if (!req_user_descs.get(null_ind, userNullDesc))
 					userNullDesc.clear();
 
 				const ULONG null_offset = (IPTR) userNullDesc.dsc_address;
@@ -1082,6 +1261,8 @@ static void map_in_out(thread_db* tdbb, dsql_req* request, bool toExternal, cons
 				}
 			}
 
+			const bool notNull = (!flag || *flag >= 0);
+
 			dsc parDesc = parameter->par_desc;
 			parDesc.dsc_address = msgBuffer + (IPTR) parDesc.dsc_address;
 
@@ -1089,19 +1270,16 @@ static void map_in_out(thread_db* tdbb, dsql_req* request, bool toExternal, cons
 			{
 				desc.dsc_address = dsql_msg_buf + (IPTR) desc.dsc_address;
 
-				if (!flag || *flag >= 0)
+				if (notNull)
 					MOVD_move(tdbb, &parDesc, &desc);
 				else
 					memset(desc.dsc_address, 0, desc.dsc_length);
 			}
-			else if (!flag || *flag >= 0)
+			else if (notNull && !parDesc.isNull())
 			{
-				if (!(parDesc.dsc_flags & DSC_null))
-				{
-					// Safe cast because desc is used as source only.
-					desc.dsc_address = const_cast<UCHAR*>(in_dsql_msg_buf) + (IPTR) desc.dsc_address;
-					MOVD_move(tdbb, &desc, &parDesc);
-				}
+				// Safe cast because desc is used as source only.
+				desc.dsc_address = const_cast<UCHAR*>(in_dsql_msg_buf) + (IPTR) desc.dsc_address;
+				MOVD_move(tdbb, &desc, &parDesc);
 			}
 			else
 				memset(parDesc.dsc_address, 0, parDesc.dsc_length);
@@ -1117,7 +1295,7 @@ static void map_in_out(thread_db* tdbb, dsql_req* request, bool toExternal, cons
 			Arg::Gds(isc_dsql_wrong_param_num) << Arg::Num(count) <<Arg::Num(count2));
 	}
 
-	const DsqlCompiledStatement* statement = request->getStatement();
+	const DsqlCompiledStatement* statement = getStatement();
 	const dsql_par* parameter;
 
 	const dsql_par* dbkey;
@@ -1126,7 +1304,7 @@ static void map_in_out(thread_db* tdbb, dsql_req* request, bool toExternal, cons
 	{
 		UCHAR* parentMsgBuffer = statement->getParentRequest() ?
 			statement->getParentRequest()->req_msg_buffers[dbkey->par_message->msg_buffer_number] : NULL;
-		UCHAR* msgBuffer = request->req_msg_buffers[parameter->par_message->msg_buffer_number];
+		UCHAR* msgBuffer = req_msg_buffers[parameter->par_message->msg_buffer_number];
 
 		fb_assert(parentMsgBuffer);
 
@@ -1156,7 +1334,7 @@ static void map_in_out(thread_db* tdbb, dsql_req* request, bool toExternal, cons
 		UCHAR* parentMsgBuffer = statement->getParentRequest() ?
 			statement->getParentRequest()->req_msg_buffers[rec_version->par_message->msg_buffer_number] :
 			NULL;
-		UCHAR* msgBuffer = request->req_msg_buffers[parameter->par_message->msg_buffer_number];
+		UCHAR* msgBuffer = req_msg_buffers[parameter->par_message->msg_buffer_number];
 
 		fb_assert(parentMsgBuffer);
 
@@ -1183,7 +1361,7 @@ static void map_in_out(thread_db* tdbb, dsql_req* request, bool toExternal, cons
 
 /**
 
- 	parse_metadata
+ 	parseMetadata
 
     @brief	Parse the message of a request.
 
@@ -1193,8 +1371,7 @@ static void map_in_out(thread_db* tdbb, dsql_req* request, bool toExternal, cons
     @param parameters_list
 
  **/
-static USHORT parse_metadata(dsql_req* request, IMessageMetadata* meta,
-	const Array<dsql_par*>& parameters_list)
+USHORT dsql_req::parseMetadata(IMessageMetadata* meta, const Array<dsql_par*>& parameters_list)
 {
 	HalfStaticArray<const dsql_par*, 16> parameters;
 
@@ -1268,7 +1445,7 @@ static USHORT parse_metadata(dsql_req* request, IMessageMetadata* meta,
 		if (desc.isText() && desc.getTextType() == ttype_dynamic)
 			desc.setTextType(ttype_none);
 
-		request->req_user_descs.put(parameter, desc);
+		req_user_descs.put(parameter, desc);
 
 		dsql_par* null = parameter->par_null;
 		if (null)
@@ -1279,7 +1456,7 @@ static USHORT parse_metadata(dsql_req* request, IMessageMetadata* meta,
 			desc.dsc_length = sizeof(SSHORT);
 			desc.dsc_address = (UCHAR*)(IPTR) nullOffset;
 
-			request->req_user_descs.put(null, desc);
+			req_user_descs.put(null, desc);
 		}
 	}
 
@@ -1312,10 +1489,10 @@ static dsql_req* prepareRequest(thread_db* tdbb, dsql_dbb* database, jrd_tra* tr
 static dsql_req* prepareStatement(thread_db* tdbb, dsql_dbb* database, jrd_tra* transaction,
 	ULONG textLength, const TEXT* text, USHORT clientDialect, bool isInternalRequest)
 {
+	Database* const dbb = tdbb->getDatabase();
+
 	if (text && textLength == 0)
 		textLength = static_cast<ULONG>(strlen(text));
-
-	textLength = MIN(textLength, MAX_SQL_LENGTH);
 
 	TraceDSQLPrepare trace(database->dbb_attachment, transaction, textLength, text);
 
@@ -1345,40 +1522,62 @@ static dsql_req* prepareStatement(thread_db* tdbb, dsql_dbb* database, jrd_tra* 
 		}
 	}
 
+	if (textLength > MAX_SQL_LENGTH)
+	{
+		ERRD_post(Arg::Gds(isc_sqlerr) << Arg::Num(-902) <<
+				  Arg::Gds(isc_imp_exc) <<
+				  Arg::Gds(isc_sql_too_long) << Arg::Num(MAX_SQL_LENGTH));
+	}
+
 	// allocate the statement block, then prepare the statement
 
-	Jrd::ContextPoolHolder context(tdbb, database->createPool());
-	MemoryPool& pool = *tdbb->getDefaultPool();
-
-	DsqlCompiledStatement* statement = FB_NEW_POOL(pool) DsqlCompiledStatement(pool);
-	DsqlCompilerScratch* scratch = FB_NEW_POOL(pool) DsqlCompilerScratch(pool, database,
-		transaction, statement);
-	scratch->clientDialect = clientDialect;
-
-	if (isInternalRequest)
-		scratch->flags |= DsqlCompilerScratch::FLAG_INTERNAL_REQUEST;
-
+	MemoryPool* statementPool = database->createPool();
+	MemoryPool* scratchPool = NULL;
 	dsql_req* request = NULL;
 
+	Jrd::ContextPoolHolder statementContext(tdbb, statementPool);
 	try
 	{
-		// Parse the SQL statement.  If it croaks, return
+		DsqlCompiledStatement* statement = FB_NEW_POOL(*statementPool) DsqlCompiledStatement(*statementPool);
 
-		Parser parser(*tdbb->getDefaultPool(), scratch, clientDialect,
-			scratch->getAttachment()->dbb_db_SQL_dialect, PARSER_VERSION, text, textLength,
-			tdbb->getAttachment()->att_charset);
+		scratchPool = database->createPool();
 
-		request = parser.parse();
+		if (!transaction)		// Useful for session management statements
+			transaction = database->dbb_attachment->getSysTransaction();
+
+		DsqlCompilerScratch* scratch = FB_NEW_POOL(*scratchPool) DsqlCompilerScratch(*scratchPool, database,
+			transaction, statement);
+		scratch->clientDialect = clientDialect;
+
+		if (isInternalRequest)
+			scratch->flags |= DsqlCompilerScratch::FLAG_INTERNAL_REQUEST;
+
+		const auto dbDialect =
+			(dbb->dbb_flags & DBB_DB_SQL_dialect_3) ? SQL_DIALECT_V6 : SQL_DIALECT_V5;
+
+		const auto charSetId = database->dbb_attachment->att_charset;
+
+		string transformedText;
+
+		{	// scope to delete parser before the scratch pool is gone
+			Jrd::ContextPoolHolder scratchContext(tdbb, scratchPool);
+
+			Parser parser(tdbb, *scratchPool, scratch, clientDialect,
+				dbDialect, text, textLength, charSetId);
+
+			// Parse the SQL statement.  If it croaks, return
+			request = parser.parse();
+			request->liveScratchPool = scratchPool;
+
+			if (parser.isStmtAmbiguous())
+				scratch->flags |= DsqlCompilerScratch::FLAG_AMBIGUOUS_STMT;
+
+			transformedText = parser.getTransformedString();
+		}
 
 		request->req_dbb = scratch->getAttachment();
 		request->req_transaction = scratch->getTransaction();
 		request->statement = scratch->getStatement();
-
-		if (parser.isStmtAmbiguous())
-			scratch->flags |= DsqlCompilerScratch::FLAG_AMBIGUOUS_STMT;
-
-		string transformedText = parser.getTransformedString();
-		SSHORT charSetId = database->dbb_attachment->att_charset;
 
 		// If the attachment charset is NONE, replace non-ASCII characters by question marks, so
 		// that engine internals doesn't receive non-mappeable data to UTF8. If an attachment
@@ -1411,12 +1610,12 @@ static dsql_req* prepareStatement(thread_db* tdbb, dsql_dbb* database, jrd_tra* 
 			transformedText.assign(temp.begin(), temp.getCount());
 		}
 
-		statement->setSqlText(FB_NEW_POOL(pool) RefString(pool, transformedText));
+		statement->setSqlText(FB_NEW_POOL(*statementPool) RefString(*statementPool, transformedText));
 
 		// allocate the send and receive messages
 
-		statement->setSendMsg(FB_NEW_POOL(pool) dsql_msg(pool));
-		dsql_msg* message = FB_NEW_POOL(pool) dsql_msg(pool);
+		statement->setSendMsg(FB_NEW_POOL(*statementPool) dsql_msg(*statementPool));
+		dsql_msg* message = FB_NEW_POOL(*statementPool) dsql_msg(*statementPool);
 		statement->setReceiveMsg(message);
 		message->msg_number = 1;
 
@@ -1428,18 +1627,29 @@ static dsql_req* prepareStatement(thread_db* tdbb, dsql_dbb* database, jrd_tra* 
 		ntrace_result_t traceResult = ITracePlugin::RESULT_SUCCESS;
 		try
 		{
-			request->dsqlPass(tdbb, scratch, &traceResult);
+			bool destroyScratchPool = false;
+			request->dsqlPass(tdbb, scratch, &destroyScratchPool, &traceResult);
+
+			if (destroyScratchPool)
+			{
+				database->deletePool(scratchPool);
+				request->liveScratchPool = scratchPool = NULL;
+			}
 		}
 		catch (const Exception&)
 		{
 			trace.prepare(traceResult);
 			throw;
 		}
+
+		if (!isInternalRequest && request->mustBeReplicated())
+			statement->setOrgText(text, textLength);
+
 		trace.prepare(traceResult);
 
 		return request;
 	}
-	catch (const Firebird::Exception&)
+	catch (const Exception&)
 	{
 		trace.prepare(ITracePlugin::RESULT_FAILED);
 
@@ -1447,6 +1657,11 @@ static dsql_req* prepareStatement(thread_db* tdbb, dsql_dbb* database, jrd_tra* 
 		{
 			request->req_traced = false;
 			dsql_req::destroy(tdbb, request, true);
+		}
+		else
+		{
+			database->deletePool(scratchPool);
+			database->deletePool(statementPool);
 		}
 
 		throw;
@@ -1509,20 +1724,49 @@ static void release_statement(DsqlCompiledStatement* statement)
 	}
 
 	statement->setSqlText(NULL);
+	statement->setOrgText(NULL, 0);
 }
 
+
+// Class DsqlCompiledStatement
+
+void DsqlCompiledStatement::setOrgText(const char* ptr, ULONG len)
+{
+	if (!ptr || !len)
+	{
+		orgText = NULL;
+		return;
+	}
+
+	const string text(ptr, len);
+
+	if (text == *sqlText)
+		orgText = sqlText;
+	else
+		orgText = FB_NEW_POOL(getPool()) RefString(getPool(), text);
+}
+
+
+// Class dsql_req
 
 dsql_req::dsql_req(MemoryPool& pool)
 	: req_pool(pool),
 	  statement(NULL),
+	  liveScratchPool(NULL),
 	  cursors(req_pool),
 	  req_dbb(NULL),
 	  req_transaction(NULL),
 	  req_msg_buffers(req_pool),
 	  req_cursor_name(req_pool),
 	  req_cursor(NULL),
+	  req_batch(NULL),
 	  req_user_descs(req_pool),
-	  req_traced(false)
+	  req_traced(false),
+	  req_timeout(0)
+{
+}
+
+dsql_req::~dsql_req()
 {
 }
 
@@ -1534,7 +1778,7 @@ void dsql_req::setCursor(thread_db* /*tdbb*/, const TEXT* /*name*/)
 		Arg::Gds(isc_req_sync));
 }
 
-void dsql_req::setDelayedFormat(thread_db* /*tdbb*/, Firebird::IMessageMetadata* /*metadata*/)
+void dsql_req::setDelayedFormat(thread_db* /*tdbb*/, IMessageMetadata* /*metadata*/)
 {
 	status_exception::raise(
 		Arg::Gds(isc_sqlerr) << Arg::Num(-804) <<
@@ -1552,10 +1796,92 @@ bool dsql_req::fetch(thread_db* /*tdbb*/, UCHAR* /*msgBuffer*/)
 	return false;	// avoid warning
 }
 
+unsigned int dsql_req::getTimeout()
+{
+	return req_timeout;
+}
+
+unsigned int dsql_req::getActualTimeout()
+{
+	if (req_timer)
+		return req_timer->getValue();
+
+	return 0;
+}
+
+void dsql_req::setTimeout(unsigned int timeOut)
+{
+	req_timeout = timeOut;
+}
+
+TimeoutTimer* dsql_req::setupTimer(thread_db* tdbb)
+{
+	if (req_request)
+	{
+		if (req_request->getStatement()->flags & JrdStatement::FLAG_INTERNAL)
+			return req_timer;
+
+		req_request->req_timeout = this->req_timeout;
+
+		fb_assert(!req_request->req_caller);
+		if (req_request->req_caller)
+		{
+			if (req_timer)
+				req_timer->setup(0, 0);
+			return req_timer;
+		}
+	}
+
+	Database* dbb = tdbb->getDatabase();
+	Attachment* att = tdbb->getAttachment();
+
+	ISC_STATUS toutErr = isc_cfg_stmt_timeout;
+	unsigned int timeOut = dbb->dbb_config->getStatementTimeout() * 1000;
+
+	if (req_timeout)
+	{
+		if (!timeOut || req_timeout < timeOut)
+		{
+			timeOut = req_timeout;
+			toutErr = isc_req_stmt_timeout;
+		}
+	}
+	else
+	{
+		const unsigned int attTout = att->getStatementTimeout();
+
+		if (!timeOut || attTout && attTout < timeOut)
+		{
+			timeOut = attTout;
+			toutErr = isc_att_stmt_timeout;
+		}
+	}
+
+	if (!req_timer && timeOut)
+	{
+		req_timer = FB_NEW TimeoutTimer();
+		req_request->req_timer = this->req_timer;
+	}
+
+	if (req_timer)
+	{
+		req_timer->setup(timeOut, toutErr);
+		req_timer->start();
+	}
+
+	return req_timer;
+}
+
 // Release a dynamic request.
 void dsql_req::destroy(thread_db* tdbb, dsql_req* request, bool drop)
 {
 	SET_TDBB(tdbb);
+
+	if (request->req_timer)
+	{
+		request->req_timer->stop();
+		request->req_timer = NULL;
+	}
 
 	// If request is parent, orphan the children and release a portion of their requests
 
@@ -1579,6 +1905,12 @@ void dsql_req::destroy(thread_db* tdbb, dsql_req* request, bool drop)
 
 	if (request->req_cursor)
 		DsqlCursor::close(tdbb, request->req_cursor);
+
+	if (request->req_batch)
+	{
+		delete request->req_batch;
+		request->req_batch = nullptr;
+	}
 
 	Jrd::Attachment* att = request->req_dbb->dbb_attachment;
 	const bool need_trace_free = request->req_traced && TraceManager::need_dsql_free(att);
@@ -1606,7 +1938,7 @@ void dsql_req::destroy(thread_db* tdbb, dsql_req* request, bool drop)
 			CMP_release(tdbb, request->req_request);
 			request->req_request = NULL;
 		}
-		catch (Firebird::Exception&)
+		catch (Exception&)
 		{} // no-op
 	}
 
@@ -1616,7 +1948,10 @@ void dsql_req::destroy(thread_db* tdbb, dsql_req* request, bool drop)
 	// Release the entire request if explicitly asked for
 
 	if (drop)
+	{
+		request->req_dbb->deletePool(request->liveScratchPool);
 		request->req_dbb->deletePool(&request->getPool());
+	}
 }
 
 
@@ -1641,7 +1976,7 @@ string IntlString::toUtf8(DsqlCompilerScratch* dsqlScratch) const
 	}
 
 	string utf;
-	return DataTypeUtil::convertToUTF8(s, utf, id) ? utf : s;
+	return DataTypeUtil::convertToUTF8(s, utf, id, ERRD_post) ? utf : s;
 }
 
 
@@ -1748,7 +2083,6 @@ static void sql_info(thread_db* tdbb,
 				break;
 			case DsqlCompiledStatement::TYPE_CREATE_DB:
 			case DsqlCompiledStatement::TYPE_DDL:
-			case DsqlCompiledStatement::TYPE_SET_ROLE:
 				number = isc_info_sql_stmt_ddl;
 				break;
 			case DsqlCompiledStatement::TYPE_COMMIT:
@@ -1761,6 +2095,9 @@ static void sql_info(thread_db* tdbb,
 				break;
 			case DsqlCompiledStatement::TYPE_START_TRANS:
 				number = isc_info_sql_stmt_start_trans;
+				break;
+			case DsqlCompiledStatement::TYPE_SESSION_MANAGEMENT:
+				number = isc_info_sql_stmt_ddl;		// ?????????????????
 				break;
 			case DsqlCompiledStatement::TYPE_INSERT:
 				number = isc_info_sql_stmt_insert;
@@ -1817,6 +2154,23 @@ static void sql_info(thread_db* tdbb,
 		case isc_info_sql_records:
 			length = get_request_info(tdbb, request, sizeof(buffer), buffer);
 			if (length && !(info = put_item(item, length, buffer, info, end_info)))
+				return;
+			break;
+
+		case isc_info_sql_stmt_timeout_user:
+		case isc_info_sql_stmt_timeout_run:
+			value = (item == isc_info_sql_stmt_timeout_user) ? request->getTimeout() : request->getActualTimeout();
+
+			length = put_vax_long(buffer, value);
+			if (!(info = put_item(item, length, buffer, info, end_info)))
+				return;
+			break;
+
+		case isc_info_sql_stmt_blob_align:
+			value = DsqlBatch::BLOB_STREAM_ALIGN;
+
+			length = put_vax_long(buffer, value);
+			if (!(info = put_item(item, length, buffer, info, end_info)))
 				return;
 			break;
 
@@ -1974,21 +2328,36 @@ static UCHAR* var_info(const dsql_msg* message,
 
 		if (param->par_index >= first_index)
 		{
+			dsc desc = param->par_desc;
+
+			// Scan sources of coercion rules in reverse order to observe
+			// 'last entered in use' rule. Start with dynamic binding rules ...
+			if (!attachment->att_bindings.coerce(&desc))
+			{
+				// next - given in DPB ...
+				if (!attachment->getInitialBindings()->coerce(&desc))
+				{
+					Database* dbb = tdbb->getDatabase();
+					// and finally - rules from .conf files.
+					dbb->getBindings()->coerce(&desc, dbb->dbb_compatibility_index);
+				}
+			}
+
 			SLONG sql_len, sql_sub_type, sql_scale, sql_type;
-			param->par_desc.getSqlInfo(&sql_len, &sql_sub_type, &sql_scale, &sql_type);
+			desc.getSqlInfo(&sql_len, &sql_sub_type, &sql_scale, &sql_type);
 
 			if (input_message &&
-				(param->par_desc.dsc_dtype == dtype_text || param->par_is_text) &&
-				(param->par_desc.dsc_flags & DSC_null))
+				(desc.dsc_dtype == dtype_text || param->par_is_text) &&
+				(desc.dsc_flags & DSC_null))
 			{
 				sql_type = SQL_NULL;
 				sql_len = 0;
 				sql_sub_type = 0;
 			}
-			else if (param->par_desc.dsc_dtype == dtype_varying && param->par_is_text)
+			else if (desc.dsc_dtype == dtype_varying && param->par_is_text)
 				sql_type = SQL_TEXT;
 
-			if (sql_type && (param->par_desc.dsc_flags & DSC_nullable))
+			if (sql_type && (desc.dsc_flags & DSC_nullable))
 				sql_type |= 0x1;
 
 			for (const UCHAR* describe = items; describe < end_describe;)

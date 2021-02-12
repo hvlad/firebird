@@ -27,6 +27,7 @@
 
 #include "../common/classes/fb_string.h"
 #include "../common/classes/objects_array.h"
+#include "../jrd/status.h"
 
 namespace Jrd {
 	class Database;
@@ -40,6 +41,7 @@ namespace Jrd {
 	class thread_db;
 	struct teb;
 	class dsql_req;
+	class MetaName;
 }
 
 void jrd_vtof(const char*, char*, SSHORT);
@@ -54,17 +56,18 @@ void	JRD_print_procedure_info(Jrd::thread_db*, const char*);
 
 void JRD_autocommit_ddl(Jrd::thread_db* tdbb, Jrd::jrd_tra* transaction);
 void JRD_receive(Jrd::thread_db* tdbb, Jrd::jrd_req* request, USHORT msg_type, ULONG msg_length,
-	UCHAR* msg);
+	void* msg);
 void JRD_start(Jrd::thread_db* tdbb, Jrd::jrd_req* request, Jrd::jrd_tra* transaction);
 
 void JRD_commit_transaction(Jrd::thread_db* tdbb, Jrd::jrd_tra* transaction);
 void JRD_commit_retaining(Jrd::thread_db* tdbb, Jrd::jrd_tra* transaction);
 void JRD_rollback_transaction(Jrd::thread_db* tdbb, Jrd::jrd_tra* transaction);
 void JRD_rollback_retaining(Jrd::thread_db* tdbb, Jrd::jrd_tra* transaction);
+void JRD_run_trans_start_triggers(Jrd::thread_db* tdbb, Jrd::jrd_tra* transaction);
 void JRD_send(Jrd::thread_db* tdbb, Jrd::jrd_req* request, USHORT msg_type, ULONG msg_length,
-	const UCHAR* msg);
+	const void* msg);
 void JRD_start_and_send(Jrd::thread_db* tdbb, Jrd::jrd_req* request, Jrd::jrd_tra* transaction,
-	USHORT msg_type, ULONG msg_length, const UCHAR* msg);
+	USHORT msg_type, ULONG msg_length, const void* msg);
 void JRD_start_transaction(Jrd::thread_db* tdbb, Jrd::jrd_tra** transaction,
 	Jrd::Attachment* attachment, unsigned int tpb_length, const UCHAR* tpb);
 void JRD_unwind_request(Jrd::thread_db* tdbb, Jrd::jrd_req* request);
@@ -75,7 +78,8 @@ bool JRD_verify_database_access(const Firebird::PathName&);
 void JRD_shutdown_attachment(Jrd::Attachment* attachment);
 void JRD_shutdown_attachments(Jrd::Database* dbb);
 void JRD_cancel_operation(Jrd::thread_db* tdbb, Jrd::Attachment* attachment, int option);
-void JRD_make_role_name(Firebird::string& userIdRole, const int dialect);
+void JRD_make_role_name(Jrd::MetaName& userIdRole, const int dialect);
+void JRD_transliterate(Jrd::thread_db* tdbb, Firebird::IStatus* vector) throw();
 
 bool JRD_shutdown_database(Jrd::Database* dbb, const unsigned flags = 0);
 // JRD_shutdown_database() flags

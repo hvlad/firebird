@@ -895,7 +895,7 @@ message to appear.', 'Your program encountered an input or output error.', 'c_pg
 (909, 'SYSDBA', '1998-09-29 12:47:50', 0, 453, 'Floating-point inexact result.  The result of a floating-point operation cannot be represented exactly as a decimal fr', NULL, NULL, 'c_pg');
 (910, 'SYSDBA', '1998-09-29 12:48:33', 0, 459, 'Interger overflow.  The result of an integer operation caused the most significant bit of the result to carry.', NULL, NULL, 'c_pg');
 (911, 'SYSDBA', '1998-09-29 12:49:25', 0, 462, 'Segmentation Fault: code attempted to access memory without privileges.', NULL, NULL, 'c_pg');
-(912, 'SYSDBA', '1998-09-29 12:50:13', 0, 463, 'Illegal Instruction: code attempted to perfrom an illegal operation', NULL, NULL, 'c_pg');
+(912, 'SYSDBA', '1998-09-29 12:50:13', 0, 463, 'Illegal Instruction: code attempted to perform an illegal operation', NULL, NULL, 'c_pg');
 (913, 'SYSDBA', '1998-09-29 12:50:32', 0, 464, 'Bus Error: code caused a system bus error', NULL, NULL, 'c_pg');
 (914, 'SYSDBA', '1998-09-29 12:51:01', 0, 465, 'Floating Point Error: Code caused an Arithmetic Exception or a floating point exception', NULL, NULL, 'c_pg');
 (915, 'duquette', '1998-10-15 17:17:38', 18, 15, 'gsec - unable to open database', NULL, NULL, 'c_pg');

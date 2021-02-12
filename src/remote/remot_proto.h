@@ -27,18 +27,13 @@
 #include "../common/classes/fb_string.h"
 #include "../common/config/config.h"
 #include "../common/classes/RefCounted.h"
-#include "../common/security.h"
+#include "../common/classes/ParsedList.h"
 #include "../common/xdr.h"
 #include "../remote/protocol.h"
 
 namespace Firebird
 {
 	class ClumpletReader;
-}
-
-namespace Remote
-{
-	typedef Auth::ParsedList ParsedList;
 }
 
 struct rem_port;
@@ -59,23 +54,13 @@ void		REMOTE_release_messages (struct RMessage*);
 void		REMOTE_release_request (struct Rrq *);
 void		REMOTE_reset_request (struct Rrq *, struct RMessage*);
 void		REMOTE_reset_statement (struct Rsr *);
-bool_t		REMOTE_getbytes (XDR*, SCHAR*, u_int);
+bool_t		REMOTE_getbytes (XDR*, SCHAR*, unsigned);
 LegacyPlugin REMOTE_legacy_auth(const char* nm, int protocol);
-Firebird::RefPtr<Config> REMOTE_get_config(const Firebird::PathName* dbName,
+Firebird::RefPtr<const Firebird::Config> REMOTE_get_config(const Firebird::PathName* dbName,
 	const Firebird::string* dpb_config = NULL);
 void		REMOTE_check_response(Firebird::IStatus* warning, Rdb* rdb, PACKET* packet, bool checkKeys = false);
 bool		REMOTE_inflate(rem_port*, PacketReceive*, UCHAR*, SSHORT, SSHORT*);
 bool		REMOTE_deflate(XDR*, ProtoWrite*, PacketSend*, bool flash);
-
-static inline void REMOTE_parseList(Remote::ParsedList& parsed, const Firebird::PathName& list)
-{
-	Auth::parseList(parsed, list);
-}
-
-static inline void REMOTE_makeList(Firebird::PathName& list, const Remote::ParsedList& parsed)
-{
-	Auth::makeList(list, parsed);
-}
 
 extern signed char wcCompatible[3][3];
 

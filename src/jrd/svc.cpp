@@ -65,9 +65,6 @@
 
 #include "../common/classes/DbImplementation.h"
 
-// Services table.
-#include "../jrd/svc_tab.h"
-
 // The switches tables. Needed only for utilities that run as service, too.
 #include "../common/classes/Switches.h"
 #include "../alice/aliceswi.h"
@@ -76,6 +73,15 @@
 #include "../utilities/gstat/dbaswi.h"
 #include "../utilities/nbackup/nbkswi.h"
 #include "../jrd/trace/traceswi.h"
+#include "../jrd/val_proto.h"
+
+// Service threads
+#include "../burp/burp_proto.h"
+#include "../alice/alice_proto.h"
+int main_gstat(Firebird::UtilSvc* uSvc);
+#include "../utilities/nbackup/nbk_proto.h"
+#include "../utilities/gsec/gsec_proto.h"
+#include "../jrd/trace/TraceService.h"
 #include "../jrd/val_proto.h"
 
 #ifdef HAVE_SYS_TYPES_H
@@ -136,6 +142,62 @@ namespace {
 	GlobalPtr<AllServices> allServices;	// protected by globalServicesMutex
 	volatile bool svcShutdown = false;
 
+	class ThreadCollect
+	{
+	public:
+		ThreadCollect(MemoryPool& p)
+			: threads(p)
+		{ }
+
+		void join()
+		{
+			// join threads to be sure they are gone when shutdown is complete
+			// no need locking something cause this is expected to run when services are closing
+			waitFor(threads);
+		}
+
+		void add(const Thread::Handle& h)
+		{
+			// put thread into completion wait queue when it finished running
+			MutexLockGuard g(threadsMutex, FB_FUNCTION);
+			fb_assert(h);
+			threads.add(h);
+		}
+
+		void houseKeeping()
+		{
+			if (!threads.hasData())
+				return;
+
+			// join finished threads
+			AllThreads t;
+			{ // mutex scope
+				MutexLockGuard g(threadsMutex, FB_FUNCTION);
+				t.assign(threads);
+				threads.clear();
+			}
+
+			waitFor(t);
+		}
+
+	private:
+		typedef Array<Thread::Handle> AllThreads;
+
+		static void waitFor(AllThreads& thr)
+		{
+			while (thr.hasData())
+			{
+				Thread::Handle h(thr.pop());
+				Thread::waitForCompletion(h);
+			}
+		}
+
+		AllThreads threads;
+		Mutex threadsMutex;
+	};
+
+	GlobalPtr<ThreadCollect> threadCollect;
+
 	void spbVersionError()
 	{
 		ERR_post(Arg::Gds(isc_bad_spb_form) <<
@@ -146,6 +208,36 @@ namespace {
 
 
 using namespace Jrd;
+
+namespace {
+const serv_entry services[] =
+{
+	{ isc_action_svc_backup, "Backup Database", BURP_main },
+	{ isc_action_svc_restore, "Restore Database", BURP_main },
+	{ isc_action_svc_repair, "Repair Database", ALICE_main },
+	{ isc_action_svc_add_user, "Add User", GSEC_main },
+	{ isc_action_svc_delete_user, "Delete User", GSEC_main },
+	{ isc_action_svc_modify_user, "Modify User", GSEC_main },
+	{ isc_action_svc_display_user, "Display User", GSEC_main },
+	{ isc_action_svc_properties, "Database Properties", ALICE_main },
+	{ isc_action_svc_db_stats, "Database Stats", main_gstat },
+	{ isc_action_svc_get_fb_log, "Get Log File", Service::readFbLog },
+	{ isc_action_svc_nbak, "Incremental Backup Database", NBACKUP_main },
+	{ isc_action_svc_nrest, "Incremental Restore Database", NBACKUP_main },
+	{ isc_action_svc_nfix, "Fixup Database after FS Copy", NBACKUP_main },
+	{ isc_action_svc_trace_start, "Start Trace Session", TRACE_main },
+	{ isc_action_svc_trace_stop, "Stop Trace Session", TRACE_main },
+	{ isc_action_svc_trace_suspend, "Suspend Trace Session", TRACE_main },
+	{ isc_action_svc_trace_resume, "Resume Trace Session", TRACE_main },
+	{ isc_action_svc_trace_list, "List Trace Sessions", TRACE_main },
+	{ isc_action_svc_set_mapping, "Set Domain Admins Mapping to RDB$ADMIN", GSEC_main },
+	{ isc_action_svc_drop_mapping, "Drop Domain Admins Mapping to RDB$ADMIN", GSEC_main },
+	{ isc_action_svc_display_user_adm, "Display User with Admin Info", GSEC_main },
+	{ isc_action_svc_validate, "Validate Database", VAL_service},
+	{ 0, NULL, NULL }
+};
+
+}
 
 Service::Validate::Validate(Service* svc)
 	: sharedGuard(globalServicesMutex, FB_FUNCTION)
@@ -257,7 +349,7 @@ void Service::getOptions(ClumpletReader& spb)
 			break;
 
 		case isc_spb_address_path:
-			spb.getString(svc_address_path);
+			spb.getData(svc_address_path);
 			{
 				ClumpletReader address_stack(ClumpletReader::UnTagged,
 					spb.getBytes(), spb.getClumpLength());
@@ -567,11 +659,10 @@ unsigned int Service::getAuthBlock(const unsigned char** bytes)
 
 void Service::fillDpb(ClumpletWriter& dpb)
 {
-	const char* providers = "Providers=" CURRENT_ENGINE;
-	dpb.insertString(isc_dpb_config, providers, fb_strlen(providers));
+	dpb.insertString(isc_dpb_config, EMBEDDED_PROVIDERS, fb_strlen(EMBEDDED_PROVIDERS));
 	if (svc_address_path.hasData())
 	{
-		dpb.insertString(isc_dpb_address_path, svc_address_path);
+		dpb.insertData(isc_dpb_address_path, svc_address_path);
 	}
 	if (svc_utf8)
 	{
@@ -591,6 +682,11 @@ void Service::fillDpb(ClumpletWriter& dpb)
 bool Service::utf8FileNames()
 {
 	return svc_utf8;
+}
+
+Firebird::ICryptKeyCallback* Service::getCryptCallback()
+{
+	return svc_crypt_callback;
 }
 
 void Service::need_admin_privs(Arg::StatusVector& status, const char* message)
@@ -644,7 +740,7 @@ namespace
 Service::Service(const TEXT* service_name, USHORT spb_length, const UCHAR* spb_data,
 				 Firebird::ICryptKeyCallback* crypt_callback)
 	: svc_status(getPool()), svc_parsed_sw(getPool()),
-	svc_stdout_head(0), svc_stdout_tail(0), svc_service(NULL), svc_service_run(NULL),
+	svc_stdout_head(0), svc_stdout_tail(0), svc_service_run(NULL),
 	svc_resp_alloc(getPool()), svc_resp_buf(0), svc_resp_ptr(0), svc_resp_buf_len(0),
 	svc_resp_len(0), svc_flags(SVC_finished), svc_user_flag(0), svc_spb_version(0),
 	svc_do_shutdown(false), svc_shutdown_in_progress(false), svc_timeout(false),
@@ -656,7 +752,10 @@ Service::Service(const TEXT* service_name, USHORT spb_length, const UCHAR* spb_d
 	svc_remote_pid(0), svc_trace_manager(NULL), svc_crypt_callback(crypt_callback),
 	svc_existence(FB_NEW_POOL(*getDefaultMemoryPool()) SvcMutex(this)),
 	svc_stdin_size_requested(0), svc_stdin_buffer(NULL), svc_stdin_size_preload(0),
-	svc_stdin_preload_requested(0), svc_stdin_user_size(0)
+	svc_stdin_preload_requested(0), svc_stdin_user_size(0), svc_thread(0)
+#ifdef DEV_BUILD
+	, svc_debug(false)
+#endif
 {
 	initStatus();
 
@@ -670,106 +769,88 @@ Service::Service(const TEXT* service_name, USHORT spb_length, const UCHAR* spb_d
 	// Since this moment we should remove this service from allServices in case of error thrown
 	try
 	{
+#ifdef DEV_BUILD
 		// If the service name begins with a slash, ignore it.
-		if (*service_name == '/' || *service_name == '\\') {
+		if (*service_name == '/' || *service_name == '\\')
 			service_name++;
-		}
-
-		// Find the service by looking for an exact match.
-		const string svcname(service_name);
-
-		const serv_entry* serv;
-		for (serv = services; serv->serv_name; serv++)
-		{
-			if (svcname == serv->serv_name)
-				break;
-		}
-
-		if (!serv->serv_name)
-		{
-			status_exception::raise(Arg::Gds(isc_service_att_err) <<
-									Arg::Gds(isc_svcnotdef) << Arg::Str(svcname));
-		}
+		string svcname(service_name);
+		if (svcname == "@@@")
+			svc_debug = true;
+#endif
 
 		// Process the service parameter block.
 		ClumpletReader spb(ClumpletReader::spbList, spb_data, spb_length, spbVersionError);
 		dumpAuthBlock("Jrd::Service() ctor", &spb, isc_spb_auth_block);
 		getOptions(spb);
 
-		// Perhaps checkout the user in the security database.
-		USHORT user_flag;
-		if (!strcmp(serv->serv_name, "anonymous")) {
-			user_flag = SVC_user_none;
-		}
-		else
+#ifdef DEV_BUILD
+		if (svc_debug)
 		{
-			if (!svc_username.hasData())
+			svc_trace_manager = FB_NEW_POOL(*getDefaultMemoryPool()) TraceManager(this);
+			svc_user_flag = SVC_user_dba;
+			return;
+		}
+#endif
+
+		// Perhaps checkout the user in the security database.
+		USHORT user_flag = 0;
+
+		if (!svc_username.hasData())
+		{
+			if (svc_auth_block.hasData())
 			{
-				if (svc_auth_block.hasData())
-				{
-					PathName dummy;
-					RefPtr<Config> config;
-					expandDatabaseName(svc_expected_db, dummy, &config);
+				// remote connection - use svc_auth_block
+				PathName dummy;
+				RefPtr<const Config> config;
+				expandDatabaseName(svc_expected_db, dummy, &config);
 
-					string trusted_role;
-					mapUser(svc_username, trusted_role, NULL, &svc_auth_block, svc_auth_block,
-						"services manager", NULL, config->getSecurityDatabase(), svc_crypt_callback);
-					trusted_role.upper();
-					svc_trusted_role = trusted_role == ADMIN_ROLE;
-				}
-				else
-				{
-					// we have embedded service connection, check OS auth
-					if (ISC_get_user(&svc_username, NULL, NULL))
-					{
-						svc_username = SYSDBA_USER_NAME;
-					}
-				}
+				Mapping mapping(Mapping::MAP_THROW_NOT_FOUND, svc_crypt_callback);
+				mapping.needAuthBlock(svc_auth_block);
+
+				mapping.setAuthBlock(svc_auth_block);
+				mapping.setSqlRole(svc_sql_role);
+				mapping.setErrorMessagesContextName("services manager");
+				mapping.setSecurityDbAlias(config->getSecurityDatabase(), nullptr);
+
+				string trusted_role;
+				mapping.mapUser(svc_username, trusted_role);
+				trusted_role.upper();
+				svc_trusted_role = trusted_role == ADMIN_ROLE;
 			}
-
-			if (!svc_username.hasData())
+			else
 			{
-				// user name and password are required while
-				// attaching to the services manager
-				status_exception::raise(Arg::Gds(isc_service_att_err) << Arg::Gds(isc_svcnouser));
-			}
-
-			if (svc_username.length() > USERNAME_LENGTH)
-			{
-				status_exception::raise(Arg::Gds(isc_long_login) <<
-					Arg::Num(svc_username.length()) << Arg::Num(USERNAME_LENGTH));
-			}
-
-			// Check that the validated user has the authority to access this service
-			if (svc_username != SYSDBA_USER_NAME && !svc_trusted_role) {
-				user_flag = SVC_user_any;
-			}
-			else {
-				user_flag = SVC_user_dba | SVC_user_any;
+				// we have embedded service connection, check OS auth
+				if (ISC_get_user(&svc_username, NULL, NULL))
+					svc_username = DBA_USER_NAME;
 			}
 		}
+
+		if (!svc_username.hasData())
+		{
+			// user name and password are required while
+			// attaching to the services manager
+			status_exception::raise(Arg::Gds(isc_service_att_err) << Arg::Gds(isc_svcnouser));
+		}
+
+		if (svc_username.length() > USERNAME_LENGTH)
+		{
+			status_exception::raise(Arg::Gds(isc_long_login) <<
+				Arg::Num(svc_username.length()) << Arg::Num(USERNAME_LENGTH));
+		}
+
+		// Check that the validated user has the authority to access this service
+		if (svc_username != DBA_USER_NAME && !svc_trusted_role)
+			user_flag = SVC_user_any;
+		else
+			user_flag = SVC_user_dba | SVC_user_any;
 
 		// move service switches in
-		string switches;
-		if (serv->serv_std_switches)
-			switches = serv->serv_std_switches;
-		if (svc_command_line.hasData() && serv->serv_std_switches)
-			switches += ' ';
-		switches += svc_command_line;
-
+		string switches = svc_command_line;
 		svc_flags |= switches.hasData() ? SVC_cmd_line : 0;
 		svc_perm_sw = switches;
 		svc_user_flag = user_flag;
-		svc_service = serv;
 
 		svc_trace_manager = FB_NEW_POOL(*getDefaultMemoryPool()) TraceManager(this);
-
-		// If an executable is defined for the service, try to fork a new thread.
-		// Only do this if we are working with a version 1 service
-		if (serv->serv_thd && svc_spb_version == isc_spb_version1)
-		{
-			start(serv);
-		}
 	}	// try
 	catch (const Firebird::Exception& ex)
 	{
@@ -968,6 +1049,8 @@ void Service::shutdownServices()
 
 		++pos;
 	}
+
+	threadCollect->join();
 }
 
 
@@ -1108,7 +1191,7 @@ ISC_STATUS Service::query2(thread_db* /*tdbb*/,
 				{
 					if (!(info = INF_put_item(isc_spb_dbname,
 											  (USHORT) databases[i].length(),
-											  (const UCHAR*) databases[i].c_str(),
+											  databases[i].c_str(),
 											  info, end)))
 					{
 						return 0;
@@ -1248,8 +1331,7 @@ ISC_STATUS Service::query2(thread_db* /*tdbb*/,
 		case isc_info_svc_server_version:
 			// The version of the server engine
 			{ // scope
-				static const UCHAR* pv = reinterpret_cast<const UCHAR*>(FB_VERSION);
-				info = INF_put_item(item, static_cast<USHORT>(strlen(FB_VERSION)), pv, info, end);
+				info = INF_put_item(item, static_cast<USHORT>(strlen(FB_VERSION)), FB_VERSION, info, end);
 				if (!info) {
 					return 0;
 				}
@@ -1259,12 +1341,9 @@ ISC_STATUS Service::query2(thread_db* /*tdbb*/,
 		case isc_info_svc_implementation:
 			// The server implementation - e.g. Firebird/sun4
 			{ // scope
-				string buf2 = DbImplementation::current.implementation();
-				info = INF_put_item(item, buf2.length(),
-									reinterpret_cast<const UCHAR*>(buf2.c_str()), info, end);
-				if (!info) {
+				const string buf2 = DbImplementation::current.implementation();
+				if (!(info = INF_put_item(item, buf2.length(), buf2.c_str(), info, end)))
 					return 0;
-				}
 			} // scope
 			break;
 
@@ -1286,15 +1365,14 @@ ISC_STATUS Service::query2(thread_db* /*tdbb*/,
 		case isc_info_svc_user_dbpath:
 			if (svc_user_flag & SVC_user_dba)
 			{
-				// The path to the user security database (security2.fdb)
-				char* pb = reinterpret_cast<char*>(buffer);
-				const RefPtr<Config> defConf(Config::getDefaultConfig());
-				strcpy(pb, defConf->getSecurityDatabase());
+				// The path to the user security database
+				PathName secDb;
+				RefPtr<const Config> config;
+				expandDatabaseName(svc_expected_db, secDb, &config);
+				expandDatabaseName(config->getSecurityDatabase(), secDb, nullptr);
 
-				if (!(info = INF_put_item(item, static_cast<USHORT>(strlen(pb)), buffer, info, end)))
-				{
+				if (!(info = INF_put_item(item, secDb.length(), secDb.c_str(), info, end)))
 					return 0;
-				}
 			}
 			else
 				need_admin_privs(status, "isc_info_svc_user_dbpath");
@@ -1342,9 +1420,7 @@ ISC_STATUS Service::query2(thread_db* /*tdbb*/,
 			if ( (l = length = svc_resp_len) )
 				length = MIN(end - (info + 5), l);
 			if (!(info = INF_put_item(item, length, svc_resp_ptr, info, end)))
-			{
 				return 0;
-			}
 			svc_resp_ptr += length;
 			svc_resp_len -= length;
 			if (length != l)
@@ -1357,9 +1433,8 @@ ISC_STATUS Service::query2(thread_db* /*tdbb*/,
 			get(buffer, 2, GET_BINARY, 0, &length);
 			l = (USHORT) gds__vax_integer(buffer, 2);
 			get(buffer, l, GET_BINARY, 0, &length);
-			if (!(info = INF_put_item(item, length, buffer, info, end))) {
+			if (!(info = INF_put_item(item, length, buffer, info, end)))
 				return 0;
-			}
 			break;
 
 		case isc_info_svc_line:
@@ -1408,13 +1483,9 @@ ISC_STATUS Service::query2(thread_db* /*tdbb*/,
 			else //if (!svc_stdin_size_requested)
 			{
 				if (!length && !(svc_flags & SVC_finished))
-				{
 					*info++ = isc_info_data_not_ready;
-				}
 				else if (item == isc_info_svc_to_eof && !(svc_flags & SVC_finished))
-				{
 					*info++ = isc_info_truncated;
-				}
 			}
 			break;
 
@@ -1578,15 +1649,12 @@ void Service::query(USHORT			send_item_length,
 				fb_assert(num_dbs == databases.getCount());
 
 				length = INF_convert(num_att, buffer);
-				info = INF_put_item(item, length, buffer, info, end);
-				if (!info) {
+				if (!(info = INF_put_item(item, length, buffer, info, end)))
 					return;
-				}
+
 				length = INF_convert(num_dbs, buffer);
-				info = INF_put_item(item, length, buffer, info, end);
-				if (!info) {
+				if (!(info = INF_put_item(item, length, buffer, info, end)))
 					return;
-				}
 			}
 			// Can not return error for service v.1 => simply ignore request
 			// else
@@ -1624,24 +1692,23 @@ void Service::query(USHORT			send_item_length,
 		case isc_info_svc_get_env_msg:
 			if (svc_user_flag & SVC_user_dba)
 			{
-				TEXT PathBuffer[MAXPATHLEN];
+				TEXT pathBuffer[MAXPATHLEN];
 				switch (item)
 				{
 				case isc_info_svc_get_env:
-					gds__prefix(PathBuffer, "");
+					gds__prefix(pathBuffer, "");
 					break;
 				case isc_info_svc_get_env_lock:
-					iscPrefixLock(PathBuffer, "", false);
+					iscPrefixLock(pathBuffer, "", false);
 					break;
 				case isc_info_svc_get_env_msg:
-					gds__prefix_msg(PathBuffer, "");
+					gds__prefix_msg(pathBuffer, "");
 				}
 
 				// Note: it is safe to use strlen to get a length of "buffer"
 				// because gds_prefix[_lock|_msg] return a zero-terminated
 				// string.
-				const UCHAR* pb = reinterpret_cast<const UCHAR*>(PathBuffer);
-				if (!(info = INF_put_item(item, static_cast<USHORT>(strlen(PathBuffer)), pb, info, end)))
+				if (!(info = INF_put_item(item, strlen(pathBuffer), pathBuffer, info, end)))
 					return;
 			}
 			// Can not return error for service v.1 => simply ignore request
@@ -1740,15 +1807,14 @@ void Service::query(USHORT			send_item_length,
 		case isc_info_svc_user_dbpath:
             if (svc_user_flag & SVC_user_dba)
             {
-				// The path to the user security database (security2.fdb)
-				char* pb = reinterpret_cast<char*>(buffer);
-				const RefPtr<Config> defConf(Config::getDefaultConfig());
-				strcpy(pb, defConf->getSecurityDatabase());
+				// The path to the user security database
+				PathName secDb;
+				RefPtr<const Config> config;
+				expandDatabaseName(svc_expected_db, secDb, &config);
+				expandDatabaseName(config->getSecurityDatabase(), secDb, nullptr);
 
-				if (!(info = INF_put_item(item, static_cast<USHORT>(strlen(pb)), buffer, info, end)))
-				{
+				if (!(info = INF_put_item(item, secDb.length(), secDb.c_str(), info, end)))
 					return;
-				}
 			}
 			// Can not return error for service v.1 => simply ignore request
 			// else
@@ -1797,9 +1863,7 @@ void Service::query(USHORT			send_item_length,
 			if ( (l = length = svc_resp_len) )
 				length = MIN(end - (info + 4), l);
 			if (!(info = INF_put_item(item, length, svc_resp_ptr, info, end)))
-			{
 				return;
-			}
 			svc_resp_ptr += length;
 			svc_resp_len -= length;
 			if (length != l)
@@ -1813,9 +1877,7 @@ void Service::query(USHORT			send_item_length,
 			l = (USHORT) gds__vax_integer(buffer, 2);
 			get(buffer, l, GET_BINARY, 0, &length);
 			if (!(info = INF_put_item(item, length, buffer, info, end)))
-			{
 				return;
-			}
 			break;
 
 		case isc_info_svc_line:
@@ -1895,8 +1957,9 @@ THREAD_ENTRY_DECLARE Service::run(THREAD_ENTRY_PARAM arg)
 	{
 		Service* svc = (Service*)arg;
 		RefPtr<SvcMutex> ref(svc->svc_existence);
-		int exit_code = svc->svc_service_run->serv_thd(svc);
+		exit_code = svc->svc_service_run->serv_thd(svc);
 
+		threadCollect->add(svc->svc_thread);
 		svc->started();
 		svc->svc_sem_full.release();
 		svc->finish(SVC_finished);
@@ -1904,6 +1967,7 @@ THREAD_ENTRY_DECLARE Service::run(THREAD_ENTRY_PARAM arg)
 	catch (const Exception& ex)
 	{
 		// Not much we can do here
+		exit_code = -1;
 		iscLogException("Exception in Service::run():", ex);
 	}
 
@@ -1984,6 +2048,7 @@ void Service::start(USHORT spb_length, const UCHAR* spb_data)
 		svc_id == isc_action_svc_restore ||
 		svc_id == isc_action_svc_nbak ||
 		svc_id == isc_action_svc_nrest ||
+		svc_id == isc_action_svc_nfix ||
 		svc_id == isc_action_svc_repair ||
 		svc_id == isc_action_svc_db_stats ||
 		svc_id == isc_action_svc_properties ||
@@ -2024,6 +2089,14 @@ void Service::start(USHORT spb_length, const UCHAR* spb_data)
 		}
 	}
 
+#ifdef DEV_BUILD
+	if (svc_debug)
+	{
+		::fprintf(stderr, "%s %s\n", svc_service_run->serv_name, svc_switches.c_str());
+		return;
+	}
+#endif
+
 	// All services except for get_ib_log require switches
 	spb.rewind();
 	if ((!svc_switches.hasData()) && actionNeedsArg(svc_id))
@@ -2035,7 +2108,7 @@ void Service::start(USHORT spb_length, const UCHAR* spb_data)
 	// Do not let everyone look at server log
 	if (svc_id == isc_action_svc_get_fb_log && !(svc_user_flag & SVC_user_dba))
     {
-       	status_exception::raise(Arg::Gds(isc_adm_task_denied));
+       	status_exception::raise(Arg::Gds(isc_adm_task_denied) << Arg::Gds(isc_not_dba));
     }
 
 	// Break up the command line into individual arguments.
@@ -2050,7 +2123,10 @@ void Service::start(USHORT spb_length, const UCHAR* spb_data)
 
 		svc_stdout_head = svc_stdout_tail = 0;
 
-		Thread::start(run, this, THREAD_medium);
+		Thread::start(run, this, THREAD_medium, &svc_thread);
+
+		// good time for housekeeping while new thread starts
+		threadCollect->houseKeeping();
 
 		// Check for the service being detached. This will prevent the thread
 		// from waiting infinitely if the client goes away.
@@ -2168,11 +2244,6 @@ void Service::start(const serv_entry* service_run)
 {
 	// Break up the command line into individual arguments.
 	parseSwitches();
-
-	if (svc_service && svc_service->serv_name)
-	{
-		argv[0] = svc_service->serv_name;
-	}
 
 	svc_service_run = service_run;
 	Thread::start(run, this, THREAD_medium);
@@ -2506,13 +2577,18 @@ void Service::conv_switches(ClumpletReader& spb, string& switches)
 }
 
 
-const TEXT* Service::find_switch(int in_spb_sw, const Switches::in_sw_tab_t* table)
+const TEXT* Service::find_switch(int in_spb_sw, const Switches::in_sw_tab_t* table, bool bitmask)
 {
 	for (const Switches::in_sw_tab_t* in_sw_tab = table; in_sw_tab->in_sw_name; in_sw_tab++)
 	{
-		if (in_spb_sw == in_sw_tab->in_spb_sw)
+		if (in_spb_sw == in_sw_tab->in_spb_sw && bitmask == in_sw_tab->in_sw_option)
 			return in_sw_tab->in_sw_name;
 	}
+
+#ifdef DEV_BUILD
+	if (isatty(fileno(stderr)))
+		fprintf(stderr, "Miss %d %s\n", in_spb_sw, bitmask ? "option" : "switch");
+#endif
 
 	return NULL;
 }
@@ -2569,6 +2645,9 @@ bool Service::process_switches(ClumpletReader& spb, string& switches)
 				break;
 
 			case isc_spb_nbk_level:
+#ifdef DEV_BUILD
+				if (!svc_debug)
+#endif
 				if (nbk_level >= 0 || nbk_guid.hasData())
 				{
 					(Arg::Gds(isc_unexp_spb_form) << Arg::Str("only one isc_spb_nbk_level or isc_spb_nbk_guid")).raise();
@@ -2577,6 +2656,9 @@ bool Service::process_switches(ClumpletReader& spb, string& switches)
 				break;
 
 			case isc_spb_nbk_guid:
+#ifdef DEV_BUILD
+				if (!svc_debug)
+#endif
 				if (nbk_level >= 0 || nbk_guid.hasData())
 				{
 					(Arg::Gds(isc_unexp_spb_form) <<
@@ -2606,6 +2688,35 @@ bool Service::process_switches(ClumpletReader& spb, string& switches)
 					return false;
 				}
 				get_action_svc_string(spb, switches);
+				break;
+
+			default:
+				return false;
+			}
+			break;
+
+		case isc_action_svc_nfix:
+			found = true;
+
+			switch (spb.getClumpTag())
+			{
+			case isc_spb_dbname:
+				if (nbk_database.hasData())
+				{
+					(Arg::Gds(isc_unexp_spb_form) << Arg::Str("only one isc_spb_dbname")).raise();
+				}
+				get_action_svc_string(spb, nbk_database);
+				break;
+
+			case isc_spb_options:
+				if (!get_action_svc_bitmask(spb, nbackup_in_sw_table, switches))
+				{
+					return false;
+				}
+				break;
+
+			default:
+				return false;
 			}
 			break;
 
@@ -2679,6 +2790,7 @@ bool Service::process_switches(ClumpletReader& spb, string& switches)
 
 			case isc_spb_sec_username:
 				get_action_svc_string_pos(spb, switches, userPos);
+				userPos = string::npos;
 				break;
 
 			default:
@@ -2819,6 +2931,19 @@ bool Service::process_switches(ClumpletReader& spb, string& switches)
 					return false;
 				}
 				break;
+			case isc_spb_res_replica_mode:
+				if (get_action_svc_parameter(spb.getClumpTag(), reference_burp_in_sw_table, switches))
+				{
+					unsigned int val = spb.getInt();
+					if (val >= FB_NELEM(burp_repl_mode_sw_table))
+					{
+						return false;
+					}
+					switches += burp_repl_mode_sw_table[val];
+					switches += " ";
+					break;
+				}
+				return false;
 			case isc_spb_verbose:
 				if (!get_action_svc_parameter(spb.getClumpTag(), reference_burp_in_sw_table, switches))
 				{
@@ -2828,6 +2953,11 @@ bool Service::process_switches(ClumpletReader& spb, string& switches)
 			case isc_spb_res_fix_fss_data:
 			case isc_spb_res_fix_fss_metadata:
 			case isc_spb_bkp_stat:
+			case isc_spb_bkp_skip_data:
+			case isc_spb_bkp_include_data:
+			case isc_spb_bkp_keyholder:
+			case isc_spb_bkp_keyname:
+			case isc_spb_bkp_crypt:
 				if (!get_action_svc_parameter(spb.getClumpTag(), reference_burp_in_sw_table, switches))
 				{
 					return false;
@@ -2888,11 +3018,24 @@ bool Service::process_switches(ClumpletReader& spb, string& switches)
 				if (get_action_svc_parameter(spb.getClumpTag(), alice_in_sw_table, switches))
 				{
 					unsigned int val = spb.getInt();
-					if (val >= FB_NELEM(alice_mode_sw_table))
+					if (val >= FB_NELEM(alice_shut_mode_sw_table))
 					{
 						return false;
 					}
-					switches += alice_mode_sw_table[val];
+					switches += alice_shut_mode_sw_table[val];
+					switches += " ";
+					break;
+				}
+				return false;
+			case isc_spb_prp_replica_mode:
+				if (get_action_svc_parameter(spb.getClumpTag(), alice_in_sw_table, switches))
+				{
+					unsigned int val = spb.getInt();
+					if (val >= FB_NELEM(alice_repl_mode_sw_table))
+					{
+						return false;
+					}
+					switches += alice_repl_mode_sw_table[val];
 					switches += " ";
 					break;
 				}
@@ -3001,6 +3144,7 @@ bool Service::process_switches(ClumpletReader& spb, string& switches)
 		{
 			(Arg::Gds(isc_missing_required_spb) << Arg::Str("isc_spb_nbk_file")).raise();
 		}
+
 		if (!get_action_svc_parameter(svc_action, nbackup_action_in_sw_table, switches))
 		{
 			return false;
@@ -3022,6 +3166,19 @@ bool Service::process_switches(ClumpletReader& spb, string& switches)
 		}
 		switches += nbk_database;
 		switches += nbk_file;
+		break;
+
+	case isc_action_svc_nfix:
+		if (nbk_database.isEmpty())
+		{
+			(Arg::Gds(isc_missing_required_spb) << Arg::Str("isc_spb_dbname")).raise();
+		}
+
+		if (!get_action_svc_parameter(svc_action, nbackup_action_in_sw_table, switches))
+		{
+			return false;
+		}
+		switches += nbk_database;
 		break;
 
 	case isc_action_svc_validate:
@@ -3047,7 +3204,7 @@ bool Service::get_action_svc_bitmask(const ClumpletReader& spb,
 	{
 		if (opt & mask)
 		{
-			const TEXT* s_ptr = find_switch((opt & mask), table);
+			const TEXT* s_ptr = find_switch((opt & mask), table, true);
 			if (!s_ptr)
 			{
 				return false;
@@ -3087,7 +3244,7 @@ void Service::get_action_svc_string_pos(const ClumpletReader& spb, string& switc
 void Service::get_action_svc_data(const ClumpletReader& spb, string& switches, bool bigint)
 {
 	string s;
-	s.printf("%" SQUADFORMAT" ", bigint ? spb.getBigInt() : (SINT64) spb.getInt());
+	s.printf("%" SQUADFORMAT" ", (bigint ? spb.getBigInt() : (SINT64) spb.getInt()));
 	switches += s;
 }
 
@@ -3096,7 +3253,7 @@ bool Service::get_action_svc_parameter(UCHAR action,
 									   const Switches::in_sw_tab_t* table,
 									   string& switches)
 {
-	const TEXT* s_ptr = find_switch(action, table);
+	const TEXT* s_ptr = find_switch(action, table, false);
 	if (!s_ptr)
 	{
 		return false;
@@ -3111,10 +3268,15 @@ bool Service::get_action_svc_parameter(UCHAR action,
 
 const char* Service::getServiceMgr() const
 {
-	return svc_service ? svc_service->serv_name : NULL;
+	return "service_mgr";
 }
 
 const char* Service::getServiceName() const
 {
 	return svc_service_run ? svc_service_run->serv_name : NULL;
+}
+
+bool Service::getUserAdminFlag() const
+{
+	return (svc_user_flag & SVC_user_dba);
 }

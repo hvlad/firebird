@@ -36,8 +36,8 @@
 
 namespace Jrd {
 
-bool checkCreateDatabaseGrant(const Firebird::string& userName, const Firebird::string& trustedRole,
-	const Firebird::string& sqlRole, const char* securityDb);
+bool checkCreateDatabaseGrant(const Firebird::MetaString& userName, const Firebird::MetaString& trustedRole,
+	const Firebird::MetaString& sqlRole, const char* securityDb);
 
 class DbCreatorsScan: public VirtualTableScan
 {
@@ -48,8 +48,9 @@ public:
 	{}
 
 protected:
-	const Format* getFormat(thread_db* tdbb, jrd_rel* relation) const;
-	bool retrieveRecord(thread_db* tdbb, jrd_rel* relation, FB_UINT64 position, Record* record) const;
+	const Format* getFormat(thread_db* tdbb, jrd_rel* relation) const override;
+	bool retrieveRecord(thread_db* tdbb, jrd_rel* relation, FB_UINT64 position,
+		Record* record) const override;
 };
 
 class DbCreatorsList : public SnapshotData

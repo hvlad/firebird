@@ -41,6 +41,9 @@
 #include "../common/sdl_proto.h"
 #include "../common/StatusHolder.h"
 #include "../common/classes/stack.h"
+#include "../common/classes/BatchCompletionState.h"
+#include "../common/utils_proto.h"
+#include "../dsql/DsqlBatch.h"
 
 using namespace Firebird;
 
@@ -70,7 +73,7 @@ inline bool_t P_TRUE(XDR*, PACKET*)
 {
 	return TRUE;
 }
-inline bool_t P_FALSE(XDR*, PACKET*)
+inline bool_t P_FALSE(XDR* xdrs, PACKET*)
 {
 	return FALSE;
 }
@@ -84,6 +87,8 @@ inline void DEBUG_XDR_FREE(XDR*, const void*, const void*, ULONG)
 {
 }
 #endif // DEBUG_XDR_MEMORY
+
+#define P_CHECK(xdr, p, st) if (st.getState() & IStatus::STATE_ERRORS) return P_FALSE(xdr, p)
 
 #define MAP(routine, ptr)	if (!routine (xdrs, &ptr)) return P_FALSE(xdrs, p);
 const ULONG MAX_OPAQUE		= 32768;
@@ -112,6 +117,10 @@ static bool_t xdr_sql_blr(XDR*, SLONG, CSTRING*, bool, SQL_STMT_TYPE);
 static bool_t xdr_sql_message(XDR*, SLONG);
 static bool_t xdr_trrq_blr(XDR*, CSTRING*);
 static bool_t xdr_trrq_message(XDR*, USHORT);
+static bool_t xdr_bytes(XDR*, void*, ULONG);
+static bool_t xdr_blob_stream(XDR*, SSHORT, CSTRING*);
+static Rsr* getStatement(XDR*, USHORT);
+
 
 #include "../common/xdr_proto.h"
 
@@ -284,6 +293,11 @@ bool_t xdr_protocol(XDR* xdrs, PACKET* p)
 
 	if (!xdr_enum(xdrs, reinterpret_cast<xdr_op*>(&p->p_operation)))
 		return P_FALSE(xdrs, p);
+
+#if COMPRESS_DEBUG > 1
+	fprintf(stderr, "operation=%d %c\n", p->p_operation,
+		xdrs->x_op == XDR_ENCODE ? 'E' : xdrs->x_op == XDR_DECODE ? 'D' : xdrs->x_op == XDR_FREE ? 'F' : 'U');
+#endif
 
 	switch (p->p_operation)
 	{
@@ -641,6 +655,11 @@ bool_t xdr_protocol(XDR* xdrs, PACKET* p)
 			}
 			MAP(xdr_short, reinterpret_cast<SSHORT&>(sqldata->p_sqldata_out_message_number));
 		}
+		{ // scope
+			rem_port* port = (rem_port*) xdrs->x_public;
+			if (port->port_protocol >= PROTOCOL_STMT_TOUT)
+				MAP(xdr_u_long, sqldata->p_sqldata_timeout);
+		}
 		DEBUG_PRINTSIZE(xdrs, p->p_operation);
 		return P_TRUE(xdrs, p);
 
@@ -796,6 +815,297 @@ bool_t xdr_protocol(XDR* xdrs, PACKET* p)
 		{
 			P_CRYPT_CALLBACK* cc = &p->p_cc;
 			MAP(xdr_cstring, cc->p_cc_data);
+
+			rem_port* port = (rem_port*) xdrs->x_public;
+			// If the protocol is 0 we are in the process of establishing a connection.
+			// crypt_key_callback at this phaze means server protocol is at least P15
+			if (port->port_protocol >= PROTOCOL_VERSION14 || port->port_protocol == 0)
+				MAP(xdr_short, reinterpret_cast<SSHORT&>(cc->p_cc_reply));
+
+			DEBUG_PRINTSIZE(xdrs, p->p_operation);
+
+			return P_TRUE(xdrs, p);
+		}
+
+	case op_batch_create:
+		{
+			P_BATCH_CREATE* b = &p->p_batch_create;
+			MAP(xdr_short, reinterpret_cast<SSHORT&>(b->p_batch_statement));
+			MAP(xdr_cstring_const, b->p_batch_blr);
+			MAP(xdr_u_long, b->p_batch_msglen);
+			MAP(xdr_cstring_const, b->p_batch_pb);
+
+			DEBUG_PRINTSIZE(xdrs, p->p_operation);
+
+			return P_TRUE(xdrs, p);
+		}
+
+	case op_batch_msg:
+		{
+			P_BATCH_MSG* b = &p->p_batch_msg;
+			MAP(xdr_short, reinterpret_cast<SSHORT&>(b->p_batch_statement));
+			MAP(xdr_u_long, b->p_batch_messages);
+
+			if (xdrs->x_op == XDR_FREE)
+			{
+				MAP(xdr_cstring, b->p_batch_data);
+				return P_TRUE(xdrs, p);
+			}
+
+			rem_port* port = (rem_port*) xdrs->x_public;
+			SSHORT statement_id = b->p_batch_statement;
+			Rsr* statement;
+			if (statement_id >= 0)
+			{
+				if (static_cast<ULONG>(statement_id) >= port->port_objects.getCount())
+					return P_FALSE(xdrs, p);
+
+				try
+				{
+					statement = port->port_objects[statement_id];
+				}
+				catch (const status_exception&)
+				{
+					return P_FALSE(xdrs, p);
+				}
+			}
+			else
+			{
+				statement = port->port_statement;
+			}
+
+			if (!statement)
+				return P_FALSE(xdrs, p);
+
+			ULONG count = b->p_batch_messages;
+			ULONG size = statement->rsr_batch_size;
+			if (xdrs->x_op == XDR_DECODE)
+			{
+				b->p_batch_data.cstr_length = (count ? count : 1) * size;
+				alloc_cstring(xdrs, &b->p_batch_data);
+			}
+
+			RMessage* message = statement->rsr_buffer;
+			if (!message)
+				return P_FALSE(xdrs, p);
+			statement->rsr_buffer = message->msg_next;
+			message->msg_address = b->p_batch_data.cstr_address;
+
+			while (count--)
+			{
+				DEB_RBATCH(fprintf(stderr, "BatRem: xdr packed msg\n"));
+				if (!xdr_packed_message(xdrs, message, statement->rsr_format))
+					return P_FALSE(xdrs, p);
+				message->msg_address += statement->rsr_batch_size;
+			}
+
+			message->msg_address = nullptr;
+			DEBUG_PRINTSIZE(xdrs, p->p_operation);
+
+			return P_TRUE(xdrs, p);
+		}
+
+	case op_batch_exec:
+		{
+			P_BATCH_EXEC* b = &p->p_batch_exec;
+			MAP(xdr_short, reinterpret_cast<SSHORT&>(b->p_batch_statement));
+			MAP(xdr_short, reinterpret_cast<SSHORT&>(b->p_batch_transaction));
+
+			if (xdrs->x_op != XDR_FREE)
+				DEB_RBATCH(fprintf(stderr, "BatRem: xdr execute\n"));
+
+			return P_TRUE(xdrs, p);
+		}
+
+	case op_batch_cs:
+		{
+			P_BATCH_CS* b = &p->p_batch_cs;
+			MAP(xdr_short, reinterpret_cast<SSHORT&>(b->p_batch_statement));
+			MAP(xdr_u_long, b->p_batch_reccount);
+			MAP(xdr_u_long, b->p_batch_updates);
+			MAP(xdr_u_long, b->p_batch_vectors);
+			MAP(xdr_u_long, b->p_batch_errors);
+
+			if (xdrs->x_op == XDR_FREE)
+				return P_TRUE(xdrs, p);
+
+			rem_port* port = (rem_port*) xdrs->x_public;
+			SSHORT statement_id = b->p_batch_statement;
+			DEB_RBATCH(fprintf(stderr, "BatRem: xdr CS %d\n", statement_id));
+			Rsr* statement;
+
+			if (statement_id >= 0)
+			{
+				if (static_cast<ULONG>(statement_id) >= port->port_objects.getCount())
+					return P_FALSE(xdrs, p);
+
+				try
+				{
+					statement = port->port_objects[statement_id];
+				}
+				catch (const status_exception&)
+				{
+					return P_FALSE(xdrs, p);
+				}
+			}
+			else
+			{
+				statement = port->port_statement;
+			}
+
+			if (!statement)
+				return P_FALSE(xdrs, p);
+
+			LocalStatus ls;
+			CheckStatusWrapper status_vector(&ls);
+
+			if ((xdrs->x_op == XDR_DECODE) && (!b->p_batch_updates))
+			{
+				DEB_RBATCH(fprintf(stderr, "BatRem: xdr reccount=%d\n", b->p_batch_reccount));
+				statement->rsr_batch_cs->regSize(b->p_batch_reccount);
+			}
+
+			// Process update counters
+			DEB_RBATCH(fprintf(stderr, "BatRem: xdr up %d\n", b->p_batch_updates));
+			for (unsigned i = 0; i < b->p_batch_updates; ++i)
+			{
+				SLONG v;
+
+				if (xdrs->x_op == XDR_ENCODE)
+				{
+					v = statement->rsr_batch_ics->getState(&status_vector, i);
+					P_CHECK(xdrs, p, status_vector);
+				}
+
+				MAP(xdr_long, v);
+
+				if (xdrs->x_op == XDR_DECODE)
+				{
+					statement->rsr_batch_cs->regUpdate(v);
+				}
+			}
+
+			// Process status vectors
+			ULONG pos = 0u;
+			LocalStatus to;
+			DEB_RBATCH(fprintf(stderr, "BatRem: xdr sv %d\n", b->p_batch_vectors));
+
+			for (unsigned i = 0; i < b->p_batch_vectors; ++i, ++pos)
+			{
+				DynamicStatusVector s;
+				DynamicStatusVector* ptr = NULL;
+
+				if (xdrs->x_op == XDR_ENCODE)
+				{
+					pos = statement->rsr_batch_ics->findError(&status_vector, pos);
+					P_CHECK(xdrs, p, status_vector);
+					if (pos == IBatchCompletionState::NO_MORE_ERRORS)
+						return P_FALSE(xdrs, p);
+
+					statement->rsr_batch_ics->getStatus(&status_vector, &to, pos);
+					if (status_vector.getState() & IStatus::STATE_ERRORS)
+						continue;
+
+					s.load(&to);
+					ptr = &s;
+				}
+
+				MAP(xdr_u_long, pos);
+
+				if (!xdr_status_vector(xdrs, ptr))
+					return P_FALSE(xdrs, p);
+
+				if (xdrs->x_op == XDR_DECODE)
+				{
+					Firebird::Arg::StatusVector sv(ptr->value());
+					sv.copyTo(&to);
+					delete ptr;
+					statement->rsr_batch_cs->regErrorAt(pos, &to);
+				}
+			}
+
+			// Process status-less errors
+			pos = 0u;
+			DEB_RBATCH(fprintf(stderr, "BatRem: xdr err %d\n", b->p_batch_errors));
+
+			for (unsigned i = 0; i < b->p_batch_errors; ++i, ++pos)
+			{
+				if (xdrs->x_op == XDR_ENCODE)
+				{
+					pos = statement->rsr_batch_ics->findError(&status_vector, pos);
+					P_CHECK(xdrs, p, status_vector);
+					if (pos == IBatchCompletionState::NO_MORE_ERRORS)
+						return P_FALSE(xdrs, p);
+
+					statement->rsr_batch_ics->getStatus(&status_vector, &to, pos);
+					if (!(status_vector.getState() & IStatus::STATE_ERRORS))
+						continue;
+				}
+
+				MAP(xdr_u_long, pos);
+
+				if (xdrs->x_op == XDR_DECODE)
+				{
+					statement->rsr_batch_cs->regErrorAt(pos, nullptr);
+				}
+			}
+
+			return P_TRUE(xdrs, p);
+		}
+
+	case op_batch_rls:
+		{
+			P_BATCH_FREE* b = &p->p_batch_free;
+			MAP(xdr_short, reinterpret_cast<SSHORT&>(b->p_batch_statement));
+
+			if (xdrs->x_op != XDR_FREE)
+				DEB_RBATCH(fprintf(stderr, "BatRem: xdr release\n"));
+
+			return P_TRUE(xdrs, p);
+		}
+
+	case op_batch_set_bpb:
+		{
+			P_BATCH_SETBPB* b = &p->p_batch_setbpb;
+			MAP(xdr_short, reinterpret_cast<SSHORT&>(b->p_batch_statement));
+			MAP(xdr_cstring_const, b->p_batch_blob_bpb);
+
+			Rsr* statement = getStatement(xdrs, b->p_batch_statement);
+			if (!statement)
+				return P_FALSE(xdrs, p);
+			if (fb_utils::isBpbSegmented(b->p_batch_blob_bpb.cstr_length, b->p_batch_blob_bpb.cstr_address))
+				statement->rsr_batch_flags |= (1 << Jrd::DsqlBatch::FLAG_DEFAULT_SEGMENTED);
+			else
+				statement->rsr_batch_flags &= ~(1 << Jrd::DsqlBatch::FLAG_DEFAULT_SEGMENTED);
+
+			return P_TRUE(xdrs, p);
+		}
+
+	case op_batch_regblob:
+		{
+			P_BATCH_REGBLOB* b = &p->p_batch_regblob;
+			MAP(xdr_short, reinterpret_cast<SSHORT&>(b->p_batch_statement));
+			MAP(xdr_quad, b->p_batch_exist_id);
+			MAP(xdr_quad, b->p_batch_blob_id);
+
+			return P_TRUE(xdrs, p);
+		}
+
+	case op_batch_blob_stream:
+		{
+			P_BATCH_BLOB* b = &p->p_batch_blob;
+			MAP(xdr_short, reinterpret_cast<SSHORT&>(b->p_batch_statement));
+			if (!xdr_blob_stream(xdrs, b->p_batch_statement, &b->p_batch_blob_data))
+				return P_FALSE(xdrs, p);
+
+			return P_TRUE(xdrs, p);
+		}
+
+	case op_repl_data:
+		{
+			P_REPLICATE* repl = &p->p_replicate;
+			MAP(xdr_short, reinterpret_cast<SSHORT&>(repl->p_repl_database));
+			MAP(xdr_cstring_const, repl->p_repl_data);
 			DEBUG_PRINTSIZE(xdrs, p->p_operation);
 
 			return P_TRUE(xdrs, p);
@@ -811,6 +1121,25 @@ bool_t xdr_protocol(XDR* xdrs, PACKET* p)
 #endif
 		return P_FALSE(xdrs, p);
 	}
+}
+
+
+static bool_t xdr_bytes(XDR* xdrs, void* bytes, ULONG size)
+{
+	switch (xdrs->x_op)
+	{
+	case XDR_ENCODE:
+		if (!xdrs->x_ops->x_putbytes(xdrs, reinterpret_cast<const SCHAR*>(bytes), size))
+			return FALSE;
+		break;
+
+	case XDR_DECODE:
+		if (!xdrs->x_ops->x_getbytes(xdrs, reinterpret_cast<SCHAR*>(bytes), size))
+			return FALSE;
+		break;
+	}
+
+	return TRUE;
 }
 
 
@@ -1870,4 +2199,245 @@ static void reset_statement( XDR* xdrs, SSHORT statement_id)
 		catch (const status_exception&)
 		{} // no-op
 	}
+}
+
+static Rsr* getStatement(XDR* xdrs, USHORT statement_id)
+{
+	rem_port* port = (rem_port*) xdrs->x_public;
+
+	if (statement_id >= 0)
+	{
+		if (statement_id >= port->port_objects.getCount())
+			return nullptr;
+
+		try
+		{
+			return port->port_objects[statement_id];
+		}
+		catch (const status_exception&)
+		{
+			return nullptr;
+		}
+	}
+
+	return port->port_statement;
+}
+
+static bool_t xdr_blob_stream(XDR* xdrs, SSHORT statement_id, CSTRING* strmPortion)
+{
+	if (xdrs->x_op == XDR_FREE)
+		return xdr_cstring(xdrs, strmPortion);
+
+	Rsr* statement = getStatement(xdrs, statement_id);
+	if (!statement)
+		return FALSE;
+
+	// create local copy - required in a case when packet is not complete and will be restarted
+	Rsr::BatchStream localStrm(statement->rsr_batch_stream);
+
+	struct BlobFlow
+	{
+		ULONG remains;
+		UCHAR* streamPtr;
+		ULONG& blobSize;
+		ULONG& bpbSize;
+		ULONG& segSize;
+
+		BlobFlow(Rsr::BatchStream* bs)
+			: remains(0), streamPtr(NULL),
+			  blobSize(bs->blobRemaining), bpbSize(bs->bpbRemaining), segSize(bs->segRemaining)
+		{ }
+
+		void newBlob(ULONG totalSize, ULONG parSize)
+		{
+			blobSize = totalSize;
+			bpbSize = parSize;
+			segSize = 0;
+		}
+
+		void move(ULONG step)
+		{
+			move2(step);
+			blobSize -= step;
+		}
+
+		void moveBpb(ULONG step)
+		{
+			move(step);
+			bpbSize -= step;
+		}
+
+		void moveSeg(ULONG step)
+		{
+			move(step);
+			segSize -= step;
+		}
+
+		bool align(ULONG alignment)
+		{
+			ULONG a = IPTR(streamPtr) % alignment;
+			if (a)
+			{
+				a = alignment - a;
+				move2(a);
+				if (blobSize)
+					blobSize -= a;
+			}
+			return a;
+		}
+
+private:
+		void move2(ULONG step)
+		{
+			streamPtr += step;
+			remains -= step;
+		}
+	};
+
+	BlobFlow flow(&localStrm);
+
+	if (xdrs->x_op == XDR_ENCODE)
+	{
+		flow.remains = strmPortion->cstr_length;
+		strmPortion->cstr_length += localStrm.hdrPrevious;
+	}
+	if (!xdr_u_long(xdrs, &strmPortion->cstr_length))
+		return FALSE;
+	if (xdrs->x_op == XDR_DECODE)
+		flow.remains = strmPortion->cstr_length;
+
+	fb_assert(localStrm.alignment);
+	if (flow.remains % localStrm.alignment)
+		return FALSE;
+	if (!flow.remains)
+		return TRUE;
+
+	if (xdrs->x_op == XDR_DECODE)
+		alloc_cstring(xdrs, strmPortion);
+
+	flow.streamPtr = strmPortion->cstr_address;
+	if (IPTR(flow.streamPtr) % localStrm.alignment != 0)
+		return FALSE;
+
+	while (flow.remains)
+	{
+		if (!flow.blobSize)		// we should process next blob header
+		{
+			// align data stream
+			if (flow.align(localStrm.alignment))
+				continue;
+
+			// check for partial header in the stream
+			if (flow.remains + localStrm.hdrPrevious < Rsr::BatchStream::SIZEOF_BLOB_HEAD)
+			{
+				// On the receiver that means packet protocol processing is complete: actual
+				// size of packet is sligtly less than passed in batch_blob_data.cstr_length.
+				if (xdrs->x_op == XDR_DECODE)
+					strmPortion->cstr_length -= flow.remains;
+				// On transmitter reserve partial header for future use
+				else
+					localStrm.saveData(flow.streamPtr, flow.remains);
+
+				// Done with packet
+				break;
+			}
+
+			// parse blob header
+			fb_assert(intptr_t(flow.streamPtr) % localStrm.alignment == 0);
+			unsigned char* hdrPtr = flow.streamPtr;	// default is to use header in main buffer
+			unsigned hdrOffset = Rsr::BatchStream::SIZEOF_BLOB_HEAD;
+			if (localStrm.hdrPrevious)
+			{
+				// on transmitter reserved partial header may be used
+				fb_assert(xdrs->x_op == XDR_ENCODE);
+				hdrOffset -= localStrm.hdrPrevious;
+				localStrm.saveData(flow.streamPtr, hdrOffset);
+				hdrPtr = localStrm.hdr;
+			}
+
+			ISC_QUAD* batchBlobId = reinterpret_cast<ISC_QUAD*>(hdrPtr);
+			ULONG* blobSize = reinterpret_cast<ULONG*>(hdrPtr + sizeof(ISC_QUAD));
+			ULONG* bpbSize = reinterpret_cast<ULONG*>(hdrPtr + sizeof(ISC_QUAD) + sizeof(ULONG));
+			if (!xdr_quad(xdrs, batchBlobId))
+				return FALSE;
+			if (!xdr_u_long(xdrs, blobSize))
+				return FALSE;
+			if (!xdr_u_long(xdrs, bpbSize))
+				return FALSE;
+
+			flow.move(hdrOffset);
+			localStrm.hdrPrevious = 0;
+			flow.newBlob(*blobSize, *bpbSize);
+			localStrm.curBpb.clear();
+
+			if (!flow.bpbSize)
+				localStrm.segmented = statement->rsr_batch_flags & (1 << Jrd::DsqlBatch::FLAG_DEFAULT_SEGMENTED);
+
+			continue;
+		}
+
+		// process BPB
+		if (flow.bpbSize)
+		{
+			ULONG size = MIN(flow.bpbSize, flow.remains);
+			if (!xdr_bytes(xdrs, flow.streamPtr, size))
+				return FALSE;
+			localStrm.curBpb.add(flow.streamPtr, size);
+			flow.moveBpb(size);
+			if (flow.bpbSize == 0)		// bpb is passed completely
+			{
+				try
+				{
+					localStrm.segmented = fb_utils::isBpbSegmented(localStrm.curBpb.getCount(),
+						localStrm.curBpb.begin());
+				}
+				catch (const Exception&)
+				{
+					return FALSE;
+				}
+				localStrm.curBpb.clear();
+			}
+
+			continue;
+		}
+
+		// pass data
+		ULONG dataSize = MIN(flow.blobSize, flow.remains);
+		if (dataSize)
+		{
+			if (localStrm.segmented)
+			{
+				if (!flow.segSize)
+				{
+					if (flow.align(IBatch::BLOB_SEGHDR_ALIGN))
+						continue;
+
+					USHORT* segSize = reinterpret_cast<USHORT*>(flow.streamPtr);
+					if (!xdr_u_short(xdrs, segSize))
+						return FALSE;
+					flow.segSize = *segSize;
+					flow.move(sizeof(USHORT));
+
+					if (flow.segSize > flow.blobSize)
+						return FALSE;
+				}
+
+				dataSize = MIN(flow.segSize, flow.remains);
+				if (!xdr_bytes(xdrs, flow.streamPtr, dataSize))
+					return FALSE;
+				flow.moveSeg(dataSize);
+			}
+			else
+			{
+				if (!xdr_bytes(xdrs, flow.streamPtr, dataSize))
+					return FALSE;
+				flow.move(dataSize);
+			}
+		}
+	}
+
+	// packet processed successfully - save stream data for next one
+	statement->rsr_batch_stream = localStrm;
+
+	return TRUE;
 }

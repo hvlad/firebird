@@ -76,7 +76,7 @@ typedef ULONG ISC_ULONG;
 typedef SINT64 ISC_INT64;
 typedef FB_UINT64 ISC_UINT64;
 
-#include "types_pub.h"
+#include "firebird/impl/types_pub.h"
 
 typedef ISC_QUAD SQUAD;
 
@@ -125,6 +125,7 @@ typedef void (*ErrorFunction) (const Firebird::Arg::StatusVector& v);
 typedef void (*FPTR_ERROR) (ISC_STATUS, ...);
 
 typedef ULONG RCRD_OFFSET;
+typedef ULONG RCRD_LENGTH;
 typedef USHORT FLD_LENGTH;
 /* CVC: internal usage. I suspect the only reason to return int is that
 vmslock.cpp:LOCK_convert() calls VMS' sys$enq that may require this signature,
@@ -151,9 +152,11 @@ inline T FB_ALIGN(T n, uintptr_t b)
 
 // Various object IDs (longer-than-32-bit)
 
-typedef SINT64 AttNumber;
-typedef SINT64 TraNumber;
-typedef SINT64 StmtNumber;
+typedef FB_UINT64 AttNumber;
+typedef FB_UINT64 TraNumber;
+typedef FB_UINT64 StmtNumber;
+typedef FB_UINT64 CommitNumber;
+typedef ULONG SnapshotHandle;
 typedef SINT64 SavNumber;
 
 #endif /* INCLUDE_FB_TYPES_H */

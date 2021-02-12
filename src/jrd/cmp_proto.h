@@ -40,18 +40,14 @@ Jrd::ValueExprNode* CMP_clone_node(Jrd::thread_db*, Jrd::CompilerScratch*, Jrd::
 Jrd::jrd_req* CMP_compile2(Jrd::thread_db*, const UCHAR* blr, ULONG blr_length, bool internal_flag,
 	ULONG = 0, const UCHAR* = NULL);
 Jrd::CompilerScratch::csb_repeat* CMP_csb_element(Jrd::CompilerScratch*, StreamType element);
-void CMP_expand_view_nodes(Jrd::thread_db* tdbb, Jrd::CompilerScratch* csb, StreamType stream,
-	Jrd::ValueExprNodeStack& stack, UCHAR blrOp, bool allStreams);
 const Jrd::Format* CMP_format(Jrd::thread_db*, Jrd::CompilerScratch*, StreamType);
 Jrd::IndexLock* CMP_get_index_lock(Jrd::thread_db*, Jrd::jrd_rel*, USHORT);
-ULONG CMP_impure(Jrd::CompilerScratch*, ULONG);
 Jrd::jrd_req* CMP_make_request(Jrd::thread_db*, Jrd::CompilerScratch*, bool);
-void CMP_mark_variant(Jrd::CompilerScratch*, StreamType stream);
 Jrd::ItemInfo* CMP_pass2_validation(Jrd::thread_db*, Jrd::CompilerScratch*, const Jrd::Item&);
 
-void CMP_post_access(Jrd::thread_db*, Jrd::CompilerScratch*, const Firebird::MetaName&, SLONG,
-					 Jrd::SecurityClass::flags_t, SLONG type_name, const Firebird::MetaName&,
-					 const Firebird::MetaName& = "");
+void CMP_post_access(Jrd::thread_db*, Jrd::CompilerScratch*, const Jrd::MetaName&, SLONG ssRelationId,
+					 Jrd::SecurityClass::flags_t, SLONG type_name, const Jrd::MetaName&,
+					 const Jrd::MetaName& = "");
 
 void CMP_post_procedure_access(Jrd::thread_db*, Jrd::CompilerScratch*, Jrd::jrd_prc*);
 void CMP_post_resource(Jrd::ResourceList*, void*, Jrd::Resource::rsc_s, USHORT);

@@ -36,7 +36,7 @@
 namespace Firebird {
 
 // Very fast static array of simple types
-template <typename T, FB_SIZE_T Capacity>
+template <typename T, FB_SIZE_T Capacity, typename A = char>
 class Vector
 {
 public:
@@ -85,6 +85,14 @@ public:
 		return &data[index];
 	}
 
+	T* removeCount(const FB_SIZE_T index, const FB_SIZE_T n) throw()
+	{
+  		fb_assert(index + n <= count);
+  		memmove(data + index, data + index + n, sizeof(T) * (count - index - n));
+		count -= n;
+		return &data[index];
+	}
+
 	void shrink(FB_SIZE_T newCount) throw()
 	{
 		fb_assert(newCount <= count);
@@ -118,6 +126,20 @@ public:
 		return data[count];
 	}
 
+	void push(const T* items, const FB_SIZE_T itemsCount)
+	{
+		fb_assert(count <= FB_MAX_SIZEOF - itemsCount);
+		fb_assert(count + itemsCount <= Capacity);
+		memcpy(data + count, items, sizeof(T) * itemsCount);
+		count += itemsCount;
+	}
+
+	void append(const T* items, const FB_SIZE_T itemsCount)
+	{
+		push(items, itemsCount);
+	}
+
+
 	// This method only assigns "pos" if the element is found.
 	// Maybe we should modify it to iterate directy with "pos".
 	bool find(const T& item, FB_SIZE_T& pos) const
@@ -134,7 +156,13 @@ public:
 	}
 
 protected:
-	FB_SIZE_T count;
+	union
+	{
+		FB_SIZE_T count;
+		A align;
+	};
+	// Do not insert data members between align and data:
+	// alignment of data is ensured by preceding union
 	T data[Capacity];
 };
 
@@ -189,6 +217,123 @@ public:
 		this->insert(pos, item);
 		return pos;
 	}
+};
+
+
+// Templates to allow to iterate thru array\vector of values and process items
+// in some way. Processed items are marked and skipped at next iteration circle.
+// Idea is to not remove processed items from array and avoid costly memory
+// moving. Also, iterator is able to move upper and lower bounds of array if
+// last (or first) items are marked, making next iterations more efficient.
+
+template <typename T>
+class DefaultMarkValue
+{
+public:
+	static T getMarkValue()
+	{
+		return T(0);
+	}
+};
+
+template <typename T, typename MarkValue = DefaultMarkValue<T> >
+class DefaultMarker
+{
+public:
+	static void mark(T* const item)
+	{
+		*item = MarkValue::getMarkValue();
+	}
+
+	static bool isMarked(const T* const item)
+	{
+		return *item == MarkValue::getMarkValue();
+	}
+};
+
+template <typename T, typename Marker = DefaultMarker<T> >
+class MarkIterator
+{
+public:
+	MarkIterator(T* begin, FB_SIZE_T count) :
+		m_begin(begin),
+		m_end(begin + count),
+		m_curr(begin),
+		m_last(begin)
+	{
+	}
+
+	// Mark current item as processed
+	void mark()
+	{
+		Marker::mark(m_curr);
+
+		if (m_last == m_curr)
+			m_last--;
+	}
+
+	// Move iterator position to the first not processed item
+	void rewind()
+	{
+		m_curr = m_begin;
+		m_end = m_last + 1;
+		m_last = m_begin;
+	}
+
+	T& operator*() const
+	{
+		fb_assert(m_begin <= m_curr);
+		fb_assert(m_curr < m_end);
+		return *m_curr;
+	}
+
+	// Advance iterator to the next not processed item, if exist
+	void operator++()
+	{
+		fb_assert(m_begin <= m_curr);
+		fb_assert(m_curr < m_end);
+
+		const bool at_begin = (m_begin == m_curr);
+		m_curr++;
+
+		while (m_curr < m_end && Marker::isMarked(m_curr))
+			m_curr++;
+
+		if (m_curr == m_end)
+			return;
+
+		if (at_begin)
+		{
+			if (Marker::isMarked(m_begin))
+				m_begin = m_curr;
+			else if (m_begin != m_curr - 1)
+			{
+				m_curr[-1] = *m_begin;
+				m_begin = m_curr - 1;
+			}
+		}
+
+		if (!Marker::isMarked(m_curr))
+			m_last = m_curr;
+	}
+
+	// Show if current position is valid
+	bool isEof() const
+	{
+		return m_curr >= m_end;
+	}
+
+	// Show if not processed items still exists
+	bool isEmpty() const
+	{
+		return m_begin >= m_end;
+	}
+
+private:
+	T* m_begin;
+	T* m_end;
+	T* m_curr;
+	T* m_last;
 };
 
 } // namespace Firebird

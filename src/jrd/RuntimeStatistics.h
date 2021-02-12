@@ -28,8 +28,15 @@
 #include "../common/classes/init.h"
 #include "../common/classes/tree.h"
 
-struct TraceCounts;		// declared in ntrace.h
-struct PerformanceInfo;	// declared in ntrace.h
+namespace Firebird
+{
+
+// declared in firebird/Interface.h
+struct TraceCounts;	
+struct PerformanceInfo;
+
+} // namespace Firebird
+
 
 namespace Jrd {
 
@@ -38,7 +45,7 @@ class Database;
 class thread_db;
 class jrd_rel;
 
-typedef Firebird::HalfStaticArray<TraceCounts, 5> TraceCountsArray;
+typedef Firebird::HalfStaticArray<Firebird::TraceCounts, 5> TraceCountsArray;
 
 // Runtime statistics class
 
@@ -57,7 +64,8 @@ public:
 		PAGE_READS_MULTY_CNT,
 		PAGE_READS_MULTY_PAGES,
 		PAGE_READS_MULTY_IOSIZE,
-		RECORD_SEQ_READS,
+		RECORD_FIRST_ITEM,
+		RECORD_SEQ_READS = RECORD_FIRST_ITEM,
 		RECORD_IDX_READS,
 		RECORD_UPDATES,
 		RECORD_INSERTS,
@@ -71,12 +79,14 @@ public:
 		RECORD_BACKVERSION_READS,
 		RECORD_FRAGMENT_READS,
 		RECORD_RPT_READS,
+		RECORD_IMGC,
+		RECORD_LAST_ITEM = RECORD_IMGC,
 		TOTAL_ITEMS		// last
 	};
 
 private:
-	static const size_t REL_BASE_OFFSET = RECORD_SEQ_READS;
-	static const size_t REL_TOTAL_ITEMS = RECORD_RPT_READS - REL_BASE_OFFSET + 1;
+	static const size_t REL_BASE_OFFSET = RECORD_FIRST_ITEM;
+	static const size_t REL_TOTAL_ITEMS = RECORD_LAST_ITEM - REL_BASE_OFFSET + 1;
 
 	// Performance counters for individual table
 
@@ -198,6 +208,7 @@ public:
 	{
 		memset(values, 0, sizeof values);
 		rel_counts.clear();
+		rel_last_pos = (FB_SIZE_T) ~0;
 		allChgNumber = 0;
 		relChgNumber = 0;
 	}
@@ -219,12 +230,23 @@ public:
 		return rel_counts.find(relation_id, pos) ? rel_counts[pos].getCounter(index) : 0;
 	}
 
-	void bumpRelValue(const StatType index, SLONG relation_id, SINT64 delta = 1);
+	void bumpRelValue(const StatType index, SLONG relation_id, SINT64 delta = 1)
+	{
+		fb_assert(index >= 0);
+		++relChgNumber;
+
+		if (rel_last_pos != (FB_SIZE_T)~0 && rel_counts[rel_last_pos].getRelationId() == relation_id)
+			rel_counts[rel_last_pos].bumpCounter(index, delta);
+		else
+			findAndBumpRelValue(index, relation_id, delta);
+	}
+
+	void findAndBumpRelValue(const StatType index, SLONG relation_id, SINT64 delta);
 
 	// Calculate difference between counts stored in this object and current
 	// counts of given request. Counts stored in object are destroyed.
-	PerformanceInfo* computeDifference(Attachment* att, const RuntimeStatistics& new_stat,
-		PerformanceInfo& dest, TraceCountsArray& temp);
+	Firebird::PerformanceInfo* computeDifference(Attachment* att, const RuntimeStatistics& new_stat,
+		Firebird::PerformanceInfo& dest, TraceCountsArray& temp);
 
 	// add difference between newStats and baseStats to our counters
 	// newStats and baseStats must be "in-sync"
@@ -282,12 +304,12 @@ public:
 		{}
 
 	public:
-		bool operator==(const Iterator& other)
+		bool operator==(const Iterator& other) const
 		{
 			return (m_counts == other.m_counts);
 		}
 
-		bool operator!=(const Iterator& other)
+		bool operator!=(const Iterator& other) const
 		{
 			return (m_counts != other.m_counts);
 		}
@@ -340,6 +362,7 @@ private:
 
 	SINT64 values[TOTAL_ITEMS];
 	RelCounters rel_counts;
+	FB_SIZE_T rel_last_pos;
 
 	// These two numbers are used in adjust() and assign() methods as "generation"
 	// values in order to avoid costly operations when two instances of RuntimeStatistics

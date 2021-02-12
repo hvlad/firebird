@@ -30,7 +30,7 @@
 #include "firebird.h"
 #include <stdio.h>
 #include <stdarg.h>
-#include "../jrd/ibase.h"
+#include "ibase.h"
 #include "../gpre/gpre.h"
 #include "../gpre/gpre_proto.h"
 #include "../gpre/lang_proto.h"
@@ -103,6 +103,8 @@ void INT_CXX_action( const act* action, int column)
 	case ACT_s_start:
 		begin(column);
 		align(column);
+	default:
+		break;
 	}
 
 	switch (action->act_type)
@@ -214,9 +216,8 @@ static void asgn_from( ref* reference, int column)
 		if (!field || field->fld_dtype == dtype_text)
 			fprintf(gpreGlob.out_file, VTO_CALL, JRD_VTOF, value, variable,
 					   field ? field->fld_length : 0);
-		else if (!field || field->fld_dtype == dtype_cstring)
-			fprintf(gpreGlob.out_file, VTO_CALL, GDS_VTOV, value, variable,
-					   field ? field->fld_length : 0);
+		else if (field->fld_dtype == dtype_cstring)
+			fprintf(gpreGlob.out_file, VTO_CALL, GDS_VTOV, value, variable, field->fld_length);
 		else
 			fprintf(gpreGlob.out_file, "%s = %s;", variable, value);
 	}
@@ -243,7 +244,7 @@ static void asgn_to( ref* reference)
 	if (!field || field->fld_dtype == dtype_text)
 		fprintf(gpreGlob.out_file, "gds__ftov (%s, %d, %s, sizeof(%s));",
 				   s, field ? field->fld_length : 0, reference->ref_value, reference->ref_value);
-	else if (!field || field->fld_dtype == dtype_cstring)
+	else if (field->fld_dtype == dtype_cstring)
 		fprintf(gpreGlob.out_file, "gds__vtov((const char*) %s, (char*) %s, sizeof(%s));",
 				   s, reference->ref_value, reference->ref_value);
 	else

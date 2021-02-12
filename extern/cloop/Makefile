@@ -4,8 +4,8 @@ WITH_FPC	:= 1
 
 TARGET	:= release
 
-CC	:= gcc
-CXX	:= g++
+CC	:= $(CC)
+CXX	:= $(CXX)
 LD	:= $(CXX)
 
 SRC_DIR		:= src
@@ -31,8 +31,18 @@ C_FLAGS := -ggdb -fPIC -MMD -MP -W -Wall -Wno-unused-parameter
 CXX_FLAGS := $(C_FLAGS)
 FPC_FLAGS := -Mdelphi
 
+ifeq ($(shell uname),FreeBSD)
+	DL_LIB :=
+else
+	DL_LIB := -ldl
+endif
+
 ifeq ($(TARGET),release)
 	CXX_FLAGS += -O3
+endif
+
+ifeq ($(shell uname),Darwin)
+CXX_FLAGS += -stdlib=libc++
 endif
 
 ifeq ($(TARGET),debug)
@@ -80,8 +90,9 @@ $(BIN_DIR)/cloop: \
 	$(OBJ_DIR)/cloop/Lexer.o \
 	$(OBJ_DIR)/cloop/Parser.o \
 	$(OBJ_DIR)/cloop/Main.o \
+	| $(BIN_DIR)
 
-	$(LD) $^ -o $@
+	$(LD) $^ -o $@ $(LIBS)
 
 $(SRC_DIR)/tests/test1/CalcCApi.h: $(BIN_DIR)/cloop $(SRC_DIR)/tests/test1/Interface.idl
 	$(BIN_DIR)/cloop $(SRC_DIR)/tests/test1/Interface.idl c-header $@ CALC_C_API_H CALC_I
@@ -108,23 +119,23 @@ $(BIN_DIR)/test1-c$(SHRLIB_EXT): \
 	$(OBJ_DIR)/tests/test1/CalcCApi.o \
 	$(OBJ_DIR)/tests/test1/CTest.o \
 
-	$(LD) $^ -shared -ldl -o $@
+	$(LD) $^ -shared $(DL_LIB) -o $@ $(LIBS)
 
 $(BIN_DIR)/test1-c$(EXE_EXT): \
 	$(OBJ_DIR)/tests/test1/CalcCApi.o \
 	$(OBJ_DIR)/tests/test1/CTest.o \
 
-	$(LD) $^ -ldl -o $@
+	$(LD) $^ $(DL_LIB) -o $@ $(LIBS)
 
 $(BIN_DIR)/test1-cpp$(SHRLIB_EXT): \
 	$(OBJ_DIR)/tests/test1/CppTest.o \
 
-	$(LD) $^ -shared -ldl -o $@
+	$(LD) $^ -shared $(DL_LIB) -o $@ $(LIBS)
 
 $(BIN_DIR)/test1-cpp$(EXE_EXT): \
 	$(OBJ_DIR)/tests/test1/CppTest.o \
 
-	$(LD) $^ -ldl -o $@
+	$(LD) $^ $(DL_LIB) -o $@ $(LIBS)
 
 $(BIN_DIR)/test1-pascal$(SHRLIB_EXT): \
 	$(SRC_DIR)/tests/test1/PascalClasses.pas \

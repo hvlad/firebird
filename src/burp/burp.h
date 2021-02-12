@@ -30,16 +30,23 @@
 #define BURP_BURP_H
 
 #include <stdio.h>
-#include "../jrd/ibase.h"
+#include "ibase.h"
+#include "firebird/Interface.h"
+#include "firebird/Message.h"
 #include "../common/dsc.h"
 #include "../burp/misc_proto.h"
+#include "../burp/mvol_proto.h"
 #include "../yvalve/gds_proto.h"
 #include "../common/ThreadData.h"
 #include "../common/UtilSvc.h"
 #include "../common/classes/array.h"
 #include "../common/classes/fb_pair.h"
-#include "../common/classes/MetaName.h"
-#include "../../jrd/SimilarToMatcher.h"
+#include "../common/classes/MetaString.h"
+#include "../common/classes/Nullable.h"
+#include "../common/SimilarToRegex.h"
+#include "../common/status.h"
+#include "../common/sha.h"
+#include "../common/classes/ImplementHelper.h"
 
 #ifdef HAVE_UNISTD_H
 #include <unistd.h>
@@ -49,23 +56,16 @@
 #include <fcntl.h>
 #endif
 
+#if defined(HAVE_ZLIB_H)
+#define WIRE_COMPRESS_SUPPORT 1
+#endif
 
-static inline UCHAR* BURP_alloc(ULONG size)
-{
-	return MISC_alloc_burp(size);
-}
+#ifdef WIRE_COMPRESS_SUPPORT
+#include <zlib.h>
+//#define COMPRESS_DEBUG 1
+#endif // WIRE_COMPRESS_SUPPORT
 
-static inline UCHAR* BURP_alloc_zero(ULONG size)
-{
-	return MISC_alloc_burp(size);
-}
-
-static inline void BURP_free(void* block)
-{
-	MISC_free_burp(block);
-}
-
-const int GDS_NAME_LEN		= 32;
+const int GDS_NAME_LEN		= METADATA_IDENTIFIER_CHAR_LEN * 4 /* max bytes per char */ + 1;
 typedef TEXT			GDS_NAME[GDS_NAME_LEN];
 
 enum redirect_vals {
@@ -115,7 +115,10 @@ enum rec_type {
 	rec_collation,			// Collations
 	rec_sql_roles,			// SQL roles
 	rec_mapping,			// Mapping of security names
-	rec_package				// Package
+	rec_package,			// Package
+	rec_db_creator,			// Database creator
+	rec_publication,		// Publication
+	rec_pub_table			// Publication table
 };
 
 
@@ -197,13 +200,12 @@ Version 9: FB2.5.
 
 Version 10: FB3.0.
 			See backup_capabilities in OdsDetection.h.
+
+Version 11: FB4.0.
+			SQL SECURITY feature, tables RDB$PUBLICATIONS/RDB$PUBLICATION_TABLES.
 */
 
-const int ATT_BACKUP_FORMAT		= 10;
-
-// format version number for ranges for arrays
-
-//const int GDS_NDA_VERSION		= 1; // Not used
+const int ATT_BACKUP_FORMAT		= 11;
 
 // max array dimension
 
@@ -227,6 +229,10 @@ enum att_type {
 	att_backup_blksize,		// backup block size
 	att_backup_file,		// database file name
 	att_backup_volume,		// backup volume number
+	att_backup_keyname,		// name of crypt key
+	att_backup_zip,			// zipped backup file
+	att_backup_hash,		// hash of crypt key
+	att_backup_crypt,		// name of crypt plugin
 
 	// Database attributes
 
@@ -246,6 +252,8 @@ enum att_type {
 	att_SQL_dialect,		// SQL dialect that it speaks
 	att_db_read_only,		// Is the database ReadOnly?
 	att_database_linger,	// Disconnection timeout
+	att_database_sql_security,// default sql security value
+	att_replica_mode,		// replica mode
 
 	// Relation attributes
 
@@ -267,6 +275,7 @@ enum att_type {
 	att_relation_flags,
 	att_relation_ext_file_name, // name of file for external tables
 	att_relation_type,
+	att_relation_sql_security,
 
 	// Field attributes (used for both global and local fields)
 
@@ -400,6 +409,7 @@ enum att_type {
 	att_trig_engine_name,
 	att_trig_entrypoint,
 	att_trig_type2,
+	att_trig_sql_security,
 
 	// Function attributes
 
@@ -423,6 +433,7 @@ enum att_type {
 	att_function_owner_name,
 	att_function_legacy_flag,
 	att_function_deterministic_flag,
+	att_function_sql_security,
 
 	// Function argument attributes
 
@@ -518,6 +529,7 @@ enum att_type {
 	att_procedure_entrypoint,
 	att_procedure_package_name,
 	att_procedure_private_flag,
+	att_procedure_sql_security,
 
 	// Stored procedure parameter attributes
 
@@ -566,6 +578,7 @@ enum att_type {
 	att_role_name = SERIES,
 	att_role_owner_name,
 	att_role_description,
+	att_role_sys_priveleges,
 
 	// Check constraints attributes
 	att_chk_constraint_name = SERIES,
@@ -616,7 +629,22 @@ enum att_type {
 	att_package_valid_body_flag,
 	att_package_security_class,
 	att_package_owner_name,
-	att_package_description
+	att_package_description,
+	att_package_sql_security,
+
+	// Database creators
+	att_dbc_user = SERIES,
+	att_dbc_type,
+
+	// Publications
+	att_pub_name = SERIES,
+	att_pub_owner_name,
+	att_pub_active_flag,
+	att_pub_auto_enable,
+
+	// Publication tables
+	att_ptab_pub_name = SERIES,
+	att_ptab_table_name
 };
 
 
@@ -650,12 +678,14 @@ struct burp_fld
 	SSHORT		fld_type;
 	SSHORT		fld_sub_type;
 	FLD_LENGTH	fld_length;
+	FLD_LENGTH	fld_total_len;	// including additional 2 bytes for VARYING CHAR
 	SSHORT		fld_scale;
 	SSHORT		fld_position;
 	SSHORT		fld_parameter;
 	SSHORT		fld_missing_parameter;
 	SSHORT		fld_id;
 	RCRD_OFFSET	fld_offset;
+	RCRD_OFFSET	fld_missing_offset;
 	RCRD_OFFSET	fld_old_offset;
 	SSHORT		fld_number;
 	SSHORT		fld_system_flag;
@@ -684,6 +714,8 @@ struct burp_fld
 	ISC_QUAD	fld_default_source;
 	SSHORT		fld_character_set_id;
 	SSHORT		fld_collation_id;
+	RCRD_OFFSET	fld_sql;
+	RCRD_OFFSET	fld_null;
 };
 
 enum fld_flags_vals {
@@ -768,8 +800,6 @@ struct burp_meta_obj
 // CVC: Could use MAXPATHLEN, but what about restoring in a different system?
 // I need to review if we tolerate different lengths for different OS's here.
 const unsigned int MAX_FILE_NAME_SIZE		= 256;
-
-//#include "../jrd/svc.h"
 
 #include "../burp/std_desc.h"
 
@@ -883,52 +913,59 @@ static const char HDR_SPLIT_TAG6[]	= "InterBase/gbak,   ";
 const FB_UINT64 MIN_SPLIT_SIZE	= FB_CONST64(2048);		// bytes
 
 
-// Copy&paste from TraceUnicodeUtils.h - fixme !!!!!!!!
-class UnicodeCollationHolder
+// Global switches and data
+
+struct BurpCrypt;
+
+
+class GblPool
 {
 private:
-	charset* cs;
-	texttype* tt;
-	Firebird::AutoPtr<Jrd::CharSet> charSet;
-	Firebird::AutoPtr<Jrd::TextType> textType;
-
+	// Moved it to separate class in order to ensure 'first create/last destroy' order
+	Firebird::MemoryPool* gbl_pool;
 public:
-	explicit UnicodeCollationHolder(Firebird::MemoryPool& pool);
-	~UnicodeCollationHolder();
-
-	Jrd::TextType* getTextType()
+	Firebird::MemoryPool& getPool()
 	{
-		return textType;
+		fb_assert(gbl_pool);
+		return *gbl_pool;
+	}
+
+	explicit GblPool(bool ownPool)
+		: gbl_pool(ownPool ? MemoryPool::createPool(getDefaultMemoryPool()) : getDefaultMemoryPool())
+	{ }
+
+	~GblPool()
+	{
+		if (gbl_pool != getDefaultMemoryPool())
+			Firebird::MemoryPool::deletePool(gbl_pool);
 	}
 };
 
-
-// Global switches and data
-
-class BurpGlobals : public Firebird::ThreadData
+class BurpGlobals : public Firebird::ThreadData, public GblPool
 {
 public:
 	explicit BurpGlobals(Firebird::UtilSvc* us)
 		: ThreadData(ThreadData::tddGBL),
-		  defaultCollations(*getDefaultMemoryPool()),
+		  GblPool(us->isService()),
+		  defaultCollations(getPool()),
 		  uSvc(us),
 		  verboseInterval(10000),
 		  flag_on_line(true),
 		  firstMap(true),
+		  firstDbc(true),
 		  stdIoMode(false)
 	{
-		// this is VERY dirty hack to keep current behaviour
+		// this is VERY dirty hack to keep current (pre-FB2) behaviour
 		memset (&gbl_database_file_name, 0,
 			&veryEnd - reinterpret_cast<char*>(&gbl_database_file_name));
-		memset(status_vector, 0, sizeof(status_vector));
 
+		// normal code follows
 		gbl_stat_flags = 0;
 		gbl_stat_header = false;
 		gbl_stat_done = false;
 		memset(gbl_stats, 0, sizeof(gbl_stats));
 		gbl_stats[TIME_TOTAL] = gbl_stats[TIME_DELTA] = fb_utils::query_performance_counter();
 
-		// normal code follows
 		exit_code = FINI_ERROR;	// prevent FINI_OK in case of unknown error thrown
 								// would be set to FINI_OK (==0) in exit_local
 	}
@@ -947,6 +984,7 @@ public:
 	bool		gbl_sw_deactivate_indexes;
 	bool		gbl_sw_kill;
 	USHORT		gbl_sw_blk_factor;
+	USHORT		gbl_dialect;
 	const SCHAR*	gbl_sw_fix_fss_data;
 	USHORT			gbl_sw_fix_fss_data_id;
 	const SCHAR*	gbl_sw_fix_fss_metadata;
@@ -957,6 +995,12 @@ public:
 	bool		gbl_sw_mode;
 	bool		gbl_sw_mode_val;
 	bool		gbl_sw_overwrite;
+	bool		gbl_sw_zip;
+	const SCHAR*	gbl_sw_keyholder;
+	const SCHAR*	gbl_sw_crypt;
+	const SCHAR*	gbl_sw_keyname;
+	SCHAR			gbl_hdr_keybuffer[MAX_SQL_IDENTIFIER_SIZE];
+	SCHAR			gbl_hdr_cryptbuffer[MAX_SQL_IDENTIFIER_SIZE];
 	const SCHAR*	gbl_sw_sql_role;
 	const SCHAR*	gbl_sw_user;
 	const SCHAR*	gbl_sw_password;
@@ -965,12 +1009,45 @@ public:
 	burp_fil*	gbl_sw_files;
 	burp_fil*	gbl_sw_backup_files;
 	gfld*		gbl_global_fields;
+	unsigned	gbl_network_protocol;
 	burp_act*	action;
+	BurpCrypt*	gbl_crypt;
 	ULONG		io_buffer_size;
 	redirect_vals	sw_redirect;
 	bool		burp_throw;
-	UCHAR*		io_ptr;
-	int			io_cnt;
+	Nullable<ReplicaMode>	gbl_sw_replica;
+
+	UCHAR*		blk_io_ptr;
+	int			blk_io_cnt;
+
+	void put(const UCHAR c)
+	{
+		if (gbl_io_cnt <= 0)
+			MVOL_write(this);
+
+		--gbl_io_cnt;
+		*gbl_io_ptr++ = c;
+	}
+
+	UCHAR get()
+	{
+		if (gbl_io_cnt <= 0)
+			MVOL_read(this);
+
+		--gbl_io_cnt;
+		return *gbl_io_ptr++;
+	}
+
+#ifdef WIRE_COMPRESS_SUPPORT
+	z_stream	gbl_stream;
+#endif
+	UCHAR*		gbl_io_ptr;
+	int			gbl_io_cnt;
+	UCHAR*		gbl_compress_buffer;
+	UCHAR*		gbl_crypt_buffer;
+	ULONG		gbl_crypt_left;
+	UCHAR*      gbl_decompress;
+
 	burp_rel*	relations;
 	burp_pkg*	packages;
 	burp_prc*	procedures;
@@ -993,11 +1070,15 @@ public:
 	SCHAR		mvol_old_file [MAX_FILE_NAME_SIZE];
 	int			mvol_volume_count;
 	bool		mvol_empty_file;
-	isc_db_handle	db_handle;
-	isc_tr_handle	tr_handle;
-	isc_tr_handle	global_trans;
+	TEXT		mvol_keyname_buffer[MAX_FILE_NAME_SIZE];
+	const TEXT*	mvol_keyname;
+	TEXT		mvol_crypt_buffer[MAX_FILE_NAME_SIZE];
+	const TEXT*	mvol_crypt;
+	TEXT		gbl_key_hash[(Firebird::Sha1::HASH_SIZE + 1) * 4 / 3 + 1];	// take into an account base64
+	Firebird::IAttachment*	db_handle;
+	Firebird::ITransaction*	tr_handle;
+	Firebird::ITransaction*	global_trans;
 	DESC		file_desc;
-	ISC_STATUS_ARRAY status_vector;
 	int			exit_code;
 	UCHAR*		head_of_mem_list;
 	FILE*		output_file;
@@ -1007,59 +1088,65 @@ public:
 	// burp_fld*	v3_cvt_fld_list;
 
 	// The handles_get... are for restore.
-	isc_req_handle	handles_get_character_sets_req_handle1;
-	isc_req_handle	handles_get_chk_constraint_req_handle1;
-	isc_req_handle	handles_get_collation_req_handle1;
-	isc_req_handle	handles_get_exception_req_handle1;
-	isc_req_handle	handles_get_field_dimensions_req_handle1;
-	isc_req_handle	handles_get_field_req_handle1;
-	isc_req_handle	handles_get_fields_req_handle1;
-	isc_req_handle	handles_get_fields_req_handle2;
-	isc_req_handle	handles_get_fields_req_handle3;
-	isc_req_handle	handles_get_fields_req_handle4;
-	isc_req_handle	handles_get_fields_req_handle5;
-	isc_req_handle	handles_get_fields_req_handle6;
-	isc_req_handle	handles_get_files_req_handle1;
-	isc_req_handle	handles_get_filter_req_handle1;
-	isc_req_handle	handles_get_function_arg_req_handle1;
-	isc_req_handle	handles_get_function_req_handle1;
-	isc_req_handle	handles_get_global_field_req_handle1;
-	isc_req_handle	handles_get_index_req_handle1;
-	isc_req_handle	handles_get_index_req_handle2;
-	isc_req_handle	handles_get_index_req_handle3;
-	isc_req_handle	handles_get_index_req_handle4;
-	isc_req_handle	handles_get_package_req_handle1;
-	isc_req_handle	handles_get_procedure_prm_req_handle1;
-	isc_req_handle	handles_get_procedure_req_handle1;
-	isc_req_handle	handles_get_ranges_req_handle1;
-	isc_req_handle	handles_get_ref_constraint_req_handle1;
-	isc_req_handle	handles_get_rel_constraint_req_handle1;
-	isc_req_handle	handles_get_relation_req_handle1;
-	isc_req_handle	handles_get_security_class_req_handle1;
-	isc_req_handle	handles_get_sql_roles_req_handle1;
-	isc_req_handle	handles_get_mapping_req_handle1;
-	isc_req_handle	handles_get_trigger_message_req_handle1;
-	isc_req_handle	handles_get_trigger_message_req_handle2;
-	isc_req_handle	handles_get_trigger_old_req_handle1;
-	isc_req_handle	handles_get_trigger_req_handle1;
-	isc_req_handle	handles_get_type_req_handle1;
-	isc_req_handle	handles_get_user_privilege_req_handle1;
-	isc_req_handle	handles_get_view_req_handle1;
+	Firebird::IRequest*	handles_get_character_sets_req_handle1;
+	Firebird::IRequest*	handles_get_chk_constraint_req_handle1;
+	Firebird::IRequest*	handles_get_collation_req_handle1;
+	Firebird::IRequest*	handles_get_db_creators_req_handle1;
+	Firebird::IRequest*	handles_get_exception_req_handle1;
+	Firebird::IRequest*	handles_get_field_dimensions_req_handle1;
+	Firebird::IRequest*	handles_get_field_req_handle1;
+	Firebird::IRequest*	handles_get_fields_req_handle1;
+	Firebird::IRequest*	handles_get_fields_req_handle2;
+	Firebird::IRequest*	handles_get_fields_req_handle3;
+	Firebird::IRequest*	handles_get_fields_req_handle4;
+	Firebird::IRequest*	handles_get_fields_req_handle5;
+	Firebird::IRequest*	handles_get_fields_req_handle6;
+	Firebird::IRequest*	handles_get_files_req_handle1;
+	Firebird::IRequest*	handles_get_filter_req_handle1;
+	Firebird::IRequest*	handles_get_function_arg_req_handle1;
+	Firebird::IRequest*	handles_get_function_req_handle1;
+	Firebird::IRequest*	handles_get_global_field_req_handle1;
+	Firebird::IRequest*	handles_get_index_req_handle1;
+	Firebird::IRequest*	handles_get_index_req_handle2;
+	Firebird::IRequest*	handles_get_index_req_handle3;
+	Firebird::IRequest*	handles_get_index_req_handle4;
+	Firebird::IRequest*	handles_get_mapping_req_handle1;
+	Firebird::IRequest*	handles_get_package_req_handle1;
+	Firebird::IRequest*	handles_get_procedure_prm_req_handle1;
+	Firebird::IRequest*	handles_get_procedure_req_handle1;
+	Firebird::IRequest*	handles_get_pub_req_handle1;
+	Firebird::IRequest*	handles_get_pub_tab_req_handle1;
+	Firebird::IRequest*	handles_get_ranges_req_handle1;
+	Firebird::IRequest*	handles_get_ref_constraint_req_handle1;
+	Firebird::IRequest*	handles_get_rel_constraint_req_handle1;
+	Firebird::IRequest*	handles_get_relation_req_handle1;
+	Firebird::IRequest*	handles_get_security_class_req_handle1;
+	Firebird::IRequest*	handles_get_sql_roles_req_handle1;
+	Firebird::IRequest*	handles_get_trigger_message_req_handle1;
+	Firebird::IRequest*	handles_get_trigger_message_req_handle2;
+	Firebird::IRequest*	handles_get_trigger_old_req_handle1;
+	Firebird::IRequest*	handles_get_trigger_req_handle1;
+	Firebird::IRequest*	handles_get_trigger_req_handle2;
+	Firebird::IRequest*	handles_get_type_req_handle1;
+	Firebird::IRequest*	handles_get_user_privilege_req_handle1;
+	Firebird::IRequest*	handles_get_view_req_handle1;
+
 	// The handles_put.. are for backup.
-	isc_req_handle	handles_put_index_req_handle1;
-	isc_req_handle	handles_put_index_req_handle2;
-	isc_req_handle	handles_put_index_req_handle3;
-	isc_req_handle	handles_put_index_req_handle4;
-	isc_req_handle	handles_put_index_req_handle5;
-	isc_req_handle	handles_put_index_req_handle6;
-	isc_req_handle	handles_put_index_req_handle7;
-	isc_req_handle	handles_put_relation_req_handle1;
-	isc_req_handle	handles_put_relation_req_handle2;
-	isc_req_handle	handles_store_blr_gen_id_req_handle1;
-	isc_req_handle	handles_write_function_args_req_handle1;
-	isc_req_handle	handles_write_function_args_req_handle2;
-	isc_req_handle	handles_write_procedure_prms_req_handle1;
-	isc_req_handle	handles_fix_security_class_name_req_handle1;
+	Firebird::IRequest*	handles_put_index_req_handle1;
+	Firebird::IRequest*	handles_put_index_req_handle2;
+	Firebird::IRequest*	handles_put_index_req_handle3;
+	Firebird::IRequest*	handles_put_index_req_handle4;
+	Firebird::IRequest*	handles_put_index_req_handle5;
+	Firebird::IRequest*	handles_put_index_req_handle6;
+	Firebird::IRequest*	handles_put_index_req_handle7;
+	Firebird::IRequest*	handles_put_relation_req_handle1;
+	Firebird::IRequest*	handles_put_relation_req_handle2;
+	Firebird::IRequest*	handles_store_blr_gen_id_req_handle1;
+	Firebird::IRequest*	handles_write_function_args_req_handle1;
+	Firebird::IRequest*	handles_write_function_args_req_handle2;
+	Firebird::IRequest*	handles_write_procedure_prms_req_handle1;
+	Firebird::IRequest*	handles_fix_security_class_name_req_handle1;
+
 	bool			hdr_forced_writes;
 	TEXT			database_security_class[GDS_NAME_LEN]; // To save database security class for deferred update
 
@@ -1076,20 +1163,25 @@ public:
 		ThreadData::restoreSpecific();
 	}
 	void setupSkipData(const Firebird::string& regexp);
+	void setupIncludeData(const Firebird::string& regexp);
 	bool skipRelation(const char* name);
 
 	char veryEnd;
 	//starting after this members must be initialized in constructor explicitly
 
-	Firebird::Array<Firebird::Pair<Firebird::NonPooled<Firebird::MetaName, Firebird::MetaName> > >
+	Firebird::FbLocalStatus status_vector;
+	Firebird::ThrowLocalStatus throwStatus;
+
+	Firebird::Array<Firebird::Pair<Firebird::NonPooled<Firebird::MetaString, Firebird::MetaString> > >
 		defaultCollations;
 	Firebird::UtilSvc* uSvc;
 	ULONG verboseInterval;	// How many records should be backed up or restored before we show this message
 	bool flag_on_line;		// indicates whether we will bring the database on-line
 	bool firstMap;			// this is the first time we entered get_mapping()
+	bool firstDbc;			// this is the first time we entered get_db_creators()
 	bool stdIoMode;			// stdin or stdout is used as backup file
-	Firebird::AutoPtr<UnicodeCollationHolder> unicodeCollation;
-	Firebird::AutoPtr<Firebird::SimilarToMatcher<UCHAR, Jrd::UpcaseConverter<> > > skipDataMatcher;
+	Firebird::AutoPtr<Firebird::SimilarToRegex> skipDataMatcher;
+	Firebird::AutoPtr<Firebird::SimilarToRegex> includeDataMatcher;
 
 public:
 	Firebird::string toSystem(const Firebird::PathName& from);
@@ -1153,5 +1245,67 @@ enum burp_messages_vals {
 
 // BLOB buffer
 typedef Firebird::HalfStaticArray<UCHAR, 1024> BlobBuffer;
+
+class BurpSql : public Firebird::AutoStorage
+{
+public:
+	BurpSql(BurpGlobals* g, const char* sql)
+		: Firebird::AutoStorage(),
+		  tdgbl(g), stmt(nullptr)
+	{
+		stmt = tdgbl->db_handle->prepare(&tdgbl->throwStatus, tdgbl->tr_handle, 0, sql, 3, 0);
+	}
+
+	template <typename M>
+	void singleSelect(Firebird::ITransaction* trans, M* msg)
+	{
+		stmt->execute(&tdgbl->throwStatus, tdgbl->tr_handle, nullptr, nullptr, msg->getMetadata(), msg->getData());
+	}
+
+	template <typename M>
+	void execute(Firebird::ITransaction* trans, M* msg)
+	{
+		stmt->execute(&tdgbl->throwStatus, tdgbl->tr_handle, msg->getMetadata(), msg->getData(), nullptr, nullptr);
+	}
+
+	void execute(Firebird::ITransaction* trans)
+	{
+		stmt->execute(&tdgbl->throwStatus, tdgbl->tr_handle, nullptr, nullptr, nullptr, nullptr);
+	}
+
+private:
+	BurpGlobals* tdgbl;
+	Firebird::IStatement* stmt;
+};
+
+class OutputVersion : public Firebird::IVersionCallbackImpl<OutputVersion, Firebird::CheckStatusWrapper>
+{
+public:
+	OutputVersion(const char* printFormat)
+		: format(printFormat)
+	{ }
+
+	void callback(Firebird::CheckStatusWrapper* status, const char* text);
+
+private:
+	const char* format;
+};
+
+static inline UCHAR* BURP_alloc(ULONG size)
+{
+	BurpGlobals* tdgbl = BurpGlobals::getSpecific();
+	return (UCHAR*)(tdgbl->getPool().allocate(size ALLOC_ARGS));
+}
+
+static inline UCHAR* BURP_alloc_zero(ULONG size)
+{
+	BurpGlobals* tdgbl = BurpGlobals::getSpecific();
+	return (UCHAR*)(tdgbl->getPool().calloc(size ALLOC_ARGS));
+}
+
+static inline void BURP_free(void* block)
+{
+	MemoryPool::globalFree(block);
+}
 
 #endif // BURP_BURP_H

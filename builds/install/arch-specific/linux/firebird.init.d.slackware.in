@@ -2,8 +2,10 @@
 #
 # /etc/rc.d/rc.firebirdss
 #
-# Start/stop/restart the firebird super server.
+# Start/stop/restart the firebird server.
 #
+
+fb_install_prefix=@prefix@
 
 # To run more instances of firebird:
 #   Copy @prefix@ somewhere

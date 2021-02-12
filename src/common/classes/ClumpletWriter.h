@@ -72,11 +72,10 @@ public:
 	void insertInt(UCHAR tag, const SLONG value);
 	void insertBigInt(UCHAR tag, const SINT64 value);
 	void insertBytes(UCHAR tag, const void* bytes, FB_SIZE_T length);
-	void insertString(UCHAR tag, const string& str);
-	void insertString(UCHAR tag, const MetaName& str);
-	void insertPath(UCHAR tag, const PathName& str);
-	void insertString(UCHAR tag, const char* str);
 	void insertString(UCHAR tag, const char* str, FB_SIZE_T length);
+	void insertString(UCHAR tag, const char* str);
+	void insertString(UCHAR tag, char* str);
+	void insertData(UCHAR tag, const UCharBuffer& data);
 	void insertByte(UCHAR tag, const UCHAR byte);
 	void insertTag(UCHAR tag);
 	void insertDouble(UCHAR tag, const double value);
@@ -85,6 +84,12 @@ public:
 	void insertDate(UCHAR tag, ISC_DATE value) { insertInt(tag, value); }
 	void insertEndMarker(UCHAR tag);
 	void insertClumplet(const SingleClumplet& clumplet);
+
+	template <typename S>
+	void insertString(UCHAR tag, const S& str)
+	{
+		insertString(tag, str.c_str(), str.length());
+	}
 
     // Delete currently selected clumplet from buffer
 	void deleteClumplet();
@@ -113,6 +118,13 @@ private:
 	void create(const UCHAR* buffer, FB_SIZE_T buffLen, UCHAR tag);
 	static void toVaxInteger(UCHAR* ptr, FB_SIZE_T length, const SINT64 value);
 };
+/*
+template <>
+void ClumpletWriter::insertString(UCHAR tag, const char*& str)
+{
+	insertString(tag, str, strlen(str));
+}
+*/
 
 } // namespace Firebird
 

@@ -106,7 +106,8 @@ IMPLEMENT_TRACE_ROUTINE(cmp_trace, "CMP")
 // Clone a node.
 ValueExprNode* CMP_clone_node(thread_db* tdbb, CompilerScratch* csb, ValueExprNode* node)
 {
-	return NodeCopier::copy(tdbb, csb, node, NULL);
+	SubExprNodeCopier copier(csb->csb_pool, csb);
+	return copier.copy(tdbb, node);
 }
 
 
@@ -119,10 +120,11 @@ ValueExprNode* CMP_clone_node_opt(thread_db* tdbb, CompilerScratch* csb, ValueEx
 
 	DEV_BLKCHK(csb, type_csb);
 
-	if (node->is<ParameterNode>())
+	if (nodeIs<ParameterNode>(node))
 		return node;
 
-	ValueExprNode* clone = NodeCopier::copy(tdbb, csb, node, NULL);
+	SubExprNodeCopier copier(csb->csb_pool, csb);
+	ValueExprNode* clone = copier.copy(tdbb, node);
 	ExprNode::doPass2(tdbb, csb, &clone);
 
 	return clone;
@@ -134,9 +136,8 @@ BoolExprNode* CMP_clone_node_opt(thread_db* tdbb, CompilerScratch* csb, BoolExpr
 
 	DEV_BLKCHK(csb, type_csb);
 
-	NodeCopier copier(csb, NULL);
+	SubExprNodeCopier copier(csb->csb_pool, csb);
 	BoolExprNode* clone = copier.copy(tdbb, node);
-
 	ExprNode::doPass2(tdbb, csb, &clone);
 
 	return clone;
@@ -314,52 +315,20 @@ IndexLock* CMP_get_index_lock(thread_db* tdbb, jrd_rel* relation, USHORT id)
 
 	Lock* lock = FB_NEW_RPT(*relation->rel_pool, 0) Lock(tdbb, sizeof(SLONG), LCK_idx_exist);
 	index->idl_lock = lock;
-	lock->lck_key.lck_long = (relation->rel_id << 16) | id;
+	lock->setKey((relation->rel_id << 16) | id);
 
 	return index;
 }
 
 
-ULONG CMP_impure(CompilerScratch* csb, ULONG size)
-{
-/**************************************
- *
- *	C M P _ i m p u r e
- *
- **************************************
- *
- * Functional description
- *	Allocate space (offset) in request.
- *
- **************************************/
-	DEV_BLKCHK(csb, type_csb);
-
-	if (!csb)
-	{
-		return 0;
-	}
-
-	const ULONG offset = FB_ALIGN(csb->csb_impure, FB_ALIGNMENT);
-
-	if (offset + size > JrdStatement::MAX_REQUEST_SIZE)
-	{
-		IBERROR(226);	// msg 226: request size limit exceeded
-	}
-
-	csb->csb_impure = offset + size;
-
-	return offset;
-}
-
-
 void CMP_post_access(thread_db* tdbb,
 					 CompilerScratch* csb,
-					 const Firebird::MetaName& security_name,
-					 SLONG view_id,
+					 const MetaName& security_name,
+					 SLONG ssRelationId,			// SQL SECURITY relation in which context permissions should be check
 					 SecurityClass::flags_t mask,
 					 SLONG type_name,
-					 const Firebird::MetaName& name,
-					 const Firebird::MetaName& r_name)
+					 const MetaName& name,
+					 const MetaName& r_name)
 {
 /**************************************
  *
@@ -383,7 +352,7 @@ void CMP_post_access(thread_db* tdbb,
 
 	SET_TDBB(tdbb);
 
-	AccessItem access(security_name, view_id, name, type_name, mask, r_name);
+	AccessItem access(security_name, ssRelationId, name, type_name, mask, r_name);
 
 	FB_SIZE_T i;
 
@@ -477,67 +446,6 @@ StreamType* CMP_alloc_map(thread_db* tdbb, CompilerScratch* csb, StreamType stre
 USHORT NodeCopier::getFieldId(const FieldNode* field)
 {
 	return field->fieldId;
-}
-
-
-// Expand dbkey for view.
-void CMP_expand_view_nodes(thread_db* tdbb, CompilerScratch* csb, StreamType stream,
-	ValueExprNodeStack& stack, UCHAR blrOp, bool allStreams)
-{
-	SET_TDBB(tdbb);
-
-	DEV_BLKCHK(csb, type_csb);
-
-	// if the stream's dbkey should be ignored, do so
-
-	if (!allStreams && (csb->csb_rpt[stream].csb_flags & csb_no_dbkey))
-		return;
-
-	// if the stream references a view, follow map
-	const StreamType* map = csb->csb_rpt[stream].csb_map;
-	if (map)
-	{
-		++map;
-		while (*map)
-			CMP_expand_view_nodes(tdbb, csb, *map++, stack, blrOp, allStreams);
-		return;
-	}
-
-	// relation is primitive - make dbkey node
-
-	if (allStreams || csb->csb_rpt[stream].csb_relation)
-	{
-		RecordKeyNode* node = FB_NEW_POOL(csb->csb_pool) RecordKeyNode(csb->csb_pool, blrOp);
-		node->recStream = stream;
-		stack.push(node);
-	}
-}
-
-
-// Look at all RseNode's which are lower in scope than the RseNode which this field is
-// referencing, and mark them as variant - the rule is that if a field from one RseNode is
-// referenced within the scope of another RseNode, the inner RseNode can't be invariant.
-// This won't optimize all cases, but it is the simplest operating assumption for now.
-void CMP_mark_variant(CompilerScratch* csb, StreamType stream)
-{
-	if (csb->csb_current_nodes.isEmpty())
-		return;
-
-	for (ExprNode** node = csb->csb_current_nodes.end() - 1;
-		 node >= csb->csb_current_nodes.begin(); --node)
-	{
-		RseNode* rseNode = (*node)->as<RseNode>();
-
-		if (rseNode)
-		{
-			if (rseNode->containsStream(stream))
-				break;
-
-			rseNode->flags |= RseNode::FLAG_VARIANT;
-		}
-		else if (*node)
-			(*node)->nodFlags &= ~ExprNode::FLAG_INVARIANT;
-	}
 }
 
 

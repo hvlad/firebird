@@ -38,7 +38,7 @@
 #include <fcntl.h>
 #include "../jrd/ibsetjmp.h"
 #include "../common/classes/timestamp.h"
-#include "../jrd/ibase.h"
+#include "ibase.h"
 #include "../jrd/ods.h"
 #include "../jrd/btn.h"
 #include "../jrd/license.h"
@@ -56,6 +56,18 @@
 #include "../common/classes/UserBlob.h"
 #include "../common/os/os_utils.h"
 #include "../common/StatusHolder.h"
+#include "../common/ThreadStart.h"
+
+#ifdef TIME_WITH_SYS_TIME
+# include <sys/time.h>
+# include <time.h>
+#else
+# ifdef HAVE_SYS_TIME_H
+#  include <sys/time.h>
+# else
+#  include <time.h>
+# endif
+#endif
 
 using MsgFormat::SafeArg;
 
@@ -172,6 +184,7 @@ static bool analyze_data_page(dba_rel*, const data_page*, bool);
 static ULONG analyze_fragments(dba_rel*, const rhdf*);
 static ULONG analyze_versions(dba_rel*, const rhdf*);
 static void analyze_index(const dba_rel*, dba_idx*);
+static ULONG lastUsedPage(ULONG);
 
 #if (defined WIN_NT)
 static void db_error(SLONG);
@@ -309,6 +322,19 @@ namespace
 			dba_exit(FINI_OK, tddba);
 		}
 	}
+
+	void getDateTime(char* datetime, FB_SIZE_T sizeof_datetime)
+	{
+		time_t t;
+		time(&t);
+#if defined(HAVE_CTIME_R)
+		ctime_r(&t, datetime);
+#elif defined(HAVE_CTIME_S)
+		ctime_s(datetime, sizeof_datetime, &t);
+#else
+		error: missing thread-safe version of ctime()
+#endif
+	}
 } // namespace
 
 const USHORT GSTAT_MSG_FAC	= 21;
@@ -379,6 +405,9 @@ int gstat(Firebird::UtilSvc* uSvc)
 
 	ISC_STATUS* status_vector = NULL;
 	Firebird::DynamicStatusVector permStatus;
+
+	bool fl_print_complete = false;
+	char datetime[32];
 
 	try {
 
@@ -592,7 +621,7 @@ int gstat(Firebird::UtilSvc* uSvc)
 
 	uSvc->started();
 
-	if (!Ods::isSupported(header->hdr_ods_version, header->hdr_ods_minor))
+	if (!Ods::isSupported(header))
 	{
 		const int oversion = (header->hdr_ods_version & ~ODS_FIREBIRD_FLAG);
 		dba_error(3, SafeArg() << ODS_VERSION << oversion);
@@ -601,8 +630,11 @@ int gstat(Firebird::UtilSvc* uSvc)
 
 	char file_name[1024];
 	fileName.copyTo(file_name, sizeof(file_name));
+	dba_print(false, 6, SafeArg() << file_name);	// msg 6: \nDatabase \"@1\"\n
 
-	dba_print(false, 6, SafeArg() << file_name);	// msg 6: \nDatabase \"%s\"\n
+	getDateTime(datetime, sizeof(datetime));
+	dba_print(false, 59, SafeArg() << datetime);	// msg 59: Gstat execution time @1
+	fl_print_complete = true;
 
 	tddba->page_size = header->hdr_page_size;
 	tddba->dp_per_pp = Ods::dataPagesPerPP(tddba->page_size);
@@ -675,12 +707,18 @@ int gstat(Firebird::UtilSvc* uSvc)
 					++non;
 			}
 
+			bool hasCrypted()
+			{
+				return enc > 0;
+			}
+
 		private:
 			ULONG enc, non;
 		};
-		Statist data, index, blob;
+		Statist data, index, blob, generator, other;
 
-		for (page = 0; true; ++page)
+		ULONG last = lastUsedPage(header->hdr_page_size);
+		for (page = 0; page <= last; ++page)
 		{
 			const pag* p = db_read(page, true);
 			if (!p)
@@ -699,6 +737,12 @@ int gstat(Firebird::UtilSvc* uSvc)
 			case pag_blob:
 				blob.log(p->pag_flags);
 				break;
+			case pag_ids:
+				generator.log(p->pag_flags);
+				break;
+			default:
+				other.log(p->pag_flags);
+				break;
 			}
 		}
 
@@ -706,6 +750,9 @@ int gstat(Firebird::UtilSvc* uSvc)
 		data.print(52);
 		index.print(53);
 		blob.print(54);
+		generator.print(62);
+		if (other.hasCrypted())
+			other.print(58);
 
 		dba_exit(FINI_OK, tddba);
 	}
@@ -725,7 +772,7 @@ int gstat(Firebird::UtilSvc* uSvc)
 	// Check to make sure that the user accessing the database is either
 	// SYSDBA or owner of the database
 
-	Firebird::ClumpletWriter dpb(Firebird::ClumpletReader::Tagged, MAX_DPB_SIZE, isc_dpb_version1);
+	Firebird::ClumpletWriter dpb(Firebird::ClumpletReader::dpbList, MAX_DPB_SIZE);
 	uSvc->fillDpb(dpb);
 	dpb.insertTag(isc_dpb_gstat_attach);
 	dpb.insertTag(isc_dpb_no_garbage_collect);
@@ -1121,6 +1168,12 @@ int gstat(Firebird::UtilSvc* uSvc)
 	// This is isc_detach_database
 	FINISH;
 
+	if (fl_print_complete)
+	{
+		getDateTime(datetime, sizeof(datetime));
+		dba_print(false, 60, SafeArg() << datetime);	// msg 60: Gstat completion time @1
+	}
+
 	uSvc->started();
 	dba_mem* alloced = tddba->head_of_mem_list;
 	while (alloced != 0)
@@ -1162,6 +1215,59 @@ int gstat(Firebird::UtilSvc* uSvc)
 	}
 
 	return exit_code;
+}
+
+
+static ULONG lastUsedPage(ULONG pageSize)
+{
+	const ULONG pipFirst = FIRST_PIP_PAGE;
+	ULONG pipLast = pipFirst;
+	ULONG pagesPerPIP = Ods::pagesPerPIP(pageSize);
+	ULONG bytesBitPIP = Ods::bytesBitPIP(pageSize);
+	page_inv_page* pip;
+
+	while (true)
+	{
+		const pag* page = db_read(pipLast, true);
+		if (page->pag_type != pag_pages)
+		{
+			dba_print(true, 61, SafeArg() << pipLast);
+			// msg 61: "    Expected page inventory page @1"
+			return 0;
+		}
+
+		pip = (page_inv_page*) page;
+		if (pip->pip_used != pagesPerPIP)
+			break;
+
+		UCHAR lastByte = pip->pip_bits[bytesBitPIP - 1];
+		if (lastByte & 0x80)
+			break;
+
+		if (pipLast == pipFirst)
+			pipLast = pagesPerPIP - 1;
+		else
+			pipLast += pagesPerPIP;
+	}
+
+	int last_bit = pip->pip_used;
+	int byte_num = last_bit / 8;
+	UCHAR mask = 1 << (last_bit % 8);
+	while (last_bit >= 0 && (pip->pip_bits[byte_num] & mask))
+	{
+		if (mask == 1)
+		{
+			mask = 0x80;
+			byte_num--;
+			//fb_assert(byte_num > -1); ???
+		}
+		else
+			mask >>= 1;
+
+		last_bit--;
+	}
+
+	return last_bit + (pipLast == pipFirst ? 0 : pipLast);
 }
 
 
@@ -1474,11 +1580,12 @@ static void analyze_index( const dba_rel* relation, dba_idx* index)
 	bool firstLeafNode = true;
 	SLONG number;
 	FB_UINT64 duplicates = 0;
-	// AB: In fact length for KEY should be MAX_KEY (1/4 of used page-size)
-	// This value should be kept equal with size declared in btr.h
-	//UCHAR key[4096];
-	UCHAR* key = (UCHAR*) alloc(tddba->page_size / 4);
+
+	// Maximum key length is 1/4 of the used page-size
+	Array<UCHAR> key_buffer;
+	UCHAR* const key = key_buffer.getBuffer(tddba->page_size / 4);
 	USHORT key_length = 0;
+
 	ULONG prior_pagno = MAX_ULONG;
 	while (true)
 	{
@@ -2017,7 +2124,7 @@ static const pag* db_read( SLONG page_number, bool ok_enc)
 
 	page_number -= fil->fil_min_page - fil->fil_fudge;
 	const FB_UINT64 offset = ((FB_UINT64) page_number) * ((FB_UINT64) tddba->page_size);
-	if (lseek (fil->fil_desc, offset, 0) == -1)
+	if (os_utils::lseek (fil->fil_desc, offset, 0) == -1)
 	{
 		tddba->uSvc->setServiceStatus(GSTAT_MSG_FAC, 30, SafeArg());
 		// msg 30: Can't read a database page

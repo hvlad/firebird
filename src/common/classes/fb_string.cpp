@@ -28,6 +28,7 @@
 
 #include "firebird.h"
 #include "../common/classes/fb_string.h"
+#include "../common/classes/MetaString.h"
 
 #include <ctype.h>
 #include <stdarg.h>

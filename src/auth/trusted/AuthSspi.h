@@ -39,8 +39,9 @@
 #include <../common/classes/fb_string.h>
 #include <../common/classes/array.h>
 #include "../common/classes/ImplementHelper.h"
-#include <../jrd/ibase.h>
+#include <ibase.h>
 #include "firebird/Interface.h"
+#include "../common/classes/objects_array.h"
 
 #define SECURITY_WIN32
 
@@ -52,6 +53,10 @@ namespace Auth {
 
 class AuthSspi
 {
+public:
+	typedef Firebird::ObjectsArray<Firebird::string> GroupsList;
+	typedef Firebird::UCharBuffer Key;
+
 private:
 	enum {BUFSIZE = 4096};
 
@@ -61,6 +66,8 @@ private:
 	bool hasContext;
 	Firebird::string ctName;
 	bool wheel;
+	GroupsList groupNames;
+	Key sessionKey;
 
 	// Handle of library
 	static HINSTANCE library;
@@ -74,7 +81,7 @@ private:
 	INITIALIZE_SECURITY_CONTEXT_FN_A fInitializeSecurityContext;
 	ACCEPT_SECURITY_CONTEXT_FN fAcceptSecurityContext;
 
-	bool checkAdminPrivilege(PCtxtHandle phContext) const;
+	bool checkAdminPrivilege();
 	bool initEntries();
 
 public:
@@ -96,8 +103,11 @@ public:
 	// accept security context from the client (used by server)
 	bool accept(DataHolder& data);
 
-	// returns Windows user name, matching accepted security context
-	bool getLogin(Firebird::string& login, bool& wh);
+	// returns Windows user/group names, matching accepted security context
+	bool getLogin(Firebird::string& login, bool& wh, GroupsList& grNames);
+
+	// returns session key for wire encryption
+	const Key* getKey() const;
 };
 
 class WinSspiServer :
@@ -107,7 +117,7 @@ public:
 	// IServer implementation
 	int authenticate(Firebird::CheckStatusWrapper* status, Firebird::IServerBlock* sBlock,
 		Firebird::IWriter* writerInterface);
-    int release();
+	void setDbCryptCallback(Firebird::CheckStatusWrapper* status, Firebird::ICryptKeyCallback* callback) {}; // do nothing
 
 	WinSspiServer(Firebird::IPluginConfig*);
 
@@ -122,13 +132,13 @@ class WinSspiClient :
 public:
 	// IClient implementation
 	int authenticate(Firebird::CheckStatusWrapper* status, Firebird::IClientBlock* sBlock);
-    int release();
 
 	WinSspiClient(Firebird::IPluginConfig*);
 
 private:
 	AuthSspi::DataHolder sspiData;
 	AuthSspi sspi;
+	bool keySet;
 };
 
 void registerTrustedClient(Firebird::IPluginManager* iPlugin);

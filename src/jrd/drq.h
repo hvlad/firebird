@@ -130,7 +130,6 @@ enum drq_type_t
 	drq_gcg4,				// grantor_can_grant
 	drq_gcg5,				// grantor_can_grant
 	drq_l_view_idx,			// table is view?
-	drq_role_gens,			// store SQL role
 	drq_get_role_nm,		// get SQL role
 	drq_get_role_au,		// get SQL role auth
 	drq_del_role_1,			// delete SQL role from rdb$user_privilege
@@ -232,8 +231,27 @@ enum drq_type_t
 	drq_e_gfld_prvs,		// erase domain privileges
 	drq_g_nxt_nbakhist_id,	// generate next history ID for nbackup
 	drq_l_index_relname,	// lookup relation name for index
-	drq_l_trigger_relname,	// loopup relation name for trigger
-	drq_l_grant_option,		// loopup grant option for privilege
+	drq_l_trigger_relname,	// lookup relation name for trigger
+	drq_l_grant_option,		// lookup grant option for privilege
+	drq_l_granted_roles,	// lookup granted roles
+	drq_l_grant_object,		// check grantor can grant object
+	drq_proc_exist,			// check if procedure exists
+	drq_udf_exist,			// check if udf exists
+	drq_package_exist,		// check if package exists
+	drq_trigger_exist,		// check if trigger exists
+	drq_rel_exist,			// check if relation or view exists
+	drq_exception_exist,	// check if exception exists
+	drq_generator_exist,	// check if generator exists
+	drq_rel_field_exist,	// check if a field of relation or view exists
+	drq_m_coll_attrs,		// modify collation attributes
+	drq_l_pub_mode,			// lookup publication auto-enable mode
+	drq_m_pub_state,		// modify publication state
+	drq_m_pub_mode,			// modify publication auto-enable mode
+	drq_s_pub_tab,			// store relation into publication
+	drq_e_pub_tab,			// erase relation from publication
+	drq_l_pub_rel_name,		// lookup relation by name
+	drq_l_pub_all_rels,		// iterate through all user relations
+	drq_e_pub_tab_all,		// erase relation from all publication
 
 	drq_MAX
 };

@@ -30,7 +30,7 @@
 #include "../common/security.h"
 #include "../jrd/met_proto.h"
 #include "../jrd/ini.h"
-#include "gen/ids.h"
+#include "../jrd/ids.h"
 
 using namespace Jrd;
 using namespace Firebird;
@@ -40,19 +40,19 @@ namespace
 	class UserIdInfo : public AutoIface<ILogonInfoImpl<UserIdInfo, CheckStatusWrapper> >
 	{
 	public:
-		explicit UserIdInfo(const Attachment* pAtt)
-			: att(pAtt)
+		explicit UserIdInfo(Attachment* pAtt, jrd_tra* pTra)
+			: att(pAtt), tra(pTra)
 		{ }
 
 		// ILogonInfo implementation
 		const char* name()
 		{
-			return att->att_user->usr_user_name.c_str();
+			return att->att_user ? att->att_user->getUserName().c_str() : "";
 		}
 
 		const char* role()
 		{
-			return att->att_user->usr_sql_role_name.c_str();
+			return att->att_user ? att->att_user->getSqlRole().c_str() : "";
 		}
 
 		const char* networkProtocol()
@@ -67,13 +67,26 @@ namespace
 
 		const unsigned char* authBlock(unsigned* length)
 		{
+			if (!att->att_user)
+				return NULL;
 			const Auth::AuthenticationBlock& aBlock = att->att_user->usr_auth_block;
 			*length = aBlock.getCount();
 			return aBlock.getCount() ? aBlock.begin() : NULL;
 		}
 
+		JAttachment* attachment(CheckStatusWrapper*)
+		{
+			return att->getInterface();
+		}
+
+		JTransaction* transaction(CheckStatusWrapper*)
+		{
+			return tra->getInterface(false);
+		}
+
 	private:
-		const Attachment* att;
+		Attachment* att;
+		jrd_tra* tra;
 	};
 
 	class FillSnapshot : public AutoIface<IListUsersImpl<FillSnapshot, CheckStatusWrapper> >
@@ -127,6 +140,14 @@ namespace
 		string value;
 		bool present;
 	};
+
+	class ChangeCharset : public AutoSetRestore<SSHORT>
+	{
+	public:
+		ChangeCharset(Attachment* att)
+			: AutoSetRestore(&att->att_charset, CS_NONE)
+		{ }
+	};
 } // anonymous namespace
 
 const Format* UsersTableScan::getFormat(thread_db* tdbb, jrd_rel* relation) const
@@ -144,13 +165,14 @@ bool UsersTableScan::retrieveRecord(thread_db* tdbb, jrd_rel* relation,
 }
 
 
-UserManagement::UserManagement(jrd_tra* tra)
-	: SnapshotData(*tra->tra_pool),
+UserManagement::UserManagement(jrd_tra* pTra)
+	: SnapshotData(*pTra->tra_pool),
 	  threadDbb(NULL),
-	  commands(*tra->tra_pool),
-	  managers(*tra->tra_pool),
-	  plugins(*tra->tra_pool),
-	  att(tra->tra_attachment)
+	  commands(*pTra->tra_pool),
+	  managers(*pTra->tra_pool),
+	  plugins(*pTra->tra_pool),
+	  att(pTra->tra_attachment),
+	  tra(pTra)
 {
 	if (!att || !att->att_user)
 	{
@@ -170,7 +192,8 @@ IManagement* UserManagement::registerManager(Auth::Get& getPlugin, const char* p
 	LocalStatus status;
 	CheckStatusWrapper statusWrapper(&status);
 
-	UserIdInfo idInfo(att);
+	UserIdInfo idInfo(att, tra);
+	ChangeCharset cc(att);
 	manager->start(&statusWrapper, &idInfo);
 	if (status.getState() & IStatus::STATE_ERRORS)
 	{
@@ -203,9 +226,7 @@ IManagement* UserManagement::getManager(const char* name)
 		}
 	}
 	if (!plugName.hasData())
-	{
-		(Arg::Gds(isc_random) << "Missing requested management plugin").raise();
-	}
+		Arg::Gds(isc_user_manager).raise();
 
 	// Search for it in cache of already loaded plugins
 	for (unsigned i = 0; i < managers.getCount(); ++i)
@@ -259,6 +280,7 @@ UserManagement::~UserManagement()
 			LocalStatus status;
 			CheckStatusWrapper statusWrapper(&status);
 
+			ChangeCharset cc(att);
 			manager->rollback(&statusWrapper);
 			PluginManagerInterfacePtr()->releasePlugin(manager);
 			managers[i].second = NULL;
@@ -281,6 +303,7 @@ void UserManagement::commit()
 			LocalStatus status;
 			CheckStatusWrapper statusWrapper(&status);
 
+			ChangeCharset cc(att);
 			manager->commit(&statusWrapper);
 			if (status.getState() & IStatus::STATE_ERRORS)
 				status_exception::raise(&statusWrapper);
@@ -296,8 +319,9 @@ USHORT UserManagement::put(Auth::DynamicUserData* userData)
 	const FB_SIZE_T ret = commands.getCount();
 	if (ret > MAX_USHORT)
 	{
-		status_exception::raise(Arg::Gds(isc_random) << "Too many user management DDL per transaction)");
+		status_exception::raise(Arg::Gds(isc_imp_exc) << Arg::Gds(isc_random) << "Too many user management DDL per transaction");
 	}
+
 	commands.push(userData);
 	return ret;
 }
@@ -350,6 +374,7 @@ void UserManagement::execute(USHORT id)
 
 	LocalStatus status;
 	CheckStatusWrapper statusWrapper(&status);
+	ChangeCharset cc(att);
 
 	if (command->attr.entered() || command->op == Auth::ADDMOD_OPER)
 	{
@@ -362,12 +387,13 @@ void UserManagement::execute(USHORT id)
 
 		OldAttributes oldAttributes;
 		int ret = manager->execute(&statusWrapper, &cmd, &oldAttributes);
-		checkSecurityResult(ret, &status, command->userName()->get(), command->operation());
+		if ((ret == 0 || status.getErrors()[1] != isc_missing_data_structures) && (!command->silent))
+			checkSecurityResult(ret, &status, command->userName()->get(), command->operation());
+		else
+			statusWrapper.init();
 
 		if (command->op == Auth::ADDMOD_OPER)
-		{
 			command->op = oldAttributes.present ? Auth::MOD_OPER : Auth::ADD_OPER;
-		}
 
 		if (command->attr.entered())
 		{
@@ -384,9 +410,8 @@ void UserManagement::execute(USHORT id)
 			while (cur != curEnd)
 			{
 				if (cur->name == prev)
-				{
 					(Arg::Gds(isc_dup_attribute) << cur->name).raise();
-				}
+
 				prev = cur->name;
 				++cur;
 			}
@@ -456,7 +481,8 @@ void UserManagement::execute(USHORT id)
 	}
 
 	int errcode = manager->execute(&statusWrapper, command, NULL);
-	checkSecurityResult(errcode, &status, command->userName()->get(), command->operation());
+	if (!command->silent)
+		checkSecurityResult(errcode, &status, command->userName()->get(), command->operation());
 
 	delete commands[id];
 	commands[id] = NULL;
@@ -479,7 +505,7 @@ void UserManagement::list(IUser* u, unsigned cachePosition)
 		const char* uname = u->userName()->get();
 		putField(threadDbb, record,
 				 DumpField(f_sec_user_name, VALUE_STRING, static_cast<USHORT>(strlen(uname)), uname));
-		su = strcmp(uname, SYSDBA_USER_NAME) == 0;
+		su = strcmp(uname, DBA_USER_NAME) == 0;
 	}
 
 	if (u->firstName()->entered())

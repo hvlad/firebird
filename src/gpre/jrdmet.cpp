@@ -27,7 +27,7 @@
 //
 
 #include "firebird.h"
-#include "../jrd/ibase.h"
+#include "ibase.h"
 #include "../jrd/constants.h"
 #include "../jrd/ods.h"
 
@@ -78,15 +78,20 @@ void JRDMET_init( gpre_dbb* db)
 			field->fld_sub_type = gfield->gfld_sub_type;
 			if (field->fld_dtype == dtype_varying || field->fld_dtype == dtype_text)
 			{
-				field->fld_dtype = dtype_cstring;
+				if (gfield->gfld_sub_type == dsc_text_type_fixed)
+					field->fld_dtype = dtype_text;
+				else
+				{
+					field->fld_dtype = dtype_cstring;
+					++field->fld_length;
+				}
+
 				field->fld_flags |= FLD_text;
 
 				if (gfield->gfld_sub_type == dsc_text_type_metadata)
 				{
 					if (gpreGlob.sw_language == lang_internal)
 						field->fld_flags |= FLD_charset;
-					else
-						field->fld_length *= 4;
 
 					field->fld_charset_id = CS_METADATA;
 					field->fld_collate_id = COLLATE_NONE;
@@ -97,12 +102,10 @@ void JRDMET_init( gpre_dbb* db)
 					if (gpreGlob.sw_language == lang_internal)
 						field->fld_flags |= FLD_charset;
 
-					field->fld_charset_id = CS_NONE;
+					field->fld_charset_id = gfield->gfld_sub_type == dsc_text_type_fixed ? CS_BINARY : CS_NONE;
 					field->fld_collate_id = COLLATE_NONE;
-					field->fld_ttype = ttype_none;
+					field->fld_ttype = gfield->gfld_sub_type == dsc_text_type_fixed ? ttype_binary : ttype_none;
 				}
-
-				++field->fld_length;
 			}
 			else if (field->fld_dtype == dtype_blob)
 			{

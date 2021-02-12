@@ -22,6 +22,47 @@
 #		Alex Peshkoff
 #
 
+fb_install_prefix=@prefix@
+default_prefix=@prefix@
+fb_startup_name=firebird
+
+#------------------------------------------------------------------------
+# Build startup name from install path
+
+startupName() {
+	# sanity check
+	if [ -z "${fb_install_prefix}" ]
+	then
+		echo "Empty install path - can not proceed"
+		exit 1
+	fi
+
+	if [ "${fb_install_prefix}" = "${default_prefix}" ]
+	then
+		fb_startup_name=firebird
+	else
+		# strip first '/' if present
+		fb_startup_name=`echo ${fb_install_prefix} | colrm 2`
+		if [ ${fb_startup_name} = / ]
+		then
+			fb_startup_name=`echo ${fb_install_prefix} | colrm 1 1`
+			if [ -z "$fb_startup_name" ]
+			then
+				# root specified - hmmm...
+				fb_startup_name=root
+			fi
+		else
+			echo "Parameter (${fb_install_prefix}) for -path option should start with /"
+			exit 1
+		fi
+
+		# build final name
+		fb_startup_name=firebird.`echo $fb_startup_name | tr / _`
+	fi
+}
+
+startupName		## build it for what's present in current file
+
 
 #------------------------------------------------------------------------
 # Adds parameter to $PATH if it's missing in it
@@ -43,9 +84,11 @@ Answer=""
 OrigPasswd=""
 TmpFile=""
 MANIFEST_TXT=""
+Manifest=manifest.txt
 SecurityDatabase=security4.fdb
 DefaultLibrary=libfbclient
 UninstallScript=FirebirdUninstall.sh
+XINETD=/etc/xinetd.d/
 ArchiveDateTag=`date +"%Y%m%d_%H%M"`
 export ArchiveDateTag
 ArchiveMainFile="@FB_CONFDIR@_${ArchiveDateTag}"
@@ -176,95 +219,22 @@ checkLibrary() {
 #------------------------------------------------------------------------
 # Make sure we have required libraries installed
 checkLibraries() {
-	if [ "@TOMBUILD@" != "Y" ]
+	if [ "@TOMMATH_BUILD@" != "Y" -o "${fb_install_prefix}" != "${default_prefix}" ]
 	then
+		fixTommath=
 		checkLibrary tommath
-	fi
-}
-
-
-#------------------------------------------------------------------------
-#  resetInetdServer
-#  Works for both inetd and xinetd
-
-resetInetdServer() {
-	if [ "$OS_Has_Specific_Classic_Startup" ]
-	then
-		return
+		haveLibrary libtommath.so.0 || [ "$fixTommath" ] && $fixTommath
 	fi
 
-	pid=`grepProcess "inetd|xinetd" | awk '{print $2}'`
-    if [ "$pid" ]
-    then
-        kill -HUP $pid
-    fi
-}
-
-
-#------------------------------------------------------------------------
-# check does directory have files
-
-hasFiles() {
-	dir=$1
-	for i in $dir/*
-	do
-		if [ -f "$i" ]
-		then
-			return 0
-		fi
-	done
-	return 1
-}
-
-
-#------------------------------------------------------------------------
-# remove the xinetd config file(s)
-# take into account possible pre-firebird xinetd services
-
-removeXinetdEntry() {
-	if hasFiles /etc/xinetd.d
+	if [ "@TOMCRYPT_BUILD@" != "Y" -o "${fb_install_prefix}" != "${default_prefix}" ]
 	then
-		for i in `grep -l "service @FB_SERVICE_NAME@" /etc/xinetd.d/*`
-		do
-			rm -f $i
-		done
-	fi
-}
-
-
-#------------------------------------------------------------------------
-# remove the line from inetd file
-
-removeInetdEntry() {
-    FileName=/etc/inetd.conf
-    oldLine=`grep "^@FB_SERVICE_NAME@" $FileName`
-    removeLineFromFile "$FileName" "$oldLine"
-}
-
-
-#------------------------------------------------------------------------
-#  Remove (x)inetd service entry and restart the service.
-#  Check to see if we have xinetd installed or plain inetd.  
-#  Install differs for each of them.
-
-removeInetdServiceEntry() {
-	if [ "$OS_Has_Specific_Classic_Startup" ]
-	then
-		osStopClassicServer
-		osUnregisterClassicServer
-		return
+		[ -z "$LIBTOMCRYPT" ] && LIBTOMCRYPT=tomcrypt
+		checkLibrary $LIBTOMCRYPT
 	fi
 
-    if [ -d /etc/xinetd.d ]
-    then
-        removeXinetdEntry
-    elif [ -f /etc/inetd.conf ]
-	then
-        removeInetdEntry
-    fi
+	checkLibrary icudata
 
-    # make [x]inetd reload configuration
-	resetInetdServer
+	[ "$LIBCURSES" ] && checkLibrary $LIBCURSES
 }
 
 
@@ -274,7 +244,7 @@ removeInetdServiceEntry() {
 grepProcess() {
 	processList=$1
 	eol=\$
-	ps $psOptions | egrep "\<($processList)($eol|[[:space:]])" | grep -v grep
+	ps $psOptions | egrep "\<($processList)($eol|[[:space:]])" | grep -v grep | grep -v -w '\-path'
 }
 
 
@@ -327,28 +297,22 @@ checkIfServerRunning() {
 # The following check for running interbase or firebird 1.0 servers.
 
     checkString=`grepProcess "ibserver|ibguard"`
-    if [ ! -z "$checkString" ] 
+    if [ ! -z "$checkString" ]
     then
-        echo "An instance of the Firebird/InterBase Super server seems to be running." 
+        echo "An instance of the Firebird/InterBase Super server seems to be running."
         echo "(the ibserver or ibguard process was detected running on your system)"
         echo "Please quit all Firebird applications and then proceed."
-        exit 1 
+        exit 1
     fi
 
     checkString=`grepProcess "gds_inet_server|gds_pipe"`
-    if [ ! -z "$checkString" ] 
+    if [ ! -z "$checkString" ]
     then
-        echo "An instance of the Firebird/InterBase Classic server seems to be running." 
+        echo "An instance of the Firebird/InterBase Classic server seems to be running."
         echo "(the gds_inet_server or gds_pipe process was detected running on your system)"
-        echo "Please quit all Firebird applications and then proceed." 
-        exit 1 
+        echo "Please quit all Firebird applications and then proceed."
+        exit 1
     fi
-
-# have to be root to modify (x)inetd
-	if [ "$1" != "install-embedded" ]
-	then
-		removeInetdServiceEntry
-	fi
 }
 
 
@@ -392,7 +356,7 @@ replaceLineInFile() {
     newLine="$2"
     oldLine=`grep "$3" $FileName`
 
-    if [ -z "$oldLine" ] 
+    if [ -z "$oldLine" ]
       then
         echo "$newLine" >> "$FileName"
     elif [ "$oldLine" != "$newLine"  ]
@@ -427,7 +391,7 @@ removeLineFromFile() {
     FileName=$1
     oldLine=$2
 
-    if [ ! -z "$oldLine" ] 
+    if [ ! -z "$oldLine" ]
     then
         cat $FileName | grep -v "$oldLine" > ${FileName}.tmp
         cp ${FileName}.tmp $FileName && rm -f ${FileName}.tmp
@@ -457,8 +421,8 @@ ISC_PASSWD=$NewPasswd
 #
 # generated on $FB_HOST at time $FB_TIME
 #
-# Your password can be changed to a more suitable one using the
-# @FB_BINDIR@/gsec utility.
+# Your password can be changed to a more suitable one using
+# SQL operator ALTER USER.
 #
 EOT
 
@@ -515,25 +479,52 @@ setDBAPassword() {
 #------------------------------------------------------------------------
 #  buildUninstallFile
 #  This will work only for the .tar.gz install and it builds an
-#  uninstall shell script.  The RPM system, if present, takes care of it's own.
+#  uninstall shell script.
 
 buildUninstallFile() {
     cd "$origDir"
 
-    if [ ! -f manifest.txt ]  # Only exists if we are a .tar.gz install
+    if [ ! -f $Manifest ]  # Only exists if we are a .tar.gz install
     then
         return
     fi
 
-	cp manifest.txt @FB_MISCDIR@
-	MANIFEST_TXT=@FB_MISCDIR@/manifest.txt
+	MANIFEST_TXT=@FB_MISCDIR@/$Manifest
+	if [ "${fb_install_prefix}" = "${default_prefix}" ]
+	then
+		cp $Manifest $MANIFEST_TXT
+	else
+		newManifest $Manifest $MANIFEST_TXT
+	fi
 
-	cp -r scripts @FB_MISCDIR@
-	[ -f scripts/tarMainUninstall.sh ] && cp scripts/tarMainUninstall.sh @FB_SBINDIR@/$UninstallScript
-	[ -f scripts/tarmainUninstall.sh ] && cp scripts/tarmainUninstall.sh @FB_SBINDIR@/$UninstallScript
 	[ -f @FB_SBINDIR@/$UninstallScript ] && chmod u=rx,go= @FB_SBINDIR@/$UninstallScript
 }
 
+
+#------------------------------------------------------------------------
+#  newManifest
+#  Create new manifest replacing default_prefix with fb_install_prefix
+#	in existing manifest
+
+newManifest() {
+	ExistingManifestFile=${1}
+	CreateManifestFile=${2}
+
+	rm -f $CreateManifestFile
+	oldPath=".${default_prefix}"
+
+	for line in `grep "^${oldPath}" $ExistingManifestFile | colrm 1 ${#oldPath}`
+	do
+		echo ".${fb_install_prefix}${line}" >>$CreateManifestFile
+	done
+
+	newPath=`dirname "${fb_install_prefix}"`
+	while [ ${#newPath} -gt 1 ]
+	do
+		echo ".${newPath}" >>$CreateManifestFile
+		newPath=`dirname $newPath`
+	done
+}
 
 #------------------------------------------------------------------------
 # Remove if only a link
@@ -556,7 +547,7 @@ safeLink() {
 	Target=$2
 	Manifest=$3
 
-	if [ $Source != $Target ]
+	if [ $Source != $Target -a "${fb_install_prefix}" = "${default_prefix}" ]
 	then
 		removeIfOnlyAlink $Target
     	if [ ! -e $Target ]
@@ -595,7 +586,7 @@ createLinksForBackCompatibility() {
 
 createLinksInSystemLib() {
 	LibDir=`CorrectLibDir @libdir@`
-	tommath=libtommath.@SHRLIB_EXT@
+	libtom='libtom*.@SHRLIB_EXT@*'
 	tomdir=@FB_LIBDIR@/.tm
     origDirLinksInSystemLib=`pwd`
 
@@ -610,15 +601,12 @@ createLinksInSystemLib() {
 
 	if [ -d $tomdir ]; then
 		cd $tomdir
-		Libraries=""
-		if [ ! -f $LibDir/$tommath ]; then
-			Libraries=`echo ${tommath}*`
-		fi
+		Libraries=`echo ${libtom}`
 
 		cd /
 		for l in $Libraries
 		do
-			safeLink @FB_LIBDIR@/.tm/$l .$LibDir/$l ${MANIFEST_TXT}
+			[ -f .$LibDir/$l ] || safeLink @FB_LIBDIR@/.tm/$l .$LibDir/$l ${MANIFEST_TXT}
 		done
 	fi
 
@@ -684,14 +672,25 @@ archivePriorInstallSystemFiles() {
 	fi
 
 	tarArc=${ArchiveMainFile}.$tarExt
-
     oldPWD=`pwd`
+	distManifest=${oldPWD}/manifest.txt
     archiveFileList=""
+    archiveDelTemp=""
+
+	if [ "${fb_install_prefix}" != "${default_prefix}" ]
+	then
+		TmpFile=""
+		MakeTemp
+		newManifest $distManifest $TmpFile
+		distManifest=$TmpFile
+		archiveDelTemp=$TmpFile
+	fi
+
 
     cd /
 
-	if [ -f ${oldPWD}/manifest.txt ]; then
-		manifest=`cat ${oldPWD}/manifest.txt`
+	if [ -f ${distManifest} ]; then
+		manifest=`cat ${distManifest}`
 		for i in $manifest; do
 			if [ -f $i ]; then
 				i=${i#/}	# strip off leading /
@@ -699,6 +698,8 @@ archivePriorInstallSystemFiles() {
 			fi
 		done
 	fi
+
+	rm -f "$archiveDelTemp"
 
     DestFile=@FB_CONFDIR@
     if [ -e "$DestFile" ]
@@ -710,7 +711,7 @@ archivePriorInstallSystemFiles() {
         echo "    The installation target directory $DestFile already exists."
         echo "    This and other related files found will be"
         echo "    archived in the file : ${tarArc}"
-        echo "" 
+        echo ""
 
         if [ ! -z "$InteractiveInstall" ]
         then
@@ -723,38 +724,40 @@ archivePriorInstallSystemFiles() {
         fi
     fi
 
-
-    for i in ibase.h ib_util.h
-    do
-        DestFile=usr/include/$i
-        if [ -e $DestFile ]; then
-			if [ ! "`echo $archiveFileList | grep $DestFile`" ]; then
-            	archiveFileList="$archiveFileList $DestFile"
-			fi
-        fi
-    done
-
-    for i in libib_util.@SHRLIB_EXT@ libfbclient.@SHRLIB_EXT@*
-	do
-		for DestFile in usr/lib/$i
-	    do
-        	if [ -e $DestFile ]; then
+	if [ "${fb_install_prefix}" = "${default_prefix}" ]
+	then
+	    for i in ibase.h ib_util.h
+    	do
+        	DestFile=usr/include/$i
+	        if [ -e $DestFile ]; then
 				if [ ! "`echo $archiveFileList | grep $DestFile`" ]; then
-    	        	archiveFileList="$archiveFileList $DestFile"
+        	    	archiveFileList="$archiveFileList $DestFile"
 				fi
-        	fi
-		done
-    done
+	        fi
+    	done
 
-    for i in usr/sbin/rcfirebird etc/init.d/firebird etc/rc.d/init.d/firebird
-    do
-        DestFile=./$i
-        if [ -e $DestFile ]; then
-			if [ ! "`echo $archiveFileList | grep $DestFile`" ]; then
-            	archiveFileList="$archiveFileList $DestFile"
-			fi
-        fi
-    done
+	    for i in libib_util.@SHRLIB_EXT@ libfbclient.@SHRLIB_EXT@*
+		do
+			for DestFile in usr/lib/$i
+			    do
+        		if [ -e $DestFile ]; then
+					if [ ! "`echo $archiveFileList | grep $DestFile`" ]; then
+    	        		archiveFileList="$archiveFileList $DestFile"
+					fi
+    	    	fi
+			done
+	    done
+
+	    for i in usr/sbin/rcfirebird etc/init.d/firebird etc/rc.d/init.d/firebird
+    	do
+        	DestFile=./$i
+	        if [ -e $DestFile ]; then
+				if [ ! "`echo $archiveFileList | grep $DestFile`" ]; then
+        	    	archiveFileList="$archiveFileList $DestFile"
+				fi
+	        fi
+    	done
+    fi
 
     if [ ! -z "$archiveFileList" ]
     then
@@ -803,12 +806,11 @@ removeInstalledFiles() {
 
 #------------------------------------------------------------------------
 # removeUninstallFiles
-# Under the install directory remove all the empty directories 
+# Under the install directory remove all the empty directories
 # If some files remain then
 
 removeUninstallFiles() {
-    # remove the uninstall scripts files.
-    rm -rf @FB_MISCDIR@/scripts
+    # remove the uninstall files
     rm -f @FB_MISCDIR@/manifest*.txt
     rm -f @FB_SBINDIR@/$UninstallScript
 }
@@ -816,7 +818,7 @@ removeUninstallFiles() {
 
 #------------------------------------------------------------------------
 # removeEmptyDirs
-# Under the install directory remove all the empty directories 
+# Under the install directory remove all the empty directories
 # This routine loops, since deleting a directory possibly makes
 # the parent empty as well
 
@@ -826,9 +828,9 @@ removeEmptyDirs() {
     while [ "$dirContentChanged" ]; do
         dirContentChanged=''
 
-		for rootDir in @FB_BINDIR@ @FB_SBINDIR@ @FB_LIBDIR@ @FB_INCDIR@ @FB_DOCDIR@ @FB_UDFDIR@ @FB_SAMPLEDIR@ @FB_SAMPLEDBDIR@ \
+		for rootDir in @FB_BINDIR@ @FB_SBINDIR@ @FB_LIBDIR@ @FB_INCDIR@ @FB_DOCDIR@ @FB_SAMPLEDIR@ @FB_SAMPLEDBDIR@ \
 					   @FB_HELPDIR@ @FB_INTLDIR@ @FB_MISCDIR@ @FB_SECDBDIR@ @FB_MSGDIR@ @FB_LOGDIR@ @FB_GUARDDIR@ @FB_PLUGDIR@ \
-					   @FB_CONFDIR@; do
+					   @FB_TZDATADIR@ @FB_CONFDIR@; do
 
 			if [ -d $rootDir ]; then
 		        for i in `find $rootDir -type d -print`; do
@@ -874,9 +876,9 @@ MakeFileFirebirdWritable() {
 fixFilePermissions() {
 	# First of all set owneship of all files to root
 	# Build list of interesting directories all over the FS
-	dirs="@FB_BINDIR@ @FB_SBINDIR@ @FB_CONFDIR@ @FB_LIBDIR@ @FB_INCDIR@/firebird @FB_DOCDIR@/sql.extensions @FB_UDFDIR@ \
+	dirs="@FB_BINDIR@ @FB_SBINDIR@ @FB_CONFDIR@ @FB_LIBDIR@ @FB_INCDIR@/firebird @FB_DOCDIR@/sql.extensions \
 		@FB_SAMPLEDIR@ @FB_SAMPLEDBDIR@ @FB_HELPDIR@ @FB_INTLDIR@ @FB_MISCDIR@ @FB_SECDBDIR@ @FB_MSGDIR@ @FB_LOGDIR@ \
-		@FB_GUARDDIR@ @FB_PLUGDIR@"
+		@FB_GUARDDIR@ @FB_PLUGDIR@ @FB_TZDATADIR@"
 	dirs2=`for i in $dirs; do echo $i; done|sort|uniq`
 
 	MakeTemp
@@ -932,6 +934,8 @@ fixFilePermissions() {
 	cd @FB_LOGDIR@
     touch firebird.log
     MakeFileFirebirdWritable firebird.log
+    touch replication.log
+    MakeFileFirebirdWritable replication.log
 
     # Security database
 	cd @FB_SECDBDIR@
@@ -949,60 +953,15 @@ fixFilePermissions() {
 }
 
 
-#------------------------------------------------------------------------
-#  changeXinetdServiceUser
-#  Change the run user of the xinetd service
-
-changeXinetdServiceUser() {
-    InitFile=/etc/xinetd.d/firebird
-    if [ -f $InitFile ]
-    then
-        editFile $InitFile user "\tuser\t\t\t= $RunUser"
-    fi
-}
-
-
-#------------------------------------------------------------------------
-#  Update inetd service entry
-#  This just adds/replaces the service entry line
-
-updateInetdEntry() {
-    newLine="@FB_SERVICE_NAME@  stream  tcp     nowait.30000      $RunUser @FB_SBINDIR@/firebird firebird # Firebird Database Remote Server"
-    replaceLineInFile /etc/inetd.conf "$newLine" "^@FB_SERVICE_NAME@"
-}
-
-
-#------------------------------------------------------------------------
-#  Update xinetd service entry
-
-updateXinetdEntry() {
-    cp @FB_MISCDIR@/firebird.xinetd /etc/xinetd.d/firebird
-    changeXinetdServiceUser
-}
-
-
-#------------------------------------------------------------------------
-#  Update inetd service entry
-#  Check to see if we have xinetd installed or plain inetd.
-#  Install differs for each of them.
-
-updateInetdServiceEntry() {
-	if ! standaloneServerInstalled
+fbUsage() {
+	pf=""
+	if [ "@CHANGE_PATH_SUPPORT@" = "yes" ]
 	then
-		if [ "$OS_Has_Specific_Classic_Startup" ]
-		then
-			osRegisterClassicServer
-			osStartClassicServer
-			return
-		fi
+		pf=', -path <install path>'
+	fi
 
-	    if [ -d /etc/xinetd.d ]
-    	then
-        	updateXinetdEntry
-    	else
-        	updateInetdEntry
-		fi
-    fi
+	echo "$1 option: $2. Known option(s): -silent${pf}."
+	exit 1
 }
 
 
@@ -1015,13 +974,26 @@ parseArgs() {
 	flSilent=0
 
 	while [ -n "$1" ]; do
-		case $1 in
+		case "$1" in
 			-silent)
 				flSilent=1
 				;;
+			-path)
+				if [ "@CHANGE_PATH_SUPPORT@" = "yes" ]
+				then
+					{ fb_install_prefix="$2"; }
+					if [ -z "${fb_install_prefix}" ]
+					then
+						fbUsage "Missing argument for" "$1"
+					fi
+					shift
+					startupName
+				else
+					fbUsage "Not supported" "$1"
+				fi
+				;;
 			*)
-				echo "Invalid option: $1. Known option is '-silent'."
-				exit 1
+				fbUsage Invalid "$1"
 				;;
 		esac
 		shift
@@ -1035,12 +1007,65 @@ parseArgs() {
 
 
 #---------------------------------------------------------------------------
-#  depending upon presence of startup script starts super or classic server
+#  set new prefix for fb installation
+
+setNewPrefix() {
+	binlist="@FB_BINDIR@/changeServerMode.sh @FB_BINDIR@/fb_config @FB_BINDIR@/registerDatabase.sh @FB_BINDIR@/FirebirdUninstall.sh"
+	filelist="$binlist @FB_MISCDIR@/firebird.init.d.*"
+	for file in $filelist
+	do
+		editFile $file fb_install_prefix "fb_install_prefix=${fb_install_prefix}"
+	done
+	for file in $binlist
+	do
+		chmod 0700 $file
+	done
+}
+
+
+#---------------------------------------------------------------------------
+#  extract installation archive
+
+extractBuildroot() {
+	displayMessage "Extracting install data"
+
+	if [ "${fb_install_prefix}" = "${default_prefix}" ]
+	then
+		# Extract archive in root directory
+		cd /
+		tar -xzof "$origDir/buildroot.tar.gz"
+	else
+		mkdir -p ${fb_install_prefix}
+		cd ${fb_install_prefix}
+		defDir=".${default_prefix}"
+		if [ -d $defDir ]
+		then
+			echo "${default_prefix} should not exist in ${fb_install_prefix}"
+		fi
+
+		tar -xzof "$origDir/buildroot.tar.gz" ${defDir}
+		for p in ${defDir}/*
+		do
+			mv $p .
+		done
+
+		while [ ${#defDir} -gt 2 ]
+		do
+			rm -rf ${defDir}
+			defDir=`dirname $defDir`
+		done
+	fi
+
+	cd "$origDir"
+}
+
+
+#---------------------------------------------------------------------------
+#  starts firebird server
 
 startFirebird() {
-	if standaloneServerInstalled; then
+	if [ "${fb_install_prefix}" = "${default_prefix}" ]
+	then
 		startService
-	else
-		resetInetdServer
 	fi
 }

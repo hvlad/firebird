@@ -73,6 +73,17 @@
 #include <sys/signal.h>
 #endif
 
+#if defined(LSB_BUILD) && LSB_BUILD < 50
+#define O_CLOEXEC       02000000
+#endif
+
+
+#ifdef HAVE_UTIME_H
+#include <utime.h>
+#endif
+
+#include <stdio.h>
+
 using namespace Firebird;
 
 namespace os_utils
@@ -130,46 +141,120 @@ namespace
 		while (chmod(pathname, mode) < 0 && SYSCALL_INTERRUPTED(errno))
 			;
 	}
+
+	inline int openFile(const char* pathname, int flags, mode_t mode = 0666)
+	{
+		int rc;
+
+		do
+		{
+#ifdef LSB_BUILD
+			rc = open64(pathname, flags, mode);
+#else
+			rc = ::open(pathname, flags, mode);
+#endif
+		} while (rc == -1 && SYSCALL_INTERRUPTED(errno));
+
+		return rc;
+	}
+
 } // anonymous namespace
 
 
 // create directory for lock files and set appropriate access rights
 void createLockDirectory(const char* pathname)
 {
-	do
+	struct STAT st;
+	for(;;)
 	{
 		if (access(pathname, R_OK | W_OK | X_OK) == 0)
 		{
-			struct stat st;
-			while (stat(pathname, &st) != 0)
-			{
-				if (SYSCALL_INTERRUPTED(errno))
-				{
-					continue;
-				}
+			if (os_utils::stat(pathname, &st) != 0)
 				system_call_failed::raise("stat");
-			}
-
 			if (S_ISDIR(st.st_mode))
-			{
 				return;
-			}
-
 			// not exactly original meaning, but very close to it
 			system_call_failed::raise("access", ENOTDIR);
 		}
-	} while (SYSCALL_INTERRUPTED(errno));
 
-	while (mkdir(pathname, 0700) != 0)		// anyway need chmod to avoid umask effects
-	{
 		if (SYSCALL_INTERRUPTED(errno))
-		{
 			continue;
-		}
-		(Arg::Gds(isc_lock_dir_access) << pathname).raise();
+		if (errno == ENOENT)
+			break;
+		system_call_failed::raise("access", ENOTDIR);
 	}
 
-	changeFileRights(pathname, 0770);
+	Firebird::PathName newname(pathname);
+	newname.rtrim("/");
+	newname += ".tmp.XXXXXX";
+	char* pathname2 = newname.begin();
+
+	while (!mkdtemp(pathname2))
+	{
+		if (SYSCALL_INTERRUPTED(errno))
+			continue;
+		(Arg::Gds(isc_lock_dir_access) << pathname2).raise();
+	}
+	changeFileRights(pathname2, 0770);
+
+	Firebird::PathName renameGuard(pathname2);
+	renameGuard += "/fb_rename_guard";
+	for(;;)
+	{
+		int gfd = creat(renameGuard.c_str(), 0600);
+		if (gfd >= 0)
+		{
+			close(gfd);
+			break;
+		}
+		if (SYSCALL_INTERRUPTED(errno))
+			continue;
+		(Arg::Gds(isc_lock_dir_access) << renameGuard).raise();
+	}
+
+	while (rename(pathname2, pathname) != 0)
+	{
+		if (SYSCALL_INTERRUPTED(errno))
+			continue;
+
+		if (errno == EEXIST || errno == ENOTEMPTY)
+		{
+			while (unlink(renameGuard.c_str()) != 0)
+			{
+				if (SYSCALL_INTERRUPTED(errno))
+					continue;
+				(Arg::Gds(isc_lock_dir_access) << pathname).raise();
+			}
+
+			while (rmdir(pathname2) != 0)
+			{
+				if (SYSCALL_INTERRUPTED(errno))
+					continue;
+				(Arg::Gds(isc_lock_dir_access) << pathname).raise();
+			}
+
+			for(;;)
+			{
+				if (access(pathname, R_OK | W_OK | X_OK) == 0)
+				{
+					if (os_utils::stat(pathname, &st) != 0)
+						system_call_failed::raise("stat");
+					if (S_ISDIR(st.st_mode))
+						return;
+					// not exactly original meaning, but very close to it
+					system_call_failed::raise("access", ENOTDIR);
+				}
+
+				if (SYSCALL_INTERRUPTED(errno))
+					continue;
+				system_call_failed::raise("access", ENOTDIR);
+			}
+
+			return;
+		}
+
+		(Arg::Gds(isc_lock_dir_access) << pathname).raise();
+	}
 }
 
 #ifndef S_IREAD
@@ -191,22 +276,20 @@ int openCreateSharedFile(const char* pathname, int flags)
 {
 	int fd = os_utils::open(pathname, flags | O_RDWR | O_CREAT, S_IREAD | S_IWRITE);
 	if (fd < 0)
-		raiseError(fd, pathname);
+		raiseError(ERRNO, pathname);
 
 	// Security check - avoid symbolic links in /tmp.
 	// Malicious user can create a symlink with this name pointing to say
 	// security2.fdb and when the lock file is created the file will be damaged.
 
-	struct stat st;
+	struct STAT st;
 	int rc;
 
-	do {
-		rc = fstat(fd, &st);
-	} while (fd != 0 && SYSCALL_INTERRUPTED(errno));
+	rc = os_utils::fstat(fd, &st);
 
 	if (rc != 0)
 	{
-		int e = errno;
+		const int e = ERRNO;
 		close(fd);
 		raiseError(e, pathname);
 	}
@@ -237,6 +320,7 @@ bool touchFile(const char* pathname)
 
 	return true;
 #else
+	errno = ENOSYS;
 	return false;
 #endif
 }
@@ -265,16 +349,10 @@ void setCloseOnExec(int fd)
 int open(const char* pathname, int flags, mode_t mode)
 {
 	int fd;
-	do {
-		fd = ::open(pathname, flags | O_CLOEXEC, mode);
-	} while (fd < 0 && SYSCALL_INTERRUPTED(errno));
+	fd = openFile(pathname, flags | O_CLOEXEC, mode);
 
 	if (fd < 0 && errno == EINVAL)	// probably O_CLOEXEC not accepted
-	{
-		do {
-			fd = ::open(pathname, flags | O_CLOEXEC, mode);
-		} while (fd < 0 && SYSCALL_INTERRUPTED(errno));
-	}
+		fd = openFile(pathname, flags, mode);
 
 	setCloseOnExec(fd);
 	return fd;
@@ -282,13 +360,23 @@ int open(const char* pathname, int flags, mode_t mode)
 
 FILE* fopen(const char* pathname, const char* mode)
 {
-	FILE* f = ::fopen(pathname, mode);	// TODO: use open + fdopen to avoid races
+	FILE* f = NULL;
+	do
+	{
+#ifdef LSB_BUILD
+		// TODO: use open + fdopen to avoid races
+		f = fopen64(pathname, mode);
+#else
+		f = ::fopen(pathname, mode);
+#endif
+	} while (f == NULL && SYSCALL_INTERRUPTED(errno));
+
 	if (f)
 		setCloseOnExec(fileno(f));
 	return f;
 }
 
-static void makeUniqueFileId(const struct stat& statistics, UCharBuffer& id)
+static void makeUniqueFileId(const struct STAT& statistics, UCharBuffer& id)
 {
 	const size_t len1 = sizeof(statistics.st_dev);
 	const size_t len2 = sizeof(statistics.st_ino);
@@ -303,13 +391,9 @@ static void makeUniqueFileId(const struct stat& statistics, UCharBuffer& id)
 
 void getUniqueFileId(int fd, UCharBuffer& id)
 {
-	struct stat statistics;
-	while (fstat(fd, &statistics) != 0)
-	{
-		if (errno == EINTR)
-			continue;
+	struct STAT statistics;
+	if (os_utils::fstat(fd, &statistics) != 0)
 		system_call_failed::raise("fstat");
-	}
 
 	makeUniqueFileId(statistics, id);
 }
@@ -317,12 +401,9 @@ void getUniqueFileId(int fd, UCharBuffer& id)
 
 void getUniqueFileId(const char* name, UCharBuffer& id)
 {
-	struct stat statistics;
-	while (stat(name, &statistics) != 0)
+	struct STAT statistics;
+	if (os_utils::stat(name, &statistics) != 0)
 	{
-		if (errno == EINTR)
-			continue;
-
 		id.clear();
 		return;
 	}

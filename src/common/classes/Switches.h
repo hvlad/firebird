@@ -44,6 +44,7 @@ public:
 		SINT64 in_sw_requires;				// alice specific field
 		SINT64 in_sw_incompatibilities;		// alice specific field
 		bool in_sw_state;					// burp specific field: was the item found in the arguments?
+		bool in_sw_option;					// the switch is transmitted by services API in isc_spb_options
 		USHORT in_sw_msg;					// msg # in the msg db for the respective facility, if any
 		USHORT in_sw_min_length;			// minimal length of an option; set for a whole table
 											// or leave as zero for the whole table (one char matches)

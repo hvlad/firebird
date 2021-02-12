@@ -59,7 +59,7 @@ static const struct {
 	{335544356, "metadata is obsolete"},		/* obsolete_metadata */
 	{335544357, "cannot disconnect database with open transactions (@1 active)"},		/* open_trans */
 	{335544358, "message length error (encountered @1, expected @2)"},		/* port_len */
-	{335544359, "attempted update of read-only column"},		/* read_only_field */
+	{335544359, "attempted update of read-only column @1"},		/* read_only_field */
 	{335544360, "attempted update of read-only table"},		/* read_only_rel */
 	{335544361, "attempted update during read-only transaction"},		/* read_only_trans */
 	{335544362, "cannot update read-only view @1"},		/* read_only_view */
@@ -474,7 +474,7 @@ static const struct {
 	{335544770, "Array bounds exceeded.  The code attempted to access an array element that is out of bounds."},		/* exception_array_bounds_exceeded */
 	{335544771, "Float denormal operand.  One of the floating-point operands is too small to represent a standard float value."},		/* exception_float_denormal_operand */
 	{335544772, "Floating-point divide by zero.  The code attempted to divide a floating-point value by zero."},		/* exception_float_divide_by_zero */
-	{335544773, "Floating-point inexact result.  The result of a floating-point operation cannot be represented as a deciaml fraction."},		/* exception_float_inexact_result */
+	{335544773, "Floating-point inexact result.  The result of a floating-point operation cannot be represented as a decimal fraction."},		/* exception_float_inexact_result */
 	{335544774, "Floating-point invalid operand.  An indeterminant error occurred during a floating-point operation."},		/* exception_float_invalid_operand */
 	{335544775, "Floating-point overflow.  The exponent of a floating-point operation is greater than the magnitude allowed."},		/* exception_float_overflow */
 	{335544776, "Floating-point stack check.  The stack overflowed or underflowed as the result of a floating-point operation."},		/* exception_float_stack_check */
@@ -484,12 +484,12 @@ static const struct {
 	{335544780, "An exception occurred that does not have a description.  Exception number @1."},		/* exception_unknown */
 	{335544781, "Stack overflow.  The resource requirements of the runtime stack have exceeded the memory available to it."},		/* exception_stack_overflow */
 	{335544782, "Segmentation Fault. The code attempted to access memory without privileges."},		/* exception_sigsegv */
-	{335544783, "Illegal Instruction. The Code attempted to perfrom an illegal operation."},		/* exception_sigill */
+	{335544783, "Illegal Instruction. The Code attempted to perform an illegal operation."},		/* exception_sigill */
 	{335544784, "Bus Error. The Code caused a system bus error."},		/* exception_sigbus */
 	{335544785, "Floating Point Error. The Code caused an Arithmetic Exception or a floating point exception."},		/* exception_sigfpe */
 	{335544786, "Cannot delete rows from external files."},		/* ext_file_delete */
 	{335544787, "Cannot update rows in external files."},		/* ext_file_modify */
-	{335544788, "Unable to perform operation.  You must be either SYSDBA or owner of the database"},		/* adm_task_denied */
+	{335544788, "Unable to perform operation"},		/* adm_task_denied */
 	{335544789, "Specified EXTRACT part does not exist in input datatype"},		/* extract_input_mismatch */
 	{335544790, "Service @1 requires SYSDBA permissions.  Reattach to the Service Manager using the SYSDBA account."},		/* insufficient_svc_privileges */
 	{335544791, "The file @1 is currently in use by another process.  Try again later."},		/* file_in_use */
@@ -517,7 +517,7 @@ static const struct {
 	{335544813, "Unsupported field type specified in BETWEEN predicate."},		/* optimizer_between_err */
 	{335544814, "Services functionality will be supported in a later version  of the product"},		/* service_not_supported */
 	{335544815, "GENERATOR @1"},		/* generator_name */
-	{335544816, "UDF @1"},		/* udf_name */
+	{335544816, "Function @1"},		/* udf_name */
 	{335544817, "Invalid parameter to FETCH or FIRST. Only integers >= 0 are allowed."},		/* bad_limit_param */
 	{335544818, "Invalid parameter to OFFSET or SKIP. Only integers >= 0 are allowed."},		/* bad_skip_param */
 	{335544819, "File exceeded maximum size of 2GB.  Add another database file or use a 64 bit I/O version of Firebird."},		/* io_32bit_exceeded_err */
@@ -733,7 +733,7 @@ Data source : @4"},		/* eds_statement */
 	{335545026, "External BLR message mismatch: invalid null descriptor at field @1"},		/* ee_blr_mismatch_null */
 	{335545027, "External BLR message mismatch: length = @1, expected @2"},		/* ee_blr_mismatch_length */
 	{335545028, "Subscript @1 out of bounds [@2, @3]"},		/* ss_out_of_bounds */
-	{335545029, "Install incomplete, please read the Compatibility chapter in the release notes for this version"},		/* missing_data_structures */
+	{335545029, "Install incomplete. To complete security database initialization please CREATE USER. For details read doc/README.security_database.txt."},		/* missing_data_structures */
 	{335545030, "@1 operation is not allowed for system table @2"},		/* protect_sys_tab */
 	{335545031, "Libtommath error code @1 in function @2"},		/* libtommath_generic */
 	{335545032, "unsupported BLR version (expected between @1 and @2, encountered @3)"},		/* wroblrver2 */
@@ -813,7 +813,170 @@ Data source : @4"},		/* eds_statement */
 	{335545106, "Error occurred during login, please check server firebird.log for details"},		/* login_error */
 	{335545107, "Database already opened with engine instance, incompatible with current"},		/* already_opened */
 	{335545108, "Invalid crypt key @1"},		/* bad_crypt_key */
-	{335545109, "Page requires encyption but crypt plugin is missing"},		/* encrypt_error */
+	{335545109, "Page requires encryption but crypt plugin is missing"},		/* encrypt_error */
+	{335545110, "Maximum index depth (@1 levels) is reached"},		/* max_idx_depth */
+	{335545111, "System privilege @1 does not exist"},		/* wrong_prvlg */
+	{335545112, "System privilege @1 is missing"},		/* miss_prvlg */
+	{335545113, "Invalid or missing checksum of encrypted database"},		/* crypt_checksum */
+	{335545114, "You must have SYSDBA rights at this server"},		/* not_dba */
+	{335545115, "Cannot open cursor for non-SELECT statement"},		/* no_cursor */
+	{335545116, "If <window frame bound 1> specifies @1, then <window frame bound 2> shall not specify @2"},		/* dsql_window_incompat_frames */
+	{335545117, "RANGE based window with <expr> {PRECEDING | FOLLOWING} cannot have ORDER BY with more than one value"},		/* dsql_window_range_multi_key */
+	{335545118, "RANGE based window must have an ORDER BY key of numerical, date, time or timestamp types"},		/* dsql_window_range_inv_key_type */
+	{335545119, "Window RANGE/ROWS PRECEDING/FOLLOWING value must be of a numerical type"},		/* dsql_window_frame_value_inv_type */
+	{335545120, "Invalid PRECEDING or FOLLOWING offset in window function: cannot be negative"},		/* window_frame_value_invalid */
+	{335545121, "Window @1 not found"},		/* dsql_window_not_found */
+	{335545122, "Cannot use PARTITION BY clause while overriding the window @1"},		/* dsql_window_cant_overr_part */
+	{335545123, "Cannot use ORDER BY clause while overriding the window @1 which already has an ORDER BY clause"},		/* dsql_window_cant_overr_order */
+	{335545124, "Cannot override the window @1 because it has a frame clause. Tip: it can be used without parenthesis in OVER"},		/* dsql_window_cant_overr_frame */
+	{335545125, "Duplicate window definition for @1"},		/* dsql_window_duplicate */
+	{335545126, "SQL statement is too long. Maximum size is @1 bytes."},		/* sql_too_long */
+	{335545127, "Config level timeout expired."},		/* cfg_stmt_timeout */
+	{335545128, "Attachment level timeout expired."},		/* att_stmt_timeout */
+	{335545129, "Statement level timeout expired."},		/* req_stmt_timeout */
+	{335545130, "Killed by database administrator."},		/* att_shut_killed */
+	{335545131, "Idle timeout expired."},		/* att_shut_idle */
+	{335545132, "Database is shutdown."},		/* att_shut_db_down */
+	{335545133, "Engine is shutdown."},		/* att_shut_engine */
+	{335545134, "OVERRIDING clause can be used only when an identity column is present in the INSERT's field list for table/view @1"},		/* overriding_without_identity */
+	{335545135, "OVERRIDING SYSTEM VALUE can be used only for identity column defined as 'GENERATED ALWAYS' in INSERT for table/view @1"},		/* overriding_system_invalid */
+	{335545136, "OVERRIDING USER VALUE can be used only for identity column defined as 'GENERATED BY DEFAULT' in INSERT for table/view @1"},		/* overriding_user_invalid */
+	{335545137, "OVERRIDING SYSTEM VALUE should be used to override the value of an identity column defined as 'GENERATED ALWAYS' in table/view @1"},		/* overriding_system_missing */
+	{335545138, "DecFloat precision must be 16 or 34"},		/* decprecision_err */
+	{335545139, "Decimal float divide by zero.  The code attempted to divide a DECFLOAT value by zero."},		/* decfloat_divide_by_zero */
+	{335545140, "Decimal float inexact result.  The result of an operation cannot be represented as a decimal fraction."},		/* decfloat_inexact_result */
+	{335545141, "Decimal float invalid operation.  An indeterminant error occurred during an operation."},		/* decfloat_invalid_operation */
+	{335545142, "Decimal float overflow.  The exponent of a result is greater than the magnitude allowed."},		/* decfloat_overflow */
+	{335545143, "Decimal float underflow.  The exponent of a result is less than the magnitude allowed."},		/* decfloat_underflow */
+	{335545144, "Sub-function @1 has not been defined"},		/* subfunc_notdef */
+	{335545145, "Sub-procedure @1 has not been defined"},		/* subproc_notdef */
+	{335545146, "Sub-function @1 has a signature mismatch with its forward declaration"},		/* subfunc_signat */
+	{335545147, "Sub-procedure @1 has a signature mismatch with its forward declaration"},		/* subproc_signat */
+	{335545148, "Default values for parameters are not allowed in definition of the previously declared sub-function @1"},		/* subfunc_defvaldecl */
+	{335545149, "Default values for parameters are not allowed in definition of the previously declared sub-procedure @1"},		/* subproc_defvaldecl */
+	{335545150, "Sub-function @1 was declared but not implemented"},		/* subfunc_not_impl */
+	{335545151, "Sub-procedure @1 was declared but not implemented"},		/* subproc_not_impl */
+	{335545152, "Invalid HASH algorithm @1"},		/* sysf_invalid_hash_algorithm */
+	{335545153, "Expression evaluation error for index \"@1\" on table \"@2\""},		/* expression_eval_index */
+	{335545154, "Invalid decfloat trap state @1"},		/* invalid_decfloat_trap */
+	{335545155, "Invalid decfloat rounding mode @1"},		/* invalid_decfloat_round */
+	{335545156, "Invalid part @1 to calculate the @1 of a DATE/TIMESTAMP"},		/* sysf_invalid_first_last_part */
+	{335545157, "Expected DATE/TIMESTAMP value in @1"},		/* sysf_invalid_date_timestamp */
+	{335545158, "Precision must be from @1 to @2"},		/* precision_err2 */
+	{335545159, "invalid batch handle"},		/* bad_batch_handle */
+	{335545160, "Bad international character in tag @1"},		/* intl_char */
+	{335545161, "Null data in parameters block with non-zero length"},		/* null_block */
+	{335545162, "Items working with running service and getting generic server information should not be mixed in single info block"},		/* mixed_info */
+	{335545163, "Unknown information item, code @1"},		/* unknown_info */
+	{335545164, "Wrong version of blob parameters block @1, should be @2"},		/* bpb_version */
+	{335545165, "User management plugin is missing or failed to load"},		/* user_manager */
+	{335545166, "Missing entrypoint @1 in ICU library"},		/* icu_entrypoint */
+	{335545167, "Could not find acceptable ICU library"},		/* icu_library */
+	{335545168, "Name @1 not found in system MetadataBuilder"},		/* metadata_name */
+	{335545169, "Parse to tokens error"},		/* tokens_parse */
+	{335545170, "Error opening international conversion descriptor from @1 to @2"},		/* iconv_open */
+	{335545171, "Message @1 is out of range, only @2 messages in batch"},		/* batch_compl_range */
+	{335545172, "Detailed error info for message @1 is missing in batch"},		/* batch_compl_detail */
+	{335545173, "Compression stream init error @1"},		/* deflate_init */
+	{335545174, "Decompression stream init error @1"},		/* inflate_init */
+	{335545175, "Segment size (@1) should not exceed 65535 (64K - 1) when using segmented blob"},		/* big_segment */
+	{335545176, "Invalid blob policy in the batch for @1() call"},		/* batch_policy */
+	{335545177, "Can't change default BPB after adding any data to batch"},		/* batch_defbpb */
+	{335545178, "Unexpected info buffer structure querying for default blob alignment"},		/* batch_align */
+	{335545179, "Duplicated segment @1 in multisegment connect block parameter"},		/* multi_segment_dup */
+	{335545180, "Plugin not supported by network protocol"},		/* non_plugin_protocol */
+	{335545181, "Error parsing message format"},		/* message_format */
+	{335545182, "Wrong version of batch parameters block @1, should be @2"},		/* batch_param_version */
+	{335545183, "Message size (@1) in batch exceeds internal buffer size (@2)"},		/* batch_msg_long */
+	{335545184, "Batch already opened for this statement"},		/* batch_open */
+	{335545185, "Invalid type of statement used in batch"},		/* batch_type */
+	{335545186, "Statement used in batch must have parameters"},		/* batch_param */
+	{335545187, "There are no blobs in associated with batch statement"},		/* batch_blobs */
+	{335545188, "appendBlobData() is used to append data to last blob but no such blob was added to the batch"},		/* batch_blob_append */
+	{335545189, "Portions of data, passed as blob stream, should have size multiple to the alignment required for blobs"},		/* batch_stream_align */
+	{335545190, "Repeated blob id @1 in registerBlob()"},		/* batch_rpt_blob */
+	{335545191, "Blob buffer format error"},		/* batch_blob_buf */
+	{335545192, "Unusable (too small) data remained in @1 buffer"},		/* batch_small_data */
+	{335545193, "Blob continuation should not contain BPB"},		/* batch_cont_bpb */
+	{335545194, "Size of BPB (@1) greater than remaining data (@2)"},		/* batch_big_bpb */
+	{335545195, "Size of segment (@1) greater than current BLOB data (@2)"},		/* batch_big_segment */
+	{335545196, "Size of segment (@1) greater than available data (@2)"},		/* batch_big_seg2 */
+	{335545197, "Unknown blob ID @1 in the batch message"},		/* batch_blob_id */
+	{335545198, "Internal buffer overflow - batch too big"},		/* batch_too_big */
+	{335545199, "Numeric literal too long"},		/* num_literal */
+	{335545200, "Error using events in mapping shared memory: @1"},		/* map_event */
+	{335545201, "Global mapping memory overflow"},		/* map_overflow */
+	{335545202, "Header page overflow - too many clumplets on it"},		/* hdr_overflow */
+	{335545203, "No matching client/server authentication plugins configured for execute statement in embedded datasource"},		/* vld_plugins */
+	{335545204, "Missing database encryption key for your attachment"},		/* db_crypt_key */
+	{335545205, "Key holder plugin @1 failed to load"},		/* no_keyholder_plugin */
+	{335545206, "Cannot reset user session"},		/* ses_reset_err */
+	{335545207, "There are open transactions (@1 active)"},		/* ses_reset_open_trans */
+	{335545208, "Session was reset with warning(s)"},		/* ses_reset_warn */
+	{335545209, "Transaction is rolled back due to session reset, all changes are lost"},		/* ses_reset_tran_rollback */
+	{335545210, "Plugin @1:"},		/* plugin_name */
+	{335545211, "PARAMETER @1"},		/* parameter_name */
+	{335545212, "Starting page number for file @1 must be @2 or greater"},		/* file_starting_page_err */
+	{335545213, "Invalid time zone offset: @1 - must use format +/-hours:minutes and be between -14:00 and +14:00"},		/* invalid_timezone_offset */
+	{335545214, "Invalid time zone region: @1"},		/* invalid_timezone_region */
+	{335545215, "Invalid time zone ID: @1"},		/* invalid_timezone_id */
+	{335545216, "Wrong base64 text length @1, should be multiple of 4"},		/* tom_decode64len */
+	{335545217, "Invalid first parameter datatype - need string or blob"},		/* tom_strblob */
+	{335545218, "Error registering @1 - probably bad tomcrypt library"},		/* tom_reg */
+	{335545219, "Unknown crypt algorithm @1 in USING clause"},		/* tom_algorithm */
+	{335545220, "Should specify mode parameter for symmetric cipher"},		/* tom_mode_miss */
+	{335545221, "Unknown symmetric crypt mode specified"},		/* tom_mode_bad */
+	{335545222, "Mode parameter makes no sense for chosen cipher"},		/* tom_no_mode */
+	{335545223, "Should specify initialization vector (IV) for chosen cipher and/or mode"},		/* tom_iv_miss */
+	{335545224, "Initialization vector (IV) makes no sense for chosen cipher and/or mode"},		/* tom_no_iv */
+	{335545225, "Invalid counter endianess @1"},		/* tom_ctrtype_bad */
+	{335545226, "Counter endianess parameter is not used in mode @1"},		/* tom_no_ctrtype */
+	{335545227, "Too big counter value @1, maximum @2 can be used"},		/* tom_ctr_big */
+	{335545228, "Counter length/value parameter is not used with @1 @2"},		/* tom_no_ctr */
+	{335545229, "Invalid initialization vector (IV) length @1, need @2"},		/* tom_iv_length */
+	{335545230, "TomCrypt library error: @1"},		/* tom_error */
+	{335545231, "Starting PRNG yarrow"},		/* tom_yarrow_start */
+	{335545232, "Setting up PRNG yarrow"},		/* tom_yarrow_setup */
+	{335545233, "Initializing @1 mode"},		/* tom_init_mode */
+	{335545234, "Encrypting in @1 mode"},		/* tom_crypt_mode */
+	{335545235, "Decrypting in @1 mode"},		/* tom_decrypt_mode */
+	{335545236, "Initializing cipher @1"},		/* tom_init_cip */
+	{335545237, "Encrypting using cipher @1"},		/* tom_crypt_cip */
+	{335545238, "Decrypting using cipher @1"},		/* tom_decrypt_cip */
+	{335545239, "Setting initialization vector (IV) for @1"},		/* tom_setup_cip */
+	{335545240, "Invalid initialization vector (IV) length @1, need  8 or 12"},		/* tom_setup_chacha */
+	{335545241, "Encoding @1"},		/* tom_encode */
+	{335545242, "Decoding @1"},		/* tom_decode */
+	{335545243, "Importing RSA key"},		/* tom_rsa_import */
+	{335545244, "Invalid OAEP packet"},		/* tom_oaep */
+	{335545245, "Unknown hash algorithm @1"},		/* tom_hash_bad */
+	{335545246, "Making RSA key"},		/* tom_rsa_make */
+	{335545247, "Exporting @1 RSA key"},		/* tom_rsa_export */
+	{335545248, "RSA-signing data"},		/* tom_rsa_sign */
+	{335545249, "Verifying RSA-signed data"},		/* tom_rsa_verify */
+	{335545250, "Invalid key length @1, need 16 or 32"},		/* tom_chacha_key */
+	{335545251, "invalid replicator handle"},		/* bad_repl_handle */
+	{335545252, "Transaction's base snapshot number does not exist"},		/* tra_snapshot_does_not_exist */
+	{335545253, "Input parameter '@1' is not used in SQL query text"},		/* eds_input_prm_not_used */
+	{335545254, "Effective user is @1"},		/* effective_user */
+	{335545255, "Invalid time zone bind mode @1"},		/* invalid_time_zone_bind */
+	{335545256, "Invalid decfloat bind mode @1"},		/* invalid_decfloat_bind */
+	{335545257, "Invalid hex text length @1, should be multiple of 2"},		/* odd_hex_len */
+	{335545258, "Invalid hex digit @1 at position @2"},		/* invalid_hex_digit */
+	{335545259, "Error processing isc_dpb_set_bind clumplet \"@1\""},		/* bind_err */
+	{335545260, "The following statement failed: @1"},		/* bind_statement */
+	{335545261, "Can not convert @1 to @2"},		/* bind_convert */
+	{335545262, "cannot update old BLOB"},		/* cannot_update_old_blob */
+	{335545263, "cannot read from new BLOB"},		/* cannot_read_new_blob */
+	{335545264, "No permission for CREATE @1 operation"},		/* dyn_no_create_priv */
+	{335545265, "SUSPEND could not be used without RETURNS clause in PROCEDURE or EXECUTE BLOCK"},		/* suspend_without_returns */
+	{335545266, "String truncated warning due to the following reason"},		/* truncate_warn */
+	{335545267, "Monitoring data does not fit into the field"},		/* truncate_monitor */
+	{335545268, "Engine data does not fit into return value of system function"},		/* truncate_context */
+	{335545269, "Multiple source records cannot match the same target during MERGE"},		/* merge_dup_update */
+	{335545270, "RDB$PAGES written by non-system transaction, DB appears to be damaged"},		/* wrong_page */
+	{335545271, "Replication error"},		/* repl_error */
+	{335545272, "Reset of user session failed. Connection is shut down."},		/* ses_reset_failed */
 	{335740929, "data base file name (@1) already given"},		/* gfix_db_name */
 	{335740930, "invalid switch @1"},		/* gfix_invalid_sw */
 	{335740932, "incompatible switch combination"},		/* gfix_incmp_sw */
@@ -879,6 +1042,8 @@ Data source : @4"},		/* eds_statement */
 	{336003109, "No SQLDA for input values provided"},		/* dsql_no_input_sqlda */
 	{336003110, "No SQLDA for output values provided"},		/* dsql_no_output_sqlda */
 	{336003111, "Wrong number of parameters (expected @1, got @2)"},		/* dsql_wrong_param_num */
+	{336003112, "Invalid DROP SQL SECURITY clause"},		/* dsql_invalid_drop_ss_clause */
+	{336003113, "UPDATE OR INSERT value for field @1, part of the implicit or explicit MATCHING clause, cannot be DEFAULT"},		/* upd_ins_cannot_default */
 	{336068645, "BLOB Filter @1 not found"},		/* dyn_filter_not_found */
 	{336068649, "Function @1 not found"},		/* dyn_func_not_found */
 	{336068656, "Index not found"},		/* dyn_index_not_found */
@@ -940,7 +1105,7 @@ Data source : @4"},		/* eds_statement */
 	{336068872, "Procedure @1 has not been defined on the package body @2"},		/* dyn_procnotdef_package */
 	{336068873, "Function @1 has a signature mismatch on package body @2"},		/* dyn_funcsignat_package */
 	{336068874, "Procedure @1 has a signature mismatch on package body @2"},		/* dyn_procsignat_package */
-	{336068875, "Default values for parameters are allowed only in declaration of packaged procedure @1.@2"},		/* dyn_defvaldecl_package_proc */
+	{336068875, "Default values for parameters are not allowed in the definition of a previously declared packaged procedure @1.@2"},		/* dyn_defvaldecl_package_proc */
 	{336068877, "Package body @1 already exists"},		/* dyn_package_body_exists */
 	{336068878, "Invalid DDL statement for function @1"},		/* dyn_invalid_ddl_func */
 	{336068879, "Cannot alter new style function @1 with ALTER EXTERNAL FUNCTION. Use ALTER FUNCTION instead."},		/* dyn_newfc_oldsyntax */
@@ -954,7 +1119,20 @@ Data source : @4"},		/* eds_statement */
 	{336068895, "System @1 @2 cannot be modified"},		/* dyn_cant_modify_sysobj */
 	{336068896, "INCREMENT BY 0 is an illegal option for sequence @1"},		/* dyn_cant_use_zero_increment */
 	{336068897, "Can't use @1 in FOREIGN KEY constraint"},		/* dyn_cant_use_in_foreignkey */
-	{336068898, "Default values for parameters are allowed only in declaration of packaged function @1.@2"},		/* dyn_defvaldecl_package_func */
+	{336068898, "Default values for parameters are not allowed in the definition of a previously declared packaged function @1.@2"},		/* dyn_defvaldecl_package_func */
+	{336068900, "role @1 can not be granted to role @2"},		/* dyn_cyclic_role */
+	{336068904, "INCREMENT BY 0 is an illegal option for identity column @1 of table @2"},		/* dyn_cant_use_zero_inc_ident */
+	{336068907, "no @1 privilege with grant option on DDL @2"},		/* dyn_no_ddl_grant_opt_priv */
+	{336068908, "no @1 privilege with grant option on object @2"},		/* dyn_no_grant_opt_priv */
+	{336068909, "Function @1 does not exist"},		/* dyn_func_not_exist */
+	{336068910, "Procedure @1 does not exist"},		/* dyn_proc_not_exist */
+	{336068911, "Package @1 does not exist"},		/* dyn_pack_not_exist */
+	{336068912, "Trigger @1 does not exist"},		/* dyn_trig_not_exist */
+	{336068913, "View @1 does not exist"},		/* dyn_view_not_exist */
+	{336068914, "Table @1 does not exist"},		/* dyn_rel_not_exist */
+	{336068915, "Exception @1 does not exist"},		/* dyn_exc_not_exist */
+	{336068916, "Generator/Sequence @1 does not exist"},		/* dyn_gen_not_exist */
+	{336068917, "Field @1 of table @2 does not exist"},		/* dyn_fld_not_exist */
 	{336330753, "found unknown switch"},		/* gbak_unknown_switch */
 	{336330754, "page size parameter missing"},		/* gbak_page_size_missing */
 	{336330755, "Page size specified (@1) greater than limit (32768 bytes)"},		/* gbak_page_size_toobig */
@@ -1017,7 +1195,7 @@ Data source : @4"},		/* eds_statement */
 	{336330967, "collation"},		/* gbak_err_restore_collation */
 	{336330972, "Unexpected I/O error while reading from backup file"},		/* gbak_read_error */
 	{336330973, "Unexpected I/O error while writing to backup file"},		/* gbak_write_error */
-	{336330985, "could not drop database @1 (database might be in use)"},		/* gbak_db_in_use */
+	{336330985, "could not drop database @1 (no privilege or database might be in use)"},		/* gbak_db_in_use */
 	{336330990, "System memory exhausted"},		/* gbak_sysmemex */
 	{336331002, "SQL role"},		/* gbak_restore_role_failed */
 	{336331005, "SQL role parameter missing"},		/* gbak_role_op_missing */
@@ -1105,7 +1283,7 @@ Data source : @4"},		/* eds_statement */
 	{336397254, "Invalid data type for division in dialect 3"},		/* dsql_invalid_type_div_dial3 */
 	{336397255, "Strings cannot be negated (applied the minus operator) in dialect 3"},		/* dsql_nostring_neg_dial3 */
 	{336397256, "Invalid data type for negation (minus operator)"},		/* dsql_invalid_type_neg */
-	{336397257, "Cannot have more than 255 items in DISTINCT list"},		/* dsql_max_distinct_items */
+	{336397257, "Cannot have more than 255 items in DISTINCT / UNION DISTINCT list"},		/* dsql_max_distinct_items */
 	{336397258, "ALTER CHARACTER SET @1 failed"},		/* dsql_alter_charset_failed */
 	{336397259, "COMMENT ON @1 failed"},		/* dsql_comment_on_failed */
 	{336397260, "CREATE FUNCTION @1 failed"},		/* dsql_create_func_failed */
@@ -1182,6 +1360,7 @@ Data source : @4"},		/* eds_statement */
 	{336397331, "String literal with @1 bytes exceeds the maximum length of @2 bytes"},		/* dsql_string_byte_length */
 	{336397332, "String literal with @1 characters exceeds the maximum length of @2 characters for the @3 character set"},		/* dsql_string_char_length */
 	{336397333, "Too many BEGIN...END nesting. Maximum level is @1"},		/* dsql_max_nesting */
+	{336397334, "RECREATE USER @1 failed"},		/* dsql_recreate_user_failed */
 	{336723983, "unable to open database"},		/* gsec_cant_open_db */
 	{336723984, "error in switch specifications"},		/* gsec_switches_error */
 	{336723985, "no operation specified"},		/* gsec_no_op_spec */
@@ -1232,6 +1411,10 @@ Data source : @4"},		/* eds_statement */
 	{336986161, "could not read file @1"},		/* fbsvcmgr_fp_read */
 	{336986162, "empty file @1"},		/* fbsvcmgr_fp_empty */
 	{336986164, "Invalid or missing parameter for switch @1"},		/* fbsvcmgr_bad_arg */
+	{336986170, "Unknown tag (@1) in isc_info_svc_limbo_trans block after isc_svc_query()"},		/* fbsvcmgr_info_limbo */
+	{336986171, "Unknown tag (@1) in isc_spb_tra_state block after isc_svc_query()"},		/* fbsvcmgr_limbo_state */
+	{336986172, "Unknown tag (@1) in isc_spb_tra_advise block after isc_svc_query()"},		/* fbsvcmgr_limbo_advise */
+	{336986173, "Wrong value for replica mode"},		/* fbsvcmgr_bad_rm */
 	{337051649, "Switches trusted_user and trusted_role are not supported from command line"},		/* utl_trusted_switch */
 	{337117213, "Missing parameter for switch @1"},		/* nbackup_missing_param */
 	{337117214, "Only one of -LOCK, -UNLOCK, -FIXUP, -BACKUP or -RESTORE should be specified"},		/* nbackup_allowed_switches */
@@ -1274,6 +1457,7 @@ Data source : @4"},		/* eds_statement */
 	{337117257, "Terminated due to user request"},		/* nbackup_user_stop */
 	{337117259, "Too complex decompress command (> @1 arguments)"},		/* nbackup_deco_parse */
 	{337117261, "Cannot find record for database \"@1\" backup GUID @2 in the backup history"},		/* nbackup_lostrec_guid_db */
+	{337117265, "Switch -SEQ(UENCE) can be used only with -FIXUP or -RESTORE"},		/* nbackup_seq_misuse */
 	{337182750, "conflicting actions \"@1\" and \"@2\" found"},		/* trace_conflict_acts */
 	{337182751, "action switch not found"},		/* trace_act_notfound */
 	{337182752, "switch \"@1\" must be set only once"},		/* trace_switch_once */

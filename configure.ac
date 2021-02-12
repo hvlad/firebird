@@ -21,13 +21,15 @@ define([XE_APPEND],[[$2]="$[$2] [$1]"])
 dnl XE_PREPEND(value, varname)
 define([XE_PREPEND],[[$2]="[$1] $[$2]"])
 
+CHANGE_PATH_SUPPORT=yes
 dnl XE_CONF_DIR(param, help, variable, default)
 define([XE_CONF_DIR],[
-AC_ARG_WITH([$1], 
-	[AS_HELP_STRING([--with-$1],[$2])], 
+AC_ARG_WITH([$1],
+	[AS_HELP_STRING([--with-$1],[$2])],
 	[[$3]="$withval"
-	 AC_DEFINE_UNQUOTED([$3], "$[$3]", [$2])], 
-	[[$3]="[`if test ""x$prefix"" = ""xNONE"" ; then echo ""$ac_default_prefix""; else echo ""$prefix""; fi`][$4]"
+	 CHANGE_PATH_SUPPORT=no
+	 AC_DEFINE_UNQUOTED([$3], "$[$3]", [$2])],
+	[[$3]='${fb_install_prefix}[$4]'
 	 AC_DEFINE_UNQUOTED([$3], [""], [$2])]
 )
 AC_SUBST([$3])
@@ -95,6 +97,7 @@ case "$build" in
     SHRLIB_EXT=dylib
     CPU_TYPE=x86_64
     EXPORT_SYMBOLS_STYLE=darwin
+    RAW_DEVICES_FLG=N
     ;;
 
   i*86-*-darwin*)
@@ -235,7 +238,7 @@ dnl CPU_TYPE=ppc64
     STD_EDITLINE=true
     ;;
 
-  aarch64*-*-linux*)                           
+  aarch64*-*-linux*)
     MAKEFILE_PREFIX=linux_arm64
     INSTALL_PREFIX=linux
     PLATFORM=LINUX
@@ -247,7 +250,19 @@ dnl CPU_TYPE=ppc64
     libdir=/usr/lib64
     ;;
 
-  powerpc64le-*-linux*)                           
+  riscv64*-*-linux*)
+    MAKEFILE_PREFIX=linux_riscv64
+    INSTALL_PREFIX=linux
+    PLATFORM=LINUX
+    AC_DEFINE(LINUX, 1, [Define this if OS is Linux])
+    EDITLINE_FLG=Y
+    SHRLIB_EXT=so
+    STD_EDITLINE=true
+    STD_ICU=true
+    libdir=/usr/lib64
+    ;;
+
+  powerpc64le-*-linux*)
     MAKEFILE_PREFIX=linux_powerpc64el
     INSTALL_PREFIX=linux
     PLATFORM=LINUX
@@ -259,7 +274,7 @@ dnl CPU_TYPE=ppc64
     libdir=/usr/lib64
     ;;
 
-  powerpc64-*-linux*)                           
+  powerpc64-*-linux*)
     MAKEFILE_PREFIX=linux_powerpc64
     INSTALL_PREFIX=linux
     PLATFORM=LINUX
@@ -361,6 +376,17 @@ dnl CPU_TYPE=ppc64
    SHRLIB_EXT=so
    ;;
 
+  m68k*-*-linux*)
+   MAKEFILE_PREFIX=linux_generic
+   INSTALL_PREFIX=linux
+   PLATFORM=LINUX
+   AC_DEFINE(LINUX, 1, [Define this if OS is Linux])
+   AC_DEFINE(M68K, 1, [Define this if CPU is M68k])
+   LOCK_MANAGER_FLG=Y
+   EDITLINE_FLG=Y
+   SHRLIB_EXT=so
+   ;;
+
   *-*-linux* | *-*-gnu*)
     MAKEFILE_PREFIX=linux_generic
     INSTALL_PREFIX=linux
@@ -442,15 +468,14 @@ dnl CPU_TYPE=ppc64
     dnl detect native compiler, Sun Studio Pro
     comp=`echo "$CXX" | cut -c1-3`
     case $comp in
-       CC) MAKEFILE_PREFIX=solaris ;
-           dnl inline assembly for atomic operations on Solaris 9 w SSPRO
+       CC)
+           MAKEFILE_PREFIX=solaris
            PTHREAD_CFLAGS=-mt
            PTHREAD_LIBS=-lpthread
-           if test "${build#*solaris}" = "2.9"; then
-             ATOMIC_OPTIONS=`pwd`"/src/common/classes/fb_atomic.il";
-           fi
            ;;
-       *)  MAKEFILE_PREFIX=solaris-64gcc ;
+       *)
+           MAKEFILE_PREFIX=solaris-64gcc
+           ;;
     esac
     CAS_OPTIONS=`pwd`"/src/common/classes/fb_cas.il";
     INSTALL_PREFIX=solaris
@@ -480,6 +505,10 @@ if test "$INSTALL_PREFIX" = ""; then
 fi
 
 AM_BINRELOC
+if test -z "$BINRELOC_CFLAGS"
+then
+	CHANGE_PATH_SUPPORT=no
+fi
 
 AC_SUBST(MAKEFILE_PREFIX)
 AC_SUBST(AR_OPTIONS)
@@ -508,11 +537,17 @@ AC_ARG_WITH(cross-build,
    IS_CROSS=Y])
 AC_SUBST(IS_CROSS)
 
-TOMBUILD=N
+TOMMATH_BUILD=N
 AC_ARG_WITH(builtin-tommath,
   [  --with-builtin-tommath  build libtommath library from firebird tree],
-  [TOMBUILD=Y])
-AC_SUBST(TOMBUILD)
+  [TOMMATH_BUILD=Y])
+AC_SUBST(TOMMATH_BUILD)
+
+TOMCRYPT_BUILD=N
+AC_ARG_WITH(builtin-tomcrypt,
+  [  --with-builtin-tomcrypt  build libtomcrypt library from firebird tree],
+  [TOMCRYPT_BUILD=Y])
+AC_SUBST(TOMCRYPT_BUILD)
 
 dnl Avoid dumb '-g -O2' autoconf's default
 dnl Debugging information and optimization flags should be set in prefix.$platform file
@@ -553,6 +588,27 @@ AC_ARG_ENABLE(rpath,
   [enable_rpath=yes])
 if test "x$enable_rpath" != "xno" || test "x$enable_rpath" = "x" ; then
   AC_SUBST(USE_RPATH, 1)
+fi
+
+LSB_FLG=N
+AC_ARG_ENABLE(lsb-build,
+  [  --enable-lsb-build      build LSB-compliant binaries (default=no)],
+  [case "$enableval" in
+     yes) LSB_FLG=Y;;
+     no)  LSB_FLG=N;;
+     *)   AC_MSG_ERROR(bad value '${enableval}' for --enable-lsb-build);;
+   esac])
+AC_SUBST(LSB_FLG)
+if test "$LSB_FLG" = "Y"; then
+  CFLAGS="$CFLAGS --lsb-besteffort --lsb-shared-libs=fbclient:ib_util:tommath:tomcrypt --lsb-target-version=4.1"
+  CXXFLAGS="$CXXFLAGS --lsb-besteffort  --lsb-shared-libs=fbclient:ib_util:tommath:tomcrypt --lsb-target-version=4.1"
+  AC_SUBST(TOMMATH_BUILD, Y)
+  AC_SUBST(TOMCRYPT_BUILD, Y)
+  AC_PATH_PROG(CC, lsbcc, "", [$PATH$PATH_SEPARATOR/opt/lsb/bin$PATH_SEPARATOR])
+  AC_PATH_PROG(CXX, lsbc++, "", [$PATH$PATH_SEPARATOR/opt/lsb/bin$PATH_SEPARATOR])
+  if test "x$CC" = "x" || test "x$CXX" = "x" ; then
+    AC_MSG_ERROR(Can not find LSB compilers in /opt/lsb/bin)
+  fi
 fi
 
 AC_ARG_WITH(editline,
@@ -615,7 +671,6 @@ XE_CONF_DIR(fbconf, [config files DIR (PREFIX)], FB_CONFDIR)
 XE_CONF_DIR(fblib, [object code libraries DIR (PREFIX/lib)], FB_LIBDIR, /lib)
 XE_CONF_DIR(fbinclude, [C/C++ header files DIR (PREFIX/include)], FB_INCDIR, /include)
 XE_CONF_DIR(fbdoc, [documentation root DIR (PREFIX/doc)], FB_DOCDIR, /doc)
-XE_CONF_DIR(fbudf, [UDF DIR (PREFIX/UDF)], FB_UDFDIR, /UDF)
 XE_CONF_DIR(fbsample, [examples DIR (PREFIX/examples)], FB_SAMPLEDIR, /examples)
 XE_CONF_DIR(fbsample-db, [examples database DIR (PREFIX/examples/empbuild)], FB_SAMPLEDBDIR, /examples/empbuild)
 XE_CONF_DIR(fbhelp, [QLI help DIR (PREFIX/help)], FB_HELPDIR, /help)
@@ -627,6 +682,8 @@ XE_CONF_DIR(fblog, [log files DIR (PREFIX)], FB_LOGDIR)
 XE_CONF_FILE(fblogfilename, [log file name within log dir (firebird.log)], FB_LOGFILENAME, firebird.log)
 XE_CONF_DIR(fbglock, [guardian lock DIR (PREFIX)], FB_GUARDDIR)
 XE_CONF_DIR(fbplugins, [plugins DIR (PREFIX)], FB_PLUGDIR, /plugins)
+XE_CONF_DIR(fbtzdata, [tzdata DIR (PREFIX/tzdata)], FB_TZDATADIR, /tzdata)
+AC_SUBST(CHANGE_PATH_SUPPORT)
 
 dnl gpre built-in language support (C/C++ are mandatory)
 GPRE_LANGUAGE_MODULES=""
@@ -696,7 +753,6 @@ AC_CHECK_HEADERS(errno.h)
 AC_CHECK_HEADERS(fcntl.h)
 AC_CHECK_HEADERS(grp.h)
 AC_CHECK_HEADERS(pwd.h)
-AC_CHECK_HEADERS(libio.h)
 AC_CHECK_HEADERS(locale.h)
 AC_CHECK_HEADERS(math.h)
 AC_CHECK_HEADERS(pthread.h)
@@ -736,13 +792,11 @@ AC_CHECK_HEADERS(sys/resource.h)
 AC_CHECK_HEADERS(sys/sem.h)
 AC_CHECK_HEADERS(semaphore.h)
 AC_CHECK_HEADERS(float.h)
-AC_CHECK_HEADERS(atomic.h)
-AC_CHECK_HEADERS(atomic_ops.h)
 AC_CHECK_HEADERS(poll.h)
 AC_CHECK_HEADERS(langinfo.h)
 AC_CHECK_HEADERS(iconv.h)
-AC_CHECK_HEADERS(libio.h)
 AC_CHECK_HEADERS(linux/falloc.h)
+AC_CHECK_HEADERS(utime.h)
 
 AC_CHECK_HEADERS(socket.h sys/socket.h sys/sockio.h winsock2.h)
 AC_CHECK_DECLS(SOCK_CLOEXEC,,,[[
@@ -767,11 +821,14 @@ fi
 
 dnl check for ICU presence
 AC_CHECK_HEADER(unicode/ucnv.h,,AC_MSG_ERROR(ICU support not found - please install development ICU package))
+
+if test "$LSB_FLG" = "N"; then
 dnl setting ICU_OK here is done to only avoid default action
 AC_CHECK_LIB(icuuc, main, ICU_OK=yes, AC_MSG_ERROR(ICU support not found - please install development ICU package))
+fi
 
 dnl check for tommath presence
-if test "$TOMBUILD" = "Y"; then
+if test "$TOMMATH_BUILD" = "Y"; then
 	MATHLIB=-ltommath
 else
 	AC_CHECK_HEADER(tommath.h,,
@@ -784,6 +841,23 @@ else
 fi
 AC_SUBST(MATHLIB)
 
+dnl check for tomcrypt presence
+if test "$TOMCRYPT_BUILD" = "Y"; then
+	CRYPTLIB=-ltomcrypt
+else
+	XE_SAVE_ENV()
+	CFLAGS="$CFLAGS -DLTC_NO_ASM"
+	AC_CHECK_HEADER(tomcrypt.h,,
+		AC_MSG_ERROR(Include file for tomcrypt not found - please install development tomcrypt package or use --with-builtin-tomcrypt))
+	XE_RESTORE_ENV()
+	XE_SAVE_ENV()
+	LIBS=
+	AC_CHECK_LIB(tomcrypt, sha1_init, CRYPTLIB=-ltomcrypt,
+		AC_MSG_ERROR(Library tomcrypt not found - please install development tomcrypt package or use --with-builtin-tomcrypt))
+	XE_RESTORE_ENV()
+fi
+AC_SUBST(CRYPTLIB)
+
 dnl Check for libraries
 AC_SEARCH_LIBS(dlopen, dl)
 AC_CHECK_LIB(m, main)
@@ -794,16 +868,10 @@ if test "$EDITLINE_FLG" = "Y"; then
 				AC_CHECK_LIB(tinfo, tgetent, TERMLIB=tinfo, \
 					AC_MSG_ERROR(termcap support not found)))))
 	AC_SUBST(TERMLIB)
-	XE_APPEND(-l$TERMLIB, LIBS)
 fi
 
 AC_SEARCH_LIBS(inet_aton, resolv)
-
-dnl HP-UX atomic routines are in atomic library, not standard C library.
-dnl If we can't find atomic routines in vendor library, look for atomic_ops.
-AC_SEARCH_LIBS(atomic_inc, atomic,,
-	AC_CHECK_LIB(atomic_ops, main))
-
+AC_CHECK_LIB(atomic, main)
 
 dnl Check for libraries for static C++ runtime linking
 AC_CHECK_LIB(supc++, main, XE_APPEND(-lsupc++, STATIC_CXXSUPPORT_LIB))
@@ -819,7 +887,7 @@ AC_COMPILE_IFELSE(
 dnl check for va_copy() in stdarg.h
 AC_COMPILE_IFELSE(
 	[AC_LANG_PROGRAM([[#include <stdarg.h>
-		void vafun(const char* fmt, ...) {va_list par, par2; va_start(par, fmt); va_copy(par2, par); va_end(par2); va_end(par);}]], 
+		void vafun(const char* fmt, ...) {va_list par, par2; va_start(par, fmt); va_copy(par2, par); va_end(par2); va_end(par);}]],
 		[[return 0;]])],
 	AC_DEFINE(HAVE_VA_COPY, 1, [Define this if va_copy() is defined in stdarg.h]))
 
@@ -828,6 +896,16 @@ dnl if 64-bit mode, then archive tool, ar, needs -X64 option
     AC_COMPILE_IFELSE(
         [AC_LANG_PROGRAM(,[[int lp64 = __64BIT__; ]])],
         [AR_OPTIONS=-X64],)
+fi
+
+XE_SAVE_ENV()
+CXXFLAGS="$CXXFLAGS -std=c++11"
+AC_CACHE_CHECK([whether the C++ compiler understands noexcept], [ac_cv_cxx_noexcept], [
+    AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[int f(int x) noexcept { return x + 1; }]], [[]])],
+	[ac_cv_cxx_noexcept=yes], [ac_cv_cxx_noexcept=no])])
+XE_RESTORE_ENV()
+if test "$ac_cv_cxx_noexcept" = yes; then
+    AC_DEFINE([HAS_NOEXCEPT], [1], [Define if the C++ compiler understands noexcept.])
 fi
 AC_LANG_POP(C++)
 
@@ -882,6 +960,7 @@ AC_CHECK_FUNCS(pthread_keycreate pthread_key_create)
 AC_CHECK_FUNCS(llrint)
 AC_CHECK_FUNCS(localtime_r)
 AC_CHECK_FUNCS(gmtime_r)
+AC_CHECK_FUNCS(ctime_r)
 AC_CHECK_FUNCS(fchmod)
 AC_CHECK_FUNCS(semtimedop)
 AC_CHECK_FUNCS(fegetenv)
@@ -896,10 +975,6 @@ case $host in
 		;;
 esac
 AC_CHECK_FUNCS(poll)
-dnl AC_CHECK_FUNCS(AO_compare_and_swap_full)
-AC_COMPILE_IFELSE(
-	[AC_LANG_PROGRAM([[#include <atomic_ops.h>]], [[AO_T x; AO_compare_and_swap_full(&x, 0, 0); return 0;]])],
-	AC_DEFINE(HAVE_AO_COMPARE_AND_SWAP_FULL, 1, [Define this if AO_compare_and_swap_full() is defined in atomic_ops.h]))
 
 dnl Check for time function
 AC_SEARCH_LIBS(clock_gettime, rt)
@@ -941,6 +1016,7 @@ fi
 dnl Some OS place iconv() support in separate library
 if test "$ac_cv_header_iconv_h" = "yes"; then
 AC_SEARCH_LIBS(iconv_open, iconv)
+AC_SEARCH_LIBS(libiconv_open, iconv)
 fi
 
 dnl HPUX has a bug in .h files. To detect it we need C++ here.
@@ -997,10 +1073,11 @@ AC_CHECK_MEMBER([struct dirent.d_type],
 dnl EKU: try to determine the alignment of long and double
 dnl      replaces FB_ALIGNMENT and FB_DOUBLE_ALIGN in src/jrd/common.h
 AC_MSG_CHECKING(alignment of long)
-AC_RUN_IFELSE([AC_LANG_SOURCE([[main () {
+AC_RUN_IFELSE([AC_LANG_SOURCE([[#include <semaphore.h>
+main () {
   struct s {
     char a;
-    long long b;
+    union { long long x; sem_t y; } b;
   };
   exit((int)&((struct s*)0)->b);
 }]])],[ac_cv_c_alignment=$ac_status],[ac_cv_c_alignment=$ac_status],[])
@@ -1127,45 +1204,36 @@ for fb_tgt in \$FB_TARGETS; do
 
 	echo "Creating \$fb_tgt directories"
 
-dnl ### GEN ### directories for databases and misc
-	mkdir -p gen/\$fb_tgt/examples
-	mkdir -p gen/\$fb_tgt/refDatabases
-
 dnl # output
-	mkdir -p gen/\$fb_tgt/include
-	mkdir -p gen/\$fb_tgt/intl
-	mkdir -p gen/\$fb_tgt/firebird/UDF
 	mkdir -p gen/\$fb_tgt/firebird/bin
 	mkdir -p gen/\$fb_tgt/firebird/plugins
+	mkdir -p gen/\$fb_tgt/firebird/plugins/udr
 	mkdir -p gen/\$fb_tgt/firebird/examples/api
 	mkdir -p gen/\$fb_tgt/firebird/examples/dbcrypt
 	mkdir -p gen/\$fb_tgt/firebird/examples/empbuild
+	mkdir -p gen/\$fb_tgt/firebird/examples/extauth
 	mkdir -p gen/\$fb_tgt/firebird/examples/include
 	mkdir -p gen/\$fb_tgt/firebird/examples/interfaces
 	mkdir -p gen/\$fb_tgt/firebird/examples/package
 	mkdir -p gen/\$fb_tgt/firebird/examples/stat
 	mkdir -p gen/\$fb_tgt/firebird/examples/udf
 	mkdir -p gen/\$fb_tgt/firebird/examples/udr
+	mkdir -p gen/\$fb_tgt/firebird/examples/prebuilt/bin
+	mkdir -p gen/\$fb_tgt/firebird/examples/prebuilt/plugins
 	mkdir -p gen/\$fb_tgt/firebird/lib
 	mkdir -p gen/\$fb_tgt/firebird/misc
 	mkdir -p gen/\$fb_tgt/firebird/help
-	mkdir -p gen/\$fb_tgt/firebird/plugins/udr
 
 dnl ### TEMP ### directories for generated .cpp, .o and .d by module name
 	for src_dir in `cd src; ls -R -1 * | grep : | tr -d : | tr "\n" " "; cd ..`; do
     	mkdir -p temp/\$fb_tgt/\$src_dir
 	done
 
-	src/misc/writeBuildNum.sh createMakeVersion gen/Make.Version
-
-dnl # sql files for UDF declarations
-	for sql_file in ib_udf.sql fbudf/fbudf.sql ib_udf2.sql; do
-		cp src/extlib/\$sql_file gen/\$fb_tgt/firebird/UDF
+	for src_dir in `ls -R -1 examples | grep : | tr -d : | tr "\n" " "`; do
+   		mkdir -p temp/\$fb_tgt/\$src_dir
 	done
-done
 
-for src_dir in `ls -R -1 examples | grep : | tr -d : | tr "\n" " "`; do
-   	mkdir -p temp/\$src_dir
+	src/misc/writeBuildNum.sh createMakeVersion gen/Make.Version
 done
 
 dnl # rebuild version header if needed
@@ -1180,11 +1248,12 @@ dnl common files for all posix hosts
 dnl TODO: fix "arch-specific/linux/" paths for common posix scripts with SVN
 for fb_tgt in $FB_TARGETS; do
 AC_CONFIG_FILES([
-gen/$fb_tgt/firebird/firebird.conf:builds/install/misc/firebird.conf.in
-gen/$fb_tgt/firebird/databases.conf:builds/install/misc/databases.conf.in
+gen/$fb_tgt/firebird/firebird.conf:builds/install/misc/firebird.conf
+gen/$fb_tgt/firebird/databases.conf:builds/install/misc/databases.conf
 gen/$fb_tgt/firebird/fbtrace.conf:src/utilities/ntrace/fbtrace.conf
 gen/$fb_tgt/firebird/intl/fbintl.conf:builds/install/misc/fbintl.conf
 gen/$fb_tgt/firebird/plugins.conf:builds/install/misc/plugins.conf
+gen/$fb_tgt/firebird/replication.conf:builds/install/misc/replication.conf
 ])
 done
 
@@ -1195,14 +1264,8 @@ fi
 AC_CONFIG_FILES([
 gen/Release/firebird/bin/fb_config:builds/install/posix-common/fb_config.in
 gen/Release/firebird/bin/posixLibrary.sh:builds/install/posix-common/posixLibrary.sh.in
-gen/Release/firebird/bin/tarMainInstall.sh:builds/install/posix-common/tarMainInstall.sh.in
-gen/Release/firebird/bin/tarinstall.sh:builds/install/posix-common/tarinstall.sh.in
-gen/Release/firebird/bin/preinstall.sh:builds/install/posix-common/preinstall.sh.in
-gen/Release/firebird/bin/postinstall.sh:builds/install/posix-common/postinstall.sh.in
-gen/Release/firebird/bin/preuninstall.sh:builds/install/posix-common/preuninstall.sh.in
-gen/Release/firebird/bin/postuninstall.sh:builds/install/posix-common/postuninstall.sh.in
-gen/Release/firebird/bin/taruninstall.sh:builds/install/posix-common/taruninstall.sh.in
-gen/Release/firebird/bin/tarMainUninstall.sh:builds/install/posix-common/tarMainUninstall.sh.in
+gen/Release/firebird/bin/install.sh:builds/install/posix-common/install.sh.in
+gen/Release/firebird/bin/FirebirdUninstall.sh:builds/install/posix-common/FirebirdUninstall.sh.in
 gen/Release/firebird/bin/changeServerMode.sh:builds/install/posix-common/changeServerMode.sh.in
 gen/Release/firebird/bin/registerDatabase.sh:builds/install/posix-common/registerDatabase.sh.in
 gen/vers.sh:builds/posix/vers.sh.in
@@ -1213,13 +1276,11 @@ dnl: Platform Specific Files
 case "$PLATFORM" in
   LINUX|GENTOOFREEBSD)
     AC_CONFIG_COMMANDS(,,[
-        mkdir -p gen/install/scripts
         mkdir -p gen/install/misc])
 
     INSTALL_SRC_DIR=builds/install/arch-specific/linux
     AC_CONFIG_FILES([
         gen/install/makeInstallImage.sh:builds/install/arch-specific/linux/makeInstallImage.sh.in
-        gen/install/misc/firebird.xinetd:builds/install/arch-specific/linux/firebird.xinetd.in
         gen/install/misc/firebird.init.d.generic:builds/install/arch-specific/linux/firebird.init.d.generic.in
         gen/install/misc/firebird.init.d.mandrake:builds/install/arch-specific/linux/firebird.init.d.mandrake.in
         gen/install/misc/firebird.init.d.suse:builds/install/arch-specific/linux/firebird.init.d.suse.in
@@ -1228,11 +1289,9 @@ case "$PLATFORM" in
         gen/install/misc/firebird.init.d.slackware:builds/install/arch-specific/linux/firebird.init.d.slackware.in
         gen/install/misc/rc.config.firebird:builds/install/arch-specific/linux/rc.config.firebird.in
         gen/Release/firebird/bin/linuxLibrary.sh:builds/install/arch-specific/linux/linuxLibrary.sh.in
-        gen/install/misc/firebird-classic@.service:builds/install/arch-specific/linux/firebird-classic.service.in
-        gen/install/misc/firebird-classic.socket:builds/install/arch-specific/linux/firebird-classic.socket.in
-        gen/install/misc/firebird-superserver.service:builds/install/arch-specific/linux/firebird-superserver.service.in
+        gen/install/misc/firebird.service:builds/install/arch-specific/linux/firebird.service.in
     ],
-	[chmod a+x gen/install/scripts/*.sh gen/install/*sh 2>/dev/null])
+	[chmod a+x gen/install/*sh 2>/dev/null])
     ;;
 
   HPUX)
@@ -1250,14 +1309,12 @@ case "$PLATFORM" in
     gen/install/misc/firebird.init.d.hpux:builds/install/arch-specific/hpux/misc/firebird.init.d.hpux.in
     gen/install/misc/rc.config.firebird.hpux:builds/install/arch-specific/hpux/misc/rc.config.firebird.hpux.in
     gen/Release/firebird/bin/hpuxLibrary.sh:builds/install/arch-specific/hpux/misc/hpuxLibrary.sh.in],
-    [chmod a+x gen/install/scripts/*.sh gen/install/*.sh 2>/dev/null])
+    [chmod a+x gen/install/*.sh 2>/dev/null])
     ;;
 
   AIX)
     AIX_INSTALL_SRC_DIR=builds/install/arch-specific/aix
-    AC_CONFIG_FILES([gen/install/scripts/rpmheader.aix.txt:${AIX_INSTALL_SRC_DIR}/rpmheader.txt.in
-    gen/install/scripts/rpmfiles.aix.txt:${AIX_INSTALL_SRC_DIR}/rpmfiles.txt.in
-    gen/install/makeInstallImage.aix.sh:${AIX_INSTALL_SRC_DIR}/makeInstallImage.sh.in
+    AC_CONFIG_FILES([gen/install/makeInstallImage.aix.sh:${AIX_INSTALL_SRC_DIR}/makeInstallImage.sh.in
     gen/firebird/bin/preinstall.aix.sh:builds/install/arch-specific/aix/misc/preinstall.sh.in
     gen/firebird/bin/tarinstall.aix.sh:builds/install/arch-specific/aix/misc/tarinstall.sh.in
     gen/firebird/bin/tarmaininstall.aix.sh:builds/install/arch-specific/aix/misc/tarmaininstall.sh.in
@@ -1273,7 +1330,7 @@ case "$PLATFORM" in
     gen/firebird/bin/changegdslibrarycompatiblelink.aix.sh:builds/install/misc/changeGdsLibraryCompatibleLink.sh.in
     gen/firebird/bin/createaliasdb.aix.sh:builds/install/misc/createAliasDB.sh.in
     gen/firebird/bin/aixLibrary.sh:builds/install/arch-specific/aix/misc/aixLibrary.sh.in],
-    [chmod a+x gen/install/scripts/*.sh gen/install/*.sh 2>/dev/null])
+    [chmod a+x gen/install/*.sh 2>/dev/null])
     ;;
   FREEBSD)
     AC_CONFIG_FILES([gen/install/install.sh:builds/install/arch-specific/freebsd/install.sh.in
@@ -1311,14 +1368,6 @@ else
 fi
 AC_SUBST(POSTFIX_INCLUDE)
 
-UDF_COMMENT="#"
-if test -n "${with_fbudf}"; then
-	UDF_COMMENT="#
-#  #  For this build Restrict UDF means Restrict ${with_fbudf}
-#"
-fi
-AC_SUBST(UDF_COMMENT)
-
 AC_CONFIG_FILES(
 gen/make.rules:${MAKE_SRC_DIR}/make.rules
 gen/make.defaults:${MAKE_SRC_DIR}/make.defaults
@@ -1329,7 +1378,7 @@ gen/make.shared.variables:${MAKE_SRC_DIR}/make.shared.variables
 gen/make.shared.targets:${MAKE_SRC_DIR}/make.shared.targets
 gen/Makefile:${MAKE_SRC_DIR}/Makefile.in
 gen/examples/Makefile.examples:${MAKE_SRC_DIR}/Makefile.in.examples
-gen/examples/Makefile.plugins_examples:${MAKE_SRC_DIR}/Makefile.in.plugins_examples
+gen/Makefile.plugins_examples:${MAKE_SRC_DIR}/Makefile.in.plugins_examples
 gen/Makefile.install:builds/install/arch-specific/${INSTALL_PREFIX}/Makefile.in
 Makefile:Makefile.in
 )

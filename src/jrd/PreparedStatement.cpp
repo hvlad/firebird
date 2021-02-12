@@ -27,7 +27,7 @@
 #include "../jrd/req.h"
 #include "../dsql/dsql.h"
 #include "../common/classes/auto.h"
-#include "../dsql/sqlda_pub.h"
+#include "firebird/impl/sqlda_pub.h"
 #include "../dsql/dsql_proto.h"
 #include "../jrd/mov_proto.h"
 #include "../jrd/Attachment.h"
@@ -99,6 +99,22 @@ namespace
 				item.length = sizeof(double);
 				break;
 
+			case dtype_dec64:
+				item.type = SQL_DEC16;
+				item.length = sizeof(Decimal64);
+				break;
+
+			case dtype_dec128:
+				item.type = SQL_DEC34;
+				item.length = sizeof(Decimal128);
+				break;
+
+			case dtype_int128:
+				item.type = SQL_INT128;
+				item.scale = desc->dsc_scale;
+				item.length = sizeof(Int128);
+				break;
+
 			case dtype_sql_date:
 				item.type = SQL_TYPE_DATE;
 				item.length = sizeof(SLONG);
@@ -109,9 +125,19 @@ namespace
 				item.length = sizeof(SLONG);
 				break;
 
+			case dtype_sql_time_tz:
+				item.type = SQL_TIME_TZ;
+				item.length = sizeof(ISC_TIME_TZ);
+				break;
+
 			case dtype_timestamp:
 				item.type = SQL_TIMESTAMP;
 				item.length = sizeof(SLONG) * 2;
+				break;
+
+			case dtype_timestamp_tz:
+				item.type = SQL_TIMESTAMP_TZ;
+				item.length = sizeof(ISC_TIMESTAMP_TZ);
 				break;
 
 			case dtype_array:
@@ -176,6 +202,10 @@ void PreparedStatement::Builder::moveFromResultSet(thread_db* tdbb, ResultSet* r
 				*(MetaName*) i->address = rs->getMetaName(tdbb, i->number);
 				break;
 
+			case TYPE_METASTRING:
+				*(MetaString*) i->address = rs->getMetaString(tdbb, i->number);
+				break;
+
 			default:
 				fb_assert(false);
 		}
@@ -221,6 +251,10 @@ void PreparedStatement::Builder::moveToStatement(thread_db* tdbb, PreparedStatem
 
 			case TYPE_METANAME:
 				stmt->setMetaName(tdbb, i->number, *(MetaName*) i->address);
+				break;
+
+			case TYPE_METASTRING:
+				stmt->setMetaString(tdbb, i->number, *(MetaString*) i->address);
 				break;
 
 			default:

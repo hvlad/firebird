@@ -25,6 +25,7 @@
  */
 
 #include "firebird.h"
+#include "../jrd/ini.h"
 #include "../jrd/tra.h"
 #include "../jrd/lck.h"
 #include "../jrd/err_proto.h"
@@ -48,24 +49,42 @@ Lock* RLCK_reserve_relation(thread_db* tdbb, jrd_tra* transaction, jrd_rel* rela
  *
  **************************************/
 	SET_TDBB(tdbb);
+	Database* const dbb = tdbb->getDatabase();
 
 	if (transaction->tra_flags & TRA_system)
 		return NULL;
 
-	// hvlad: virtual relations always writable, all kind of GTT's are writable
-	// at read-only transactions at read-write databases, GTT's with ON COMMIT
-	// DELETE ROWS clause is writable at read-only databases.
+	// hvlad: virtual relations are always writable, see below for the other rules
 
-	if (write_flag && tdbb->getDatabase()->readOnly() &&
-		!relation->isVirtual() && !(relation->rel_flags & REL_temp_tran))
+	if (write_flag && !relation->isVirtual())
 	{
-		ERR_post(Arg::Gds(isc_read_only_database));
-	}
+		// In read-only databases, only GTTs with ON COMMIT DELETE ROWS clause are writable
 
-	if (write_flag && (transaction->tra_flags & TRA_readonly) &&
-		!relation->isVirtual() && !relation->isTemporary())
-	{
-		ERR_post(Arg::Gds(isc_read_only_trans));
+		if (dbb->readOnly() && !(relation->rel_flags & REL_temp_tran))
+			ERR_post(Arg::Gds(isc_read_only_database));
+
+		// No other limitations for GTTs
+
+		if (!relation->isTemporary())
+		{
+			// Persistent tables are not writable in read-only transactions
+
+			if (transaction->tra_flags & TRA_readonly)
+				ERR_post(Arg::Gds(isc_read_only_trans));
+
+			// Inside a read-only replica, only replicator sessions are expected to be writable.
+			// However, we also allow not replicated DDL statements (e.g. ALTER DATABASE).
+			// And insertions into RDB$BACKUP_HISTORY are also allowed to support nbackup, sigh.
+
+			if (dbb->isReplica(REPLICA_READ_ONLY) &&
+				!(tdbb->tdbb_flags & TDBB_replicator) &&
+				!(tdbb->tdbb_flags & TDBB_repl_in_progress))
+			{
+				// This condition is a workaround for nbackup
+				if (relation->rel_id != rel_backup_history)
+					ERR_post(Arg::Gds(isc_read_only_trans));
+			}
+		}
 	}
 
 	Lock* lock = RLCK_transaction_relation_lock(tdbb, transaction, relation);

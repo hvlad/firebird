@@ -26,7 +26,7 @@
 #include "firebird.h"
 #include <stdio.h>
 #include "../../../remote/remote.h"
-#include "../../../jrd/ibase.h"
+#include "ibase.h"
 #include "../../../remote/os/win32/xnet.h"
 #include "../../../utilities/install/install_nt.h"
 #include "../../../remote/proto_proto.h"
@@ -70,8 +70,8 @@ static int send_partial(rem_port*, PACKET*);
 
 static int xdrxnet_create(XDR*, rem_port*, UCHAR*, USHORT, xdr_op);
 
-static bool_t xnet_getbytes(XDR*, SCHAR*, u_int);
-static bool_t xnet_putbytes(XDR*, const SCHAR*, u_int);
+static bool_t xnet_getbytes(XDR*, SCHAR*, unsigned);
+static bool_t xnet_putbytes(XDR*, const SCHAR*, unsigned);
 static bool_t xnet_read(XDR* xdrs);
 static bool_t xnet_write(XDR* xdrs);
 
@@ -148,7 +148,7 @@ namespace Remote
 		{
 		}
 
-		rem_port* connect_client(PACKET*, const RefPtr<Config>*);
+		rem_port* connect_client(PACKET*, const RefPtr<const Config>*);
 		void server_shutdown(rem_port* port);
 
 	private:
@@ -238,7 +238,7 @@ static void xnet_log_error(const char* err_msg)
 rem_port* XNET_analyze(ClntAuthBlock* cBlock,
 					   const PathName& file_name,
 					   bool uv_flag,
-					   RefPtr<Config>* config,
+					   RefPtr<const Config>* config,
 					   const Firebird::PathName* ref_db_name)
 {
 /**************************************
@@ -304,7 +304,10 @@ rem_port* XNET_analyze(ClntAuthBlock* cBlock,
 		REMOTE_PROTOCOL(PROTOCOL_VERSION10, ptype_batch_send, 1),
 		REMOTE_PROTOCOL(PROTOCOL_VERSION11, ptype_batch_send, 2),
 		REMOTE_PROTOCOL(PROTOCOL_VERSION12, ptype_batch_send, 3),
-		REMOTE_PROTOCOL(PROTOCOL_VERSION13, ptype_batch_send, 4)
+		REMOTE_PROTOCOL(PROTOCOL_VERSION13, ptype_batch_send, 4),
+		REMOTE_PROTOCOL(PROTOCOL_VERSION14, ptype_batch_send, 5),
+		REMOTE_PROTOCOL(PROTOCOL_VERSION15, ptype_batch_send, 6),
+		REMOTE_PROTOCOL(PROTOCOL_VERSION16, ptype_batch_send, 7)
 	};
 	fb_assert(FB_NELEM(protocols_to_try) <= FB_NELEM(cnct->p_cnct_versions));
 	cnct->p_cnct_count = FB_NELEM(protocols_to_try);
@@ -343,14 +346,14 @@ rem_port* XNET_analyze(ClntAuthBlock* cBlock,
 			cBlock->storeDataForPlugin(packet->p_acpd.p_acpt_data.cstr_length,
 									   packet->p_acpd.p_acpt_data.cstr_address);
 			cBlock->authComplete = packet->p_acpd.p_acpt_authenticated;
-			cBlock->resetClnt(&file_name, &packet->p_acpd.p_acpt_keys);
+			cBlock->resetClnt(&packet->p_acpd.p_acpt_keys);
 		}
 		break;
 
 	case op_accept:
 		if (cBlock)
 		{
-			cBlock->resetClnt(&file_name);
+			cBlock->resetClnt();
 		}
 		accept = &packet->p_acpt;
 		break;
@@ -402,7 +405,7 @@ rem_port* XNET_analyze(ClntAuthBlock* cBlock,
 
 rem_port* XNET_connect(PACKET* packet,
 					   USHORT flag,
-					   Firebird::RefPtr<Config>* config)
+					   Firebird::RefPtr<const Config>* config)
 {
 /**************************************
  *
@@ -531,10 +534,7 @@ bool XnetClientEndPoint::connect_init()
 		if (!xnet_connect_mutex)
 		{
 			if (ERRNO == ERROR_FILE_NOT_FOUND)
-			{
-				make_obj_name(name_buffer, sizeof(name_buffer), "xnet://%s");
-				(Arg::Gds(isc_network_error) << Arg::Str(name_buffer)).raise();
-			}
+				return false;
 
 			system_error::raise(ERR_STR("OpenMutex"));
 		}
@@ -708,6 +708,7 @@ static rem_port* alloc_port(rem_port* parent,
 	if (parent)
 	{
 		delete port->port_connection;
+		port->port_connection = nullptr;
 		port->port_connection = REMOTE_make_string(parent->port_connection->str_data);
 
 		port->linkParent(parent);
@@ -1067,13 +1068,21 @@ static void cleanup_port(rem_port* port)
  *
  **************************************/
 
+	if (port->port_thread_guard && port->port_events_thread && !port->port_events_threadId.isCurrent())
+	{
+		//port->port_thread_guard->setWait(port->port_events_thread);
+
+		// Do not release XNET structures while event's thread working
+		Thread::waitForCompletion(port->port_events_thread);
+	}
+
 	if (port->port_xcc)
 	{
 		cleanup_comm(port->port_xcc);
 		port->port_xcc = NULL;
 	}
 
-	port->release();
+	port->releasePort();
 }
 
 
@@ -1086,7 +1095,7 @@ static void raise_lostconn_or_syserror(const char* msg)
 }
 
 
-rem_port* XnetClientEndPoint::connect_client(PACKET* packet, const RefPtr<Config>* config)
+rem_port* XnetClientEndPoint::connect_client(PACKET* packet, const RefPtr<const Config>* config)
 {
 /**************************************
  *
@@ -1099,7 +1108,7 @@ rem_port* XnetClientEndPoint::connect_client(PACKET* packet, const RefPtr<Config
  *
  **************************************/
 
-	const Firebird::RefPtr<Config>& conf(config ? *config : Config::getDefaultConfig());
+	const Firebird::RefPtr<const Config>& conf(config ? *config : Config::getDefaultConfig());
 
 	if (!xnet_initialized)
 	{
@@ -1120,24 +1129,28 @@ rem_port* XnetClientEndPoint::connect_client(PACKET* packet, const RefPtr<Config
 	{ // xnet_mutex scope
 		MutexLockGuard guard(xnet_mutex, FB_FUNCTION);
 
-		// First, try to connect using default kernel namespace.
-		// This should work on Win9X, NT4 and on later OS when server is running
-		// under restricted account in the same session as the client
-		fb_utils::copy_terminate(xnet_endpoint, conf->getIpcName(), sizeof(xnet_endpoint));
-
-		try
+		if (*xnet_endpoint == 0 || !connect_init())
 		{
-			connect_init();
-		}
-		catch (const Exception&)
-		{
-			// The client may not have permissions to create global objects,
-			// but still be able to connect to a local server that has such permissions.
-			// This is why we try to connect using Global\ namespace unconditionally
-			fb_utils::snprintf(xnet_endpoint, sizeof(xnet_endpoint), "Global\\%s", conf->getIpcName());
+			// First, try to connect using default kernel namespace.
+			// This should work on Win9X, NT4 and on later OS when server is running
+			// under restricted account in the same session as the client
+			fb_utils::copy_terminate(xnet_endpoint, conf->getIpcName(), sizeof(xnet_endpoint));
 
-			if (!connect_init()) {
-				return NULL;
+			if (!connect_init())
+			{
+				// The client may not have permissions to create global objects,
+				// but still be able to connect to a local server that has such permissions.
+				// This is why we try to connect using Global\ namespace unconditionally
+				fb_utils::snprintf(xnet_endpoint, sizeof(xnet_endpoint), "Global\\%s", conf->getIpcName());
+
+				if (!connect_init())
+				{
+					TEXT name_buffer[BUFFER_TINY];
+					make_obj_name(name_buffer, sizeof(name_buffer), "xnet://%s");
+
+					*xnet_endpoint = 0;
+					(Arg::Gds(isc_network_error) << Arg::Str(name_buffer)).raise();
+				}
 			}
 		}
 
@@ -1478,6 +1491,11 @@ static void disconnect(rem_port* port)
  *
  **************************************/
 
+	if (port->port_state == rem_port::DISCONNECTED)
+		return;
+
+	port->port_state = rem_port::DISCONNECTED;
+
 	if (port->port_async)
 	{
 		disconnect(port->port_async);
@@ -1514,6 +1532,11 @@ static void force_close(rem_port* port)
 
 	if (!xcc)
 		return;
+
+	XPS xps = (XPS) xcc->xcc_mapped_addr;
+	if (xps) {
+		xps->xps_flags |= XPS_DISCONNECTED;
+	}
 
 	if (xcc->xcc_event_send_channel_filled)
 	{
@@ -1742,7 +1765,7 @@ static void xnet_error(rem_port* port, ISC_STATUS operation, int status)
  **************************************/
 	if (status)
 	{
-		if (port->port_state != rem_port::BROKEN)
+		if (port->port_state == rem_port::PENDING)
 		{
 			gds__log("XNET/xnet_error: errno = %d", status);
 		}
@@ -1756,7 +1779,7 @@ static void xnet_error(rem_port* port, ISC_STATUS operation, int status)
 }
 
 
-static bool_t xnet_getbytes(XDR* xdrs, SCHAR* buff, u_int count)
+static bool_t xnet_getbytes(XDR* xdrs, SCHAR* buff, unsigned bytecount)
 {
 /**************************************
  *
@@ -1768,9 +1791,6 @@ static bool_t xnet_getbytes(XDR* xdrs, SCHAR* buff, u_int count)
  *	Fetch a bunch of bytes from remote interface.
  *
  **************************************/
-
-	SLONG bytecount = count;
-
 	rem_port* port = (rem_port*) xdrs->x_public;
 	const bool portServer = (port->port_flags & PORT_server);
 	XCC xcc = port->port_xcc;
@@ -1821,7 +1841,7 @@ static bool_t xnet_getbytes(XDR* xdrs, SCHAR* buff, u_int count)
 }
 
 
-static bool_t xnet_putbytes(XDR* xdrs, const SCHAR* buff, u_int count)
+static bool_t xnet_putbytes(XDR* xdrs, const SCHAR* buff, unsigned bytecount)
 {
 /**************************************
  *
@@ -1833,8 +1853,6 @@ static bool_t xnet_putbytes(XDR* xdrs, const SCHAR* buff, u_int count)
  *	Put a bunch of bytes into a memory stream.
  *
  **************************************/
-	SLONG bytecount = count;
-
 	rem_port* port = (rem_port*)xdrs->x_public;
 	const bool portServer = (port->port_flags & PORT_server);
 	XCC xcc = port->port_xcc;
@@ -1862,8 +1880,7 @@ static bool_t xnet_putbytes(XDR* xdrs, const SCHAR* buff, u_int count)
 
 		if (xdrs->x_handy)
 		{
-
-			if ((ULONG) xdrs->x_handy == xch->xch_size)
+			if (xdrs->x_handy == xch->xch_size)
 			{
 				while (!xnet_shutdown)
 				{
@@ -1980,6 +1997,9 @@ static bool_t xnet_read(XDR* xdrs)
 
 		const DWORD wait_result =
 			WaitForSingleObject(xcc->xcc_event_recv_channel_filled, XNET_RECV_WAIT_TIMEOUT);
+
+		if (port->port_flags & PORT_disconnect)
+			return FALSE;
 
 		if (wait_result == WAIT_OBJECT_0)
 		{
@@ -2228,7 +2248,7 @@ bool XnetServerEndPoint::server_init(USHORT flag)
 
 		make_obj_name(name_buffer, sizeof(name_buffer), XNET_CONNECT_MUTEX);
 		xnet_connect_mutex = CreateMutex(ISC_get_security_desc(), FALSE, name_buffer);
-		if (!xnet_connect_mutex || (xnet_connect_mutex && ERRNO == ERROR_ALREADY_EXISTS))
+		if (!xnet_connect_mutex || ERRNO == ERROR_ALREADY_EXISTS)
 		{
 			system_error::raise(ERR_STR("CreateMutex"));
 		}
@@ -2530,7 +2550,7 @@ rem_port* XnetServerEndPoint::get_server_port(ULONG client_pid,
 	{
 		if (port)
 			cleanup_port(port);
-		else if (xcc)
+		else
 			cleanup_comm(xcc);
 
 		throw;

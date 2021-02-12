@@ -215,7 +215,6 @@ private:
 	static Firebird::GlobalPtr<Firebird::Mutex> initMutex;
 	static Firebird::TempDirectoryList* tempDirs;
 	static FB_SIZE_T minBlockSize;
-	static offset_t globalCacheUsage;
 };
 
 #endif // JRD_TEMP_SPACE_H

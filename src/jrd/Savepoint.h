@@ -21,7 +21,7 @@
 #define JRD_SAVEPOINT_H
 
 #include "../common/classes/File.h"
-#include "../common/classes/MetaName.h"
+#include "../jrd/MetaName.h"
 #include "../jrd/Record.h"
 #include "../jrd/RecordNumber.h"
 
@@ -94,7 +94,8 @@ namespace Jrd
 		UndoItemTree*	vct_undo;		// Data for undo records
 
 		void mergeTo(thread_db* tdbb, jrd_tra* transaction, VerbAction* nextAction);
-		void undo(thread_db* tdbb, jrd_tra* transaction);
+		void undo(thread_db* tdbb, jrd_tra* transaction, bool preserveLocks, 
+				  VerbAction* preserveAction);
 		void garbageCollectIdxLite(thread_db* tdbb, jrd_tra* transaction, SINT64 recordNumber,
 								   VerbAction* nextAction, Record* goingRecord);
 
@@ -114,6 +115,7 @@ namespace Jrd
 		// Savepoint flags
 		static const USHORT SAV_root		= 1;	// transaction-level savepoint
 		static const USHORT SAV_force_dfw	= 2;	// DFW is present even if savepoint is empty
+		static const USHORT SAV_replicated	= 4;	// savepoint has already been replicated
 
 	public:
 		explicit Savepoint(jrd_tra* transaction)
@@ -138,8 +140,18 @@ namespace Jrd
 			}
 		}
 
+		void init(SavNumber number, bool root, Savepoint* next)
+		{
+			m_number = number;
+			m_flags |= root ? SAV_root : 0;
+			m_next = next;
+			fb_assert(m_next != this);
+		}
+
 		VerbAction* getAction(const jrd_rel* relation) const
 		{
+			// Find and return (if exists) action that belongs to the given relation
+
 			for (VerbAction* action = m_actions; action; action = action->vct_next)
 			{
 				if (action->vct_relation == relation)
@@ -159,12 +171,12 @@ namespace Jrd
 			return m_number;
 		}
 
-		const Firebird::MetaName& getName() const
+		const MetaName& getName() const
 		{
 			return m_name;
 		}
 
-		void setName(const Firebird::MetaName& name)
+		void setName(const MetaName& name)
 		{
 			m_name = name;
 		}
@@ -177,6 +189,11 @@ namespace Jrd
 		bool isRoot() const
 		{
 			return (m_flags & SAV_root);
+		}
+
+		bool isReplicated() const
+		{
+			return (m_flags & SAV_replicated);
 		}
 
 		bool isChanging() const
@@ -194,36 +211,29 @@ namespace Jrd
 			m_flags |= SAV_force_dfw;
 		}
 
-		Savepoint* mergeTo(Savepoint*& target)
+		void markAsReplicated()
 		{
+			m_flags |= SAV_replicated;
+		}
+
+		Savepoint* moveToStack(Savepoint*& target)
+		{
+			// Relink savepoint to the top of the provided savepoint stack.
+			// Return the former "next" pointer to the caller.
+
 			Savepoint* const next = m_next;
 			m_next = target;
+			fb_assert(m_next != this);
 			target = this;
 			return next;
 		}
 
 		VerbAction* createAction(jrd_rel* relation);
 
-		void releaseAction(VerbAction* action)
-		{
-			m_actions = action->vct_next;
-			action->vct_next = m_freeActions;
-			m_freeActions = action;
-		}
-
-		void propagateAction(VerbAction* action)
-		{
-			m_actions = action->vct_next;
-			action->vct_next = m_next->m_actions;
-			m_next->m_actions = action;
-		}
-
 		void cleanupTempData();
 
-		Savepoint* rollback(thread_db* tdbb, Savepoint* prior = NULL);
+		Savepoint* rollback(thread_db* tdbb, Savepoint* prior = NULL, bool preserveLocks = false);
 		Savepoint* rollforward(thread_db* tdbb, Savepoint* prior = NULL);
-
-		static Savepoint* start(jrd_tra* transaction, bool root = false);
 
 		static void destroy(Savepoint*& savepoint)
 		{
@@ -235,10 +245,13 @@ namespace Jrd
 			}
 		}
 
-		static void merge(Savepoint*& target, Savepoint*& source)
+		static void mergeStacks(Savepoint*& target, Savepoint*& source)
 		{
+			// Given two savepoint stacks, merge them together.
+			// The source stack becomes empty after that.
+
 			while (source)
-				source = source->mergeTo(target);
+				source = source->moveToStack(target);
 		}
 
 		class Iterator
@@ -299,11 +312,11 @@ namespace Jrd
 		bool isLarge() const;
 		Savepoint* release(Savepoint* prior = NULL);
 
-		jrd_tra* m_transaction; 		// transaction this savepoint belongs to
+		jrd_tra* const m_transaction; 	// transaction this savepoint belongs to
 		SavNumber m_number;				// savepoint number
 		USHORT m_flags;					// misc flags
 		USHORT m_count;					// active verb count
-		Firebird::MetaName m_name; 		// savepoint name
+		MetaName m_name; 		// savepoint name
 		Savepoint* m_next;				// next savepoint in the list
 
 
@@ -311,8 +324,8 @@ namespace Jrd
 		VerbAction* m_freeActions;		// free verb actions
 	};
 
-
-	// Starts a savepoint and rollback it in destructor if release() is not called
+	// Start a savepoint and rollback it in destructor,
+	// unless it was released / rolled back explicitly
 
 	class AutoSavePoint
 	{
@@ -320,26 +333,22 @@ namespace Jrd
 		AutoSavePoint(thread_db* tdbb, jrd_tra* trans);
 		~AutoSavePoint();
 
-		void release()
-		{
-			m_released = true;
-		}
+		void release();
+		void rollback(bool preserveLocks = false);
 
 	private:
 		thread_db* const m_tdbb;
 		jrd_tra* const m_transaction;
-		bool m_released;
+		SavNumber m_number;
 	};
+
+	// Conditional savepoint used to ensure cursor stability in sub-queries
 
 	class StableCursorSavePoint
 	{
 	public:
 		StableCursorSavePoint(thread_db* tdbb, jrd_tra* trans, bool start);
-
-		~StableCursorSavePoint()
-		{
-			release();
-		}
+		~StableCursorSavePoint() {} // undo is left up to the callers
 
 		void release();
 
@@ -352,4 +361,3 @@ namespace Jrd
 } // namespace
 
 #endif // JRD_SAVEPOINT_H
-

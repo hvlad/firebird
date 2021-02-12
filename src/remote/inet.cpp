@@ -101,7 +101,7 @@ const int INET_RETRY_CALL = 5;
 
 #include "../remote/remote.h"
 #include "../remote/SockAddr.h"
-#include "../jrd/ibase.h"
+#include "ibase.h"
 #include "../remote/inet_proto.h"
 #include "../remote/proto_proto.h"
 #include "../remote/remot_proto.h"
@@ -127,6 +127,11 @@ using namespace Firebird;
 #include <process.h>
 #include <signal.h>
 #include "../utilities/install/install_nt.h"
+#include <mstcpip.h>
+
+#ifndef SIO_LOOPBACK_FAST_PATH
+#define SIO_LOOPBACK_FAST_PATH              _WSAIOW(IOC_VENDOR,16)
+#endif
 
 #define INET_RETRY_ERRNO	WSAEINPROGRESS
 #define INET_ADDR_IN_USE	WSAEADDRINUSE
@@ -236,33 +241,23 @@ private:
 
 	pollfd* getPollFd(int n)
 	{
-		pollfd* const end = slct_poll.end();
-		for (pollfd* pf = slct_poll.begin(); pf < end; ++pf)
-		{
-			if (n == pf->fd)
-			{
-				return pf;
-			}
-		}
+		FB_SIZE_T pos;
+		if (slct_poll.find(n, pos))
+			return &slct_poll[pos];
 
-		return NULL;
-	}
-
-	static int compare(const void* a, const void* b)
-	{
-		// use C-cast here to be for sure compatible with libc
-		return ((pollfd*) a)->fd - ((pollfd*) b)->fd;
+		return nullptr;
 	}
 #endif
 
 public:
 #ifdef HAVE_POLL
 	Select()
-		: slct_time(0), slct_count(0), slct_poll(*getDefaultMemoryPool())
+		: slct_time(0), slct_count(0), slct_poll(*getDefaultMemoryPool()),
+		  slct_ready(*getDefaultMemoryPool())
 	{ }
 
 	explicit Select(Firebird::MemoryPool& pool)
-		: slct_time(0), slct_count(0), slct_poll(pool)
+		: slct_time(0), slct_count(0), slct_poll(pool), slct_ready(pool)
 	{ }
 #else
 	Select()
@@ -280,6 +275,65 @@ public:
 
 	enum HandleState {SEL_BAD, SEL_DISCONNECTED, SEL_NO_DATA, SEL_READY};
 
+	// set first port to check for readyness
+	void checkStart(RemPortPtr& port)
+	{
+		slct_main = port;
+		slct_port = port;
+#ifdef WIRE_COMPRESS_SUPPORT
+		slct_zport = nullptr;
+#endif
+	}
+
+	// get port to check for readyness
+	// assume port_mutex is locked
+	HandleState checkNext(RemPortPtr& port)
+	{
+#ifdef WIRE_COMPRESS_SUPPORT
+		if (slct_zport)
+		{
+			if ((slct_zport->port_flags & PORT_z_data) &&
+				(slct_zport->port_state != rem_port::DISCONNECTED))
+			{
+				port = slct_zport;
+				slct_zport = nullptr;	// Will be set again by select_multi() if needed
+				return SEL_READY;
+			}
+
+			slct_zport = nullptr;
+		}
+#endif
+
+		if (slct_port && slct_port->port_state == rem_port::DISCONNECTED)
+		{
+			// restart from main port
+			slct_port = nullptr;
+			if (slct_main && slct_main->port_state == rem_port::DISCONNECTED)
+				slct_main = nullptr;
+
+			slct_port = slct_main;
+		}
+
+		port = slct_port;
+		if (!slct_port)
+			return SEL_NO_DATA;
+
+#ifdef WIRE_COMPRESS_SUPPORT
+		if (slct_port->port_flags & PORT_z_data)
+			return SEL_READY;
+#endif
+
+		slct_port = slct_port->port_next;
+		return ok(port);
+	}
+
+	void setZDataPort(RemPortPtr& port)
+	{
+#ifdef WIRE_COMPRESS_SUPPORT
+		slct_zport = port;
+#endif
+	}
+
 	HandleState ok(const rem_port* port)
 	{
 #ifdef WIRE_COMPRESS_SUPPORT
@@ -288,16 +342,36 @@ public:
 #endif
 		SOCKET n = port->port_handle;
 #if defined(WIN_NT)
-		return FD_ISSET(n, &slct_fdset) ? SEL_READY : SEL_NO_DATA;
+		if (FD_ISSET(n, &slct_fdset))
+		{
+			unset(n);
+			return SEL_READY;
+		}
+		return SEL_NO_DATA;
 #elif defined(HAVE_POLL)
-		const pollfd* pf = getPollFd(n);
+		pollfd* pf = nullptr;
+		FB_SIZE_T pos;
+		if (slct_ready.find(n, pos))
+			pf = slct_ready[pos];
+
 		if (pf)
-			return pf->events & SEL_CHECK_MASK ? SEL_READY : SEL_NO_DATA;
+		{
+			HandleState ret = pf->events & SEL_CHECK_MASK ? SEL_READY : SEL_NO_DATA;
+			pf->events = 0;		// unset
+			return ret;
+		}
 		return n < 0 ? (port->port_flags & PORT_disconnect ? SEL_DISCONNECTED : SEL_BAD) : SEL_NO_DATA;
 #else
 		if (n < 0 || n >= FD_SETSIZE)
 			return port->port_flags & PORT_disconnect ? SEL_DISCONNECTED : SEL_BAD;
-		return (n < slct_width && FD_ISSET(n, &slct_fdset)) ? SEL_READY : SEL_NO_DATA;
+
+		if (n < slct_width && FD_ISSET(n, &slct_fdset))
+		{
+			unset(n);
+			return SEL_READY;
+		}
+
+		return SEL_NO_DATA;
 #endif
 	}
 
@@ -318,16 +392,18 @@ public:
 	void set(SOCKET handle)
 	{
 #ifdef HAVE_POLL
-		pollfd* pf = getPollFd(handle);
-		if (pf)
+		FB_SIZE_T pos;
+		if (slct_poll.find(handle, pos))
 		{
-			pf->events = SEL_INIT_EVENTS;
-			return;
+			slct_poll[pos].events = SEL_INIT_EVENTS;
 		}
-		pollfd f;
-		f.fd = handle;
-		f.events = SEL_INIT_EVENTS;
-		slct_poll.push(f);
+		else
+		{
+			pollfd f;
+			f.fd = handle;
+			f.events = SEL_INIT_EVENTS;
+			slct_poll.insert(pos, f);
+		}
 #else
 		FD_SET(handle, &slct_fdset);
 #ifdef WIN_NT
@@ -347,11 +423,17 @@ public:
 		slct_width = 0;
 		FD_ZERO(&slct_fdset);
 #endif
+		slct_main = nullptr;
+		slct_port = nullptr;
+#ifdef WIRE_COMPRESS_SUPPORT
+		slct_zport = nullptr;
+#endif
 	}
 
 	void select(timeval* timeout)
 	{
 #ifdef HAVE_POLL
+		slct_ready.clear();
 		bool hasRequest = false;
 		pollfd* const end = slct_poll.end();
 		for (pollfd* pf = slct_poll.begin(); pf < end; ++pf)
@@ -374,7 +456,11 @@ public:
 		if (slct_count >= 0)	// in case of error return revents may contain something bad
 		{
 			for (pollfd* pf = slct_poll.begin(); pf < end; ++pf)
+			{
 				pf->events = pf->revents;
+				if (pf->revents & SEL_CHECK_MASK)
+					slct_ready.add(pf);
+			}
 		}
 #else
 #ifdef WIN_NT
@@ -395,10 +481,23 @@ public:
 private:
 	int		slct_count;
 #ifdef HAVE_POLL
-	HalfStaticArray<pollfd, 8> slct_poll;
+	class PollToFD
+	{
+	public:
+		static int generate(const pollfd* p) { return p->fd; };
+		static int generate(const pollfd& p) { return p.fd; };
+	};
+
+	SortedArray<pollfd, InlineStorage<pollfd, 8>, int, PollToFD>  slct_poll;
+	SortedArray<pollfd*, InlineStorage<pollfd*, 8>, int, PollToFD>  slct_ready;
 #else
 	int		slct_width;
 	fd_set	slct_fdset;
+#endif
+	RemPortPtr slct_main;	// first port to check for readyness
+	RemPortPtr slct_port;	// next port to check for readyness
+#ifdef WIRE_COMPRESS_SUPPORT
+	RemPortPtr slct_zport;	// port with some compressed data remaining in the buffer
 #endif
 };
 
@@ -443,16 +542,16 @@ static SocketsArray* forkSockets;
 static void		get_peer_info(rem_port*);
 
 static void		inet_gen_error(bool, rem_port*, const Arg::StatusVector& v);
-static bool_t	inet_getbytes(XDR*, SCHAR *, u_int);
+static bool_t	inet_getbytes(XDR*, SCHAR *, unsigned);
 static void		inet_error(bool, rem_port*, const TEXT*, ISC_STATUS, int);
-static bool_t	inet_putbytes(XDR*, const SCHAR*, u_int);
+static bool_t	inet_putbytes(XDR*, const SCHAR*, unsigned);
 static bool		inet_read(XDR*);
 static rem_port*		inet_try_connect(	PACKET*,
 									Rdb*,
 									const PathName&,
 									const TEXT*,
 									ClumpletReader&,
-									RefPtr<Config>*,
+									RefPtr<const Config>*,
 									const PathName*,
 									int);
 static bool		inet_write(XDR*);
@@ -476,6 +575,8 @@ static int		send_partial(rem_port*, PACKET *);
 
 static int		xdrinet_create(XDR*, rem_port*, UCHAR *, USHORT, enum xdr_op);
 static bool		setNoNagleOption(rem_port*);
+static bool		setFastLoopbackOption(rem_port*, SOCKET s = INVALID_SOCKET);
+static bool		setKeepAlive(SOCKET);
 static FPTR_INT	tryStopMainThread = 0;
 
 
@@ -532,8 +633,9 @@ rem_port* INET_analyze(ClntAuthBlock* cBlock,
 					   const TEXT* node_name,
 					   bool uv_flag,
 					   ClumpletReader &dpb,
-					   RefPtr<Config>* config,
+					   RefPtr<const Config>* config,
 					   const PathName* ref_db_name,
+					   Firebird::ICryptKeyCallback* cryptCb,
 					   int af)
 {
 /**************************************
@@ -612,7 +714,10 @@ rem_port* INET_analyze(ClntAuthBlock* cBlock,
 		REMOTE_PROTOCOL(PROTOCOL_VERSION10, ptype_lazy_send, 1),
 		REMOTE_PROTOCOL(PROTOCOL_VERSION11, ptype_lazy_send, 2),
 		REMOTE_PROTOCOL(PROTOCOL_VERSION12, ptype_lazy_send, 3),
-		REMOTE_PROTOCOL(PROTOCOL_VERSION13, ptype_lazy_send, 4)
+		REMOTE_PROTOCOL(PROTOCOL_VERSION13, ptype_lazy_send, 4),
+		REMOTE_PROTOCOL(PROTOCOL_VERSION14, ptype_lazy_send, 5),
+		REMOTE_PROTOCOL(PROTOCOL_VERSION15, ptype_lazy_send, 6),
+		REMOTE_PROTOCOL(PROTOCOL_VERSION16, ptype_lazy_send, 7)
 	};
 	fb_assert(FB_NELEM(protocols_to_try) <= FB_NELEM(cnct->p_cnct_versions));
 	cnct->p_cnct_count = FB_NELEM(protocols_to_try);
@@ -627,51 +732,96 @@ rem_port* INET_analyze(ClntAuthBlock* cBlock,
 	}
 
 	rem_port* port = inet_try_connect(packet, rdb, file_name, node_name, dpb, config, ref_db_name, af);
+	P_ACPT* accept;
 
-	P_ACPT* accept = NULL;
-	switch (packet->p_operation)
+	for (;;)
 	{
-	case op_accept_data:
-	case op_cond_accept:
-		accept = &packet->p_acpd;
-		if (cBlock)
+		accept = NULL;
+		switch (packet->p_operation)
 		{
-			cBlock->storeDataForPlugin(packet->p_acpd.p_acpt_data.cstr_length,
-									   packet->p_acpd.p_acpt_data.cstr_address);
-			cBlock->authComplete = packet->p_acpd.p_acpt_authenticated;
-			port->addServerKeys(&packet->p_acpd.p_acpt_keys);
-			cBlock->resetClnt(&file_name, &packet->p_acpd.p_acpt_keys);
-		}
-		break;
+		case op_accept_data:
+		case op_cond_accept:
+			accept = &packet->p_acpd;
+			if (cBlock)
+			{
+				cBlock->storeDataForPlugin(packet->p_acpd.p_acpt_data.cstr_length,
+										   packet->p_acpd.p_acpt_data.cstr_address);
+				cBlock->authComplete = packet->p_acpd.p_acpt_authenticated;
+				port->addServerKeys(&packet->p_acpd.p_acpt_keys);
+				cBlock->resetClnt(&packet->p_acpd.p_acpt_keys);
+			}
+			break;
 
-	case op_accept:
-		if (cBlock)
-		{
-			cBlock->resetClnt(&file_name);
-		}
-		accept = &packet->p_acpt;
-		break;
+		case op_accept:
+			if (cBlock)
+			{
+				cBlock->resetClnt();
+			}
+			accept = &packet->p_acpt;
+			break;
 
-	case op_response:
-		try
-		{
-			LocalStatus warning;		// Ignore connect warnings for a while
-			CheckStatusWrapper statusWrapper(&warning);
-			REMOTE_check_response(&statusWrapper, rdb, packet, false);
-		}
-		catch (const Exception&)
-		{
+		case op_crypt_key_callback:
+			try
+			{
+				UCharBuffer buf;
+				P_CRYPT_CALLBACK* cc = &packet->p_cc;
+
+				if (cryptCb)
+				{
+					if (cc->p_cc_reply <= 0)
+					{
+						cc->p_cc_reply = 1;
+					}
+					UCHAR* reply = buf.getBuffer(cc->p_cc_reply);
+					unsigned l = cryptCb->callback(cc->p_cc_data.cstr_length,
+						cc->p_cc_data.cstr_address, cc->p_cc_reply, reply);
+
+					REMOTE_free_packet(port, packet, true);
+					cc->p_cc_data.cstr_length = l;
+					cc->p_cc_data.cstr_address = reply;
+				}
+				else
+				{
+					REMOTE_free_packet(port, packet, true);
+					cc->p_cc_data.cstr_length = 0;
+				}
+
+				packet->p_operation = op_crypt_key_callback;
+				cc->p_cc_reply = 0;
+				port->send(packet);
+				port->receive(packet);
+				continue;
+			}
+			catch (const Exception&)
+			{
+				disconnect(port);
+				delete rdb;
+				throw;
+			}
+
+		case op_response:
+			try
+			{
+				LocalStatus warning;		// Ignore connect warnings for a while
+				CheckStatusWrapper statusWrapper(&warning);
+				REMOTE_check_response(&statusWrapper, rdb, packet, false);
+			}
+			catch (const Exception&)
+			{
+				disconnect(port);
+				delete rdb;
+				throw;
+			}
+			// fall through - response is not a required accept
+
+		default:
 			disconnect(port);
 			delete rdb;
-			throw;
+			Arg::Gds(isc_connect_reject).raise();
+			break;
 		}
-		// fall through - response is not a required accept
 
-	default:
-		disconnect(port);
-		delete rdb;
-		Arg::Gds(isc_connect_reject).raise();
-		break;
+		break;	// Always leave for() loop here
 	}
 
 	fb_assert(accept);
@@ -701,7 +851,10 @@ rem_port* INET_analyze(ClntAuthBlock* cBlock,
 	}
 
 	if (compress)
+	{
 		port->initCompression();
+		port->port_flags |= PORT_compressed;
+	}
 
 	return port;
 }
@@ -710,7 +863,7 @@ rem_port* INET_connect(const TEXT* name,
 					   PACKET* packet,
 					   USHORT flag,
 					   ClumpletReader* dpb,
-					   RefPtr<Config>* config,
+					   RefPtr<const Config>* config,
 					   int af)
 {
 /**************************************
@@ -778,13 +931,12 @@ rem_port* INET_connect(const TEXT* name,
 	if (host.hasData())
 	{
 		delete port->port_connection;
+		port->port_connection = nullptr;
 		port->port_connection = REMOTE_make_string(host.c_str());
 	}
-	else {
-		if (packet)
-		{
-			host = port->port_host->str_data;
-		}
+	else if (packet)
+	{
+		host = port->port_host->str_data;
 	}
 
 	if (protocol.isEmpty())
@@ -821,15 +973,25 @@ rem_port* INET_connect(const TEXT* name,
 #endif
 			AI_ADDRCONFIG | (packet ? 0 : AI_PASSIVE);
 
+	struct AutoAddrInfo
+	{
+		~AutoAddrInfo()
+		{
+			if (ptr)
+				freeaddrinfo(ptr);
+		}
+
+		addrinfo* ptr = nullptr;
+	} gai_result;
+
 	const char* host_str = (host.hasData() ? host.c_str() : NULL);
-	struct addrinfo* gai_result;
 	bool retry_gai;
 	int n;
 
 	do
 	{
 		retry_gai = false;
-		n = getaddrinfo(host_str, protocol.c_str(), &gai_hints, &gai_result);
+		n = getaddrinfo(host_str, protocol.c_str(), &gai_hints, &gai_result.ptr);
 
 		if ((n == EAI_FAMILY || (!host_str && n == EAI_NONAME)) &&
 			(gai_hints.ai_family == AF_INET6) && (af != AF_INET6))
@@ -854,7 +1016,7 @@ rem_port* INET_connect(const TEXT* name,
 		inet_gen_error(true, port, Arg::Gds(isc_net_lookup_err) << Arg::Gds(isc_host_unknown));
 	}
 
-	for (const addrinfo* pai = gai_result; pai; pai = pai->ai_next)
+	for (const addrinfo* pai = gai_result.ptr; pai; pai = pai->ai_next)
 	{
 		// Allocate a port block and initialize a socket for communications
 		port->port_handle = os_utils::socket(pai->ai_family, pai->ai_socktype, pai->ai_protocol);
@@ -866,21 +1028,18 @@ rem_port* INET_connect(const TEXT* name,
 			continue;
 		}
 
-		if (packet)
-		{
-			// client
-			int optval = 1;
-			n = setsockopt(port->port_handle, SOL_SOCKET, SO_KEEPALIVE, (SCHAR*) &optval, sizeof(optval));
-			if (n == -1)
-			{
-				gds__log("setsockopt: error setting SO_KEEPALIVE");
-			}
+		if (!packet) // server
+			return listener_socket(port, flag, pai);
 
-			if (!setNoNagleOption(port))
-			{
-				gds__log("setsockopt: error setting TCP_NODELAY");
-				goto err_close;
-			}
+		// client
+		if (!setKeepAlive(port->port_handle))
+			gds__log("setsockopt: error setting SO_KEEPALIVE");
+
+		if (!setNoNagleOption(port))
+			gds__log("setsockopt: error setting TCP_NODELAY");
+		else
+		{
+			setFastLoopbackOption(port);
 
 			n = connect(port->port_handle, pai->ai_addr, pai->ai_addrlen);
 			if (n != -1)
@@ -888,17 +1047,10 @@ rem_port* INET_connect(const TEXT* name,
 				port->port_peer_name = host;
 				get_peer_info(port);
 				if (send_full(port, packet))
-					goto exit_free;
+					return port;
 			}
 		}
-		else
-		{
-			// server
-			port = listener_socket(port, flag, pai);
-			goto exit_free;
-		}
 
-err_close:
 		SOCLOSE(port->port_handle);
 	}
 
@@ -908,8 +1060,6 @@ err_close:
 	else
 		inet_error(true, port, "listen", isc_net_connect_listen_err, 0);
 
-exit_free:
-	freeaddrinfo(gai_result);
 	return port;
 }
 
@@ -977,11 +1127,20 @@ static rem_port* listener_socket(rem_port* port, USHORT flag, const addrinfo* pa
 		{
 			inet_error(true, port, "setsockopt LINGER", isc_net_connect_listen_err, INET_ERRNO);
 		}
-
-		if (! setNoNagleOption(port))
+	}
+	else
+	{
+		if (! setKeepAlive(port->port_handle))
 		{
-			inet_error(true, port, "setsockopt TCP_NODELAY", isc_net_connect_listen_err, INET_ERRNO);
+			inet_error(true, port, "setsockopt SO_KEEPALIVE", isc_net_connect_listen_err, INET_ERRNO);
 		}
+	}
+
+	// RS: In linux sockets inherit this option from listener. Previously CLASSIC had no its own listen socket
+	// Now it's necessary to respect the option via listen socket.
+	if (! setNoNagleOption(port))
+	{
+		inet_error(true, port, "setsockopt TCP_NODELAY", isc_net_connect_listen_err, INET_ERRNO);
 	}
 
 	// On Linux platform, when the server dies the system holds a port
@@ -1005,6 +1164,8 @@ static rem_port* listener_socket(rem_port* port, USHORT flag, const addrinfo* pa
 	{
 		inet_error(false, port, "listen", isc_net_connect_listen_err, INET_ERRNO);
 	}
+
+	setFastLoopbackOption(port);
 
 	inet_ports->registerPort(port);
 
@@ -1098,9 +1259,7 @@ rem_port* INET_reconnect(SOCKET handle)
 	port->port_flags |= PORT_server;
 	port->port_server_flags |= SRVR_server;
 
-	int n = 0, optval = TRUE;
-	n = setsockopt(port->port_handle, SOL_SOCKET, SO_KEEPALIVE, (SCHAR*) &optval, sizeof(optval));
-	if (n == -1) {
+	if (! setKeepAlive(port->port_handle)) {
 		gds__log("inet server err: setting KEEPALIVE socket option \n");
 	}
 
@@ -1130,9 +1289,7 @@ rem_port* INET_server(SOCKET sock)
 	port->port_server_flags |= SRVR_server;
 	port->port_handle = sock;
 
-	int optval = 1;
-	n = setsockopt(sock, SOL_SOCKET, SO_KEEPALIVE, (SCHAR*) &optval, sizeof(optval));
-	if (n == -1) {
+	if (! setKeepAlive(port->port_handle)) {
 		gds__log("inet server err: setting KEEPALIVE socket option \n");
 	}
 
@@ -1260,6 +1417,11 @@ static rem_port* alloc_port(rem_port* const parent, const USHORT flags)
 			INET_initialized = true;
 
 			// This should go AFTER 'INET_initialized = true' to avoid recursion
+			// That order of statements at the first glance appears to be possible cause of races:
+			// Someone may pass the if (!INET_initialized) with INET_initialized == true,
+			// but inet_async_receive still being NULL. Luckily it's not so awful actually.
+			// Async receive is used only by network server and there is no way for it
+			// to allocate secondary ports until completion of master port init.
 			inet_async_receive = alloc_port(0);
 			inet_async_receive->port_flags |= PORT_server;
 		}
@@ -1351,17 +1513,13 @@ static rem_port* aux_connect(rem_port* port, PACKET* packet)
 			if (count != -1 || !INTERRUPT_ERROR(inetErrNo))
 			{
 				if (count == 1)
-				{
 					break;
-				}
-				else
-				{
-					const ISC_STATUS error_code =
-						(count == 0) ? isc_net_event_connect_timeout : isc_net_event_connect_err;
-					int savedError = inetErrNo;
-					SOCLOSE(port->port_channel);
-					inet_error(false, port, "select", error_code, savedError);
-				}
+
+				const ISC_STATUS error_code =
+					(count == 0) ? isc_net_event_connect_timeout : isc_net_event_connect_err;
+				int savedError = inetErrNo;
+				SOCLOSE(port->port_channel);
+				inet_error(false, port, "select", error_code, savedError);
 			}
 		}
 
@@ -1411,6 +1569,7 @@ static rem_port* aux_connect(rem_port* port, PACKET* packet)
 		port->auxAcceptError(packet);
 		inet_error(false, port, "socket", isc_net_event_connect_err, savedError);
 	}
+
 	SockAddr resp_address(response->p_resp_data.cstr_address, response->p_resp_data.cstr_length);
 	address.setPort(resp_address.port());
 
@@ -1424,8 +1583,8 @@ static rem_port* aux_connect(rem_port* port, PACKET* packet)
 		inet_error(false, port, "socket", isc_net_event_connect_err, savedError);
 	}
 
-	int optval = 1;
-	setsockopt(n, SOL_SOCKET, SO_KEEPALIVE, (SCHAR*) &optval, sizeof(optval));
+	setKeepAlive(n);
+	setFastLoopbackOption(new_port, n);
 
 	status = address.connect(n);
 	if (status < 0)
@@ -1516,14 +1675,36 @@ static rem_port* aux_request( rem_port* port, PACKET* packet)
 	new_port->port_server_flags = port->port_server_flags;
 	new_port->port_channel = (int) n;
 
+	setFastLoopbackOption(new_port, n);
+
 	P_RESP* response = &packet->p_resp;
 
 	SockAddr port_address;
+
 	if (port_address.getsockname(port->port_handle) < 0)
-	{
 		inet_error(false, port, "getsockname", isc_net_event_listen_err, INET_ERRNO);
-	}
+
 	port_address.setPort(our_address.port());
+
+	// CORE-5902: MacOS has sockaddr struct layout different than one found in POSIX/Windows.
+	// This prevent usage of events when client or server is MacOS but the other end is not.
+	// Here we try to make this case work. However it's not bullet-proof for others platforms and architectures.
+	// A proper solution would be to just send the port number in a protocol friendly way.
+
+	bool macOsClient =
+		port->port_client_arch == arch_darwin_ppc ||
+		port->port_client_arch == arch_darwin_x64 ||
+		port->port_client_arch == arch_darwin_ppc64;
+
+	bool macOsServer =
+		ARCHITECTURE == arch_darwin_ppc ||
+		ARCHITECTURE == arch_darwin_x64 ||
+		ARCHITECTURE == arch_darwin_ppc64;
+
+	if (macOsServer && !macOsClient)
+		port_address.convertFromMacOsToPosixWindows();
+	else if (!macOsServer && macOsClient)
+		port_address.convertFromPosixWindowsToMacOs();
 
 	response->p_resp_data.cstr_length = (ULONG) port_address.length();
 	memcpy(response->p_resp_data.cstr_address, port_address.ptr(), port_address.length());
@@ -1560,7 +1741,7 @@ static THREAD_ENTRY_DECLARE waitThread(THREAD_ENTRY_PARAM)
 }
 #endif // !defined(WIN_NT)
 
-static void disconnect(rem_port* const port)
+static void disconnect(rem_port* port)
 {
 /**************************************
  *
@@ -1594,6 +1775,9 @@ static void disconnect(rem_port* const port)
 	}
 
 	MutexLockGuard guard(port_mutex, FB_FUNCTION);
+	if (port->port_state == rem_port::DISCONNECTED)
+		return;
+
 	port->port_state = rem_port::DISCONNECTED;
 	port->port_flags &= ~PORT_connecting;
 
@@ -1628,7 +1812,10 @@ static void disconnect(rem_port* const port)
 		SOCLOSE(port->port_channel);
 	}
 
-	port->release();
+	if (port->port_thread_guard && port->port_events_thread && !port->port_events_threadId.isCurrent())
+		port->port_thread_guard->setWait(port->port_events_thread);
+	else
+		port->releasePort();
 
 #ifdef DEBUG
 	if (INET_trace & TRACE_summary)
@@ -1902,6 +2089,13 @@ static bool select_multi(rem_port* main_port, UCHAR* buffer, SSHORT bufsize, SSH
  *
  **************************************/
 
+// This code is used to test error handling in main server loop
+#ifdef NEVERDEF
+	static int dummyCnt = 0;
+	if (++dummyCnt % 64 == 0)
+		(Arg::Gds(isc_random) << "Simulated select_multi error").raise();
+#endif
+
 	for (;;)
 	{
 		select_port(main_port, &INET_select, port);
@@ -1909,7 +2103,7 @@ static bool select_multi(rem_port* main_port, UCHAR* buffer, SSHORT bufsize, SSH
 		{
 			if (INET_shutting_down)
 			{
-				if (main_port->port_state != rem_port::BROKEN)
+				if (main_port->port_state == rem_port::PENDING)
 				{
 					main_port->port_state = rem_port::BROKEN;
 
@@ -1917,12 +2111,16 @@ static bool select_multi(rem_port* main_port, UCHAR* buffer, SSHORT bufsize, SSH
 					SOCLOSE(main_port->port_handle);
 				}
 			}
-			else if (port = select_accept(main_port))
+			else if ((port = select_accept(main_port)))
 			{
 				if (!REMOTE_inflate(port, packet_receive, buffer, bufsize, length))
 				{
 					*length = 0;
 				}
+#ifdef WIRE_COMPRESS_SUPPORT
+				if (port->port_flags & PORT_z_data)
+					INET_select->setZDataPort(port);
+#endif
 				return (*length) ? true : false;
 			}
 
@@ -1947,6 +2145,10 @@ static bool select_multi(rem_port* main_port, UCHAR* buffer, SSHORT bufsize, SSH
 				}
 				*length = 0;
 			}
+#ifdef WIRE_COMPRESS_SUPPORT
+			if (port->port_flags & PORT_z_data)
+				INET_select->setZDataPort(port);
+#endif
 			return (*length) ? true : false;
 		}
 		if (!select_wait(main_port, &INET_select))
@@ -1979,8 +2181,7 @@ static rem_port* select_accept( rem_port* main_port)
 		inet_error(true, port, "accept", isc_net_connect_err, INET_ERRNO);
 	}
 
-	int optval = 1;
-	setsockopt(port->port_handle, SOL_SOCKET, SO_KEEPALIVE, (SCHAR*) &optval, sizeof(optval));
+	setKeepAlive(port->port_handle);
 
 	port->port_flags |= PORT_server;
 
@@ -2012,16 +2213,18 @@ static void select_port(rem_port* main_port, Select* selct, RemPortPtr& port)
  **************************************/
 
 	MutexLockGuard guard(port_mutex, FB_FUNCTION);
-
-	for (port = main_port; port; port = port->port_next)
+	while (true)
 	{
-		Select::HandleState result = selct->ok(port);
-		selct->unset(port->port_handle);
+		Select::HandleState result = selct->checkNext(port);
+		if (!port)
+			return;
 
 		switch (result)
 		{
 		case Select::SEL_BAD:
 			if (port->port_state == rem_port::BROKEN || (port->port_flags & PORT_connecting))
+				continue;
+			if (port->port_flags & PORT_async)
 				continue;
 			return;
 
@@ -2178,6 +2381,9 @@ static bool select_wait( rem_port* main_port, Select* selct)
 
 			if (selct->getCount() != -1)
 			{
+				RemPortPtr p(main_port);
+				selct->checkStart(p);
+
 				// if selct->slct_count is zero it means that we timed out of
 				// select with nothing to read or accept, so clear the fd_set
 				// bit as this value is undefined on some platforms (eg. HP-UX),
@@ -2376,7 +2582,7 @@ static void inet_gen_error(bool releasePort, rem_port* port, const Arg::StatusVe
 }
 
 
-static bool_t inet_getbytes( XDR* xdrs, SCHAR* buff, u_int count)
+static bool_t inet_getbytes( XDR* xdrs, SCHAR* buff, unsigned bytecount)
 {
 /**************************************
  *
@@ -2390,15 +2596,11 @@ static bool_t inet_getbytes( XDR* xdrs, SCHAR* buff, u_int count)
  **************************************/
 	const rem_port* port = (rem_port*) xdrs->x_public;
 	if (port->port_flags & PORT_server)
-	{
-		return REMOTE_getbytes(xdrs, buff, count);
-	}
-
-	SLONG bytecount = count;
+		return REMOTE_getbytes(xdrs, buff, bytecount);
 
 	// Use memcpy to optimize bulk transfers.
 
-	while (bytecount > (SLONG) sizeof(ISC_QUAD))
+	while (bytecount > sizeof(ISC_QUAD))
 	{
 		if (xdrs->x_handy >= bytecount)
 		{
@@ -2436,9 +2638,9 @@ static bool_t inet_getbytes( XDR* xdrs, SCHAR* buff, u_int count)
 		return TRUE;
 	}
 
-	while (--bytecount >= 0)
+	while (bytecount--)
 	{
-		if (!xdrs->x_handy && !inet_read(xdrs))
+		if (xdrs->x_handy == 0 && !inet_read(xdrs))
 			return FALSE;
 		*buff++ = *xdrs->x_private++;
 		--xdrs->x_handy;
@@ -2464,7 +2666,7 @@ static void inet_error(bool releasePort, rem_port* port, const TEXT* function, I
  **************************************/
 	if (status)
 	{
-		if (port->port_state != rem_port::BROKEN)
+		if (port->port_state == rem_port::PENDING)
 		{
 			string err;
 			err.printf("INET/inet_error: %s errno = %d", function, status);
@@ -2510,7 +2712,7 @@ static void inet_error(bool releasePort, rem_port* port, const TEXT* function, I
 	}
 }
 
-static bool_t inet_putbytes( XDR* xdrs, const SCHAR* buff, u_int count)
+static bool_t inet_putbytes( XDR* xdrs, const SCHAR* buff, unsigned bytecount)
 {
 /**************************************
  *
@@ -2522,11 +2724,10 @@ static bool_t inet_putbytes( XDR* xdrs, const SCHAR* buff, u_int count)
  *	Put a bunch of bytes to a memory stream if it fits.
  *
  **************************************/
-	SLONG bytecount = count;
 
 	// Use memcpy to optimize bulk transfers.
 
-	while (bytecount > (SLONG) sizeof(ISC_QUAD))
+	while (bytecount > sizeof(ISC_QUAD))
 	{
 		if (xdrs->x_handy >= bytecount)
 		{
@@ -2566,9 +2767,9 @@ static bool_t inet_putbytes( XDR* xdrs, const SCHAR* buff, u_int count)
 		return TRUE;
 	}
 
-	while (--bytecount >= 0)
+	while (bytecount--)
 	{
-		if (xdrs->x_handy <= 0 && !REMOTE_deflate(xdrs, inet_write, packet_send, false))
+		if (xdrs->x_handy == 0 && !REMOTE_deflate(xdrs, inet_write, packet_send, false))
 			return FALSE;
 		--xdrs->x_handy;
 		*xdrs->x_private++ = *buff++;
@@ -2610,7 +2811,7 @@ static bool inet_read( XDR* xdrs)
 		return false;
 	p += length;
 
-	xdrs->x_handy = (int) ((SCHAR *) p - xdrs->x_base);
+	xdrs->x_handy = (SCHAR *) p - xdrs->x_base;
 	xdrs->x_private = xdrs->x_base;
 
 	return true;
@@ -2645,7 +2846,7 @@ static rem_port* inet_try_connect(PACKET* packet,
 								  const PathName& file_name,
 								  const TEXT* node_name,
 								  ClumpletReader& dpb,
-								  RefPtr<Config>* config,
+								  RefPtr<const Config>* config,
 								  const PathName* ref_db_name,
 								  int af)
 {
@@ -2807,7 +3008,8 @@ static bool packet_receive(rem_port* port, UCHAR* buffer, SSHORT buffer_length, 
 	const SOCKET ph = port->port_handle;
 	if (ph == INVALID_SOCKET)
 	{
-		if (!(port->port_flags & PORT_disconnect))
+		const bool releasePort = (port->port_flags & PORT_server);
+		if (!(port->port_flags & PORT_disconnect) && releasePort)
 			inet_error(true, port, "invalid socket in packet_receive", isc_net_read_err, EINVAL);
 
 		return false;
@@ -2871,6 +3073,9 @@ static bool packet_receive(rem_port* port, UCHAR* buffer, SSHORT buffer_length, 
 
 			if (!slct_count)
 			{
+				if (port->port_protocol == 0)
+					return false;
+
 #ifdef DEBUG
 				if (INET_trace & TRACE_operations)
 				{
@@ -2884,11 +3089,6 @@ static bool packet_receive(rem_port* port, UCHAR* buffer, SSHORT buffer_length, 
 					return false;
 				}
 				continue;
-			}
-
-			if (!slct_count && port->port_protocol == 0)
-			{
-				return false;
 			}
 		}
 
@@ -3001,6 +3201,9 @@ static bool packet_send( rem_port* port, const SCHAR* buffer, SSHORT buffer_leng
 		}
 #endif
 		SSHORT n = send(port->port_handle, data, length, FB_SEND_FLAGS);
+#if COMPRESS_DEBUG > 1
+		fprintf(stderr, "send(%d, %p, %d, FB_SEND_FLAGS) == %d\n", port->port_handle, data, length, n);
+#endif
 #ifdef DEBUG
 		if (INET_trace & TRACE_operations)
 		{
@@ -3153,6 +3356,45 @@ static bool setNoNagleOption(rem_port* port)
 		}
 	}
 	return true;
+}
+
+bool setFastLoopbackOption(rem_port* port, SOCKET s)
+{
+#ifdef WIN_NT
+	if (port->getPortConfig()->getTcpLoopbackFastPath())
+	{
+		if (s == INVALID_SOCKET)
+			s = port->port_handle;
+
+		int optval = 1;
+		DWORD bytes = 0;
+
+		int ret = WSAIoctl(s, SIO_LOOPBACK_FAST_PATH, &optval, sizeof(optval),
+			NULL, 0, &bytes, 0, 0);
+
+		return (ret == 0);
+	}
+#endif
+	return false;
+}
+
+static bool setKeepAlive(SOCKET s)
+{
+/**************************************
+ *
+ *      s e t K e e p A l i v e
+ *
+ **************************************
+ *
+ * Functional description
+ *      Set SO_KEEPALIVE, return false
+ *		in case of unexpected error
+ *
+ **************************************/
+	int optval = 1;
+	int n = setsockopt(s, SOL_SOCKET, SO_KEEPALIVE,
+					   (SCHAR*) &optval, sizeof(optval));
+	return n != -1;
 }
 
 void setStopMainThread(FPTR_INT func)

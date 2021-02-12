@@ -205,6 +205,9 @@ public:
 	ULONG getSCNPageNum(ULONG sequence);
 	static ULONG getSCNPageNum(const Database* dbb, ULONG sequence);
 
+	// is pagespace on raw device
+	bool onRawDevice() const;
+
 	bool prefetchEnabled() const;
 	void registerPrefetch(const PrefetchArray& prf);
 
@@ -217,10 +220,12 @@ public:
 private:
 	ULONG	maxPageNumber;
 	Database* dbb;
+	ULONG	pipMaxKnown;
+
 	Firebird::Array<PrefetchReq*> allPrefetch;
-	Firebird::AtomicPointer<PrefetchReq> freePrefetch;
+	std::atomic<PrefetchReq*> freePrefetch;
 	Firebird::Array<PIORequest*> allPIOReqs;
-	Firebird::AtomicPointer<PIORequest> freePIOReqs;
+	std::atomic<PIORequest*> freePIOReqs;
 };
 
 class PageManager : public pool_alloc<type_PageManager>

@@ -26,6 +26,7 @@
 #include "../dsql/Nodes.h"
 
 #define NODE_PRINT(var, property)	var.print(STRINGIZE(property), property)
+#define NODE_PRINT_ENUM(var, property)	var.print(STRINGIZE(property), (int) property)
 
 namespace Jrd {
 
@@ -62,7 +63,7 @@ public:
 		text += ">\n";
 	}
 
-	void print(const Firebird::string& s, const Firebird::MetaName& value)
+	void print(const Firebird::string& s, const MetaName& value)
 	{
 		printIndent();
 
@@ -75,7 +76,7 @@ public:
 		text += ">\n";
 	}
 
-	void print(const Firebird::string& s, const Firebird::QualifiedName& value)
+	void print(const Firebird::string& s, const QualifiedName& value)
 	{
 		printIndent();
 

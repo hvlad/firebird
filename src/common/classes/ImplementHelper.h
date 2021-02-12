@@ -37,7 +37,10 @@
 #include "../common/classes/auto.h"
 #include "../common/classes/RefCounted.h"
 #include "../common/StatusArg.h"
-#include "consts_pub.h"
+#include "firebird/impl/consts_pub.h"
+#ifdef DEV_BUILD
+#include <stdio.h>
+#endif
 
 namespace Firebird {
 
@@ -61,13 +64,6 @@ class AutoIface : public VersionedIface<C>
 {
 public:
 	AutoIface() { }
-
-	/*** TODO: Alex, why this?
-	void* operator new(size_t, void* memory) throw()
-	{
-		return memory;
-	}
-	***/
 };
 
 // Helps to implement disposable interfaces
@@ -77,34 +73,64 @@ class DisposeIface : public VersionedIface<C>, public GlobalStorage
 public:
 	DisposeIface() { }
 
-	//// TODO: can move dispose method to here, cause C has virtual destructor.
+	void dispose() override
+	{
+		delete this;
+	}
 };
 
 // Helps to implement standard interfaces
 template <class C>
 class RefCntIface : public VersionedIface<C>, public GlobalStorage
 {
-public:
-	RefCntIface() : refCounter(0) { }
 
 #ifdef DEV_BUILD
-protected:
-	~RefCntIface()
+public:
+	RefCntIface(const char* m = NULL)
+		:  mark(m), refCounter(0)
 	{
-		fb_assert(refCounter.value() == 0);
+		refCntDPrt('^');
+	}
+
+	const char* mark;
+#else
+public:
+	RefCntIface() : refCounter(0) { }
+#endif
+
+protected:
+	virtual ~RefCntIface()
+	{
+		refCntDPrt('_');
+		fb_assert(refCounter == 0);
 	}
 
 public:
-#endif
-
-	void addRef()
+	void addRef() override
 	{
+		refCntDPrt('+');
 		++refCounter;
 	}
 
-	//// TODO: can move release method to here, cause C has virtual destructor.
+	int release() override
+	{
+		int rc = --refCounter;
+		refCntDPrt('-');
+		if (rc == 0)
+			delete this;
+
+		return rc;
+	}
 
 protected:
+	void refCntDPrt(char f)
+	{
+#ifdef DEV_BUILD
+		if (mark)
+			fprintf(stderr, "%s %p %c %d\n", mark, this, f, int(refCounter));
+#endif
+	}
+
 	AtomicCounter refCounter;
 };
 
@@ -117,15 +143,20 @@ private:
 	IReferenceCounted* owner;
 
 public:
-	StdPlugin() : owner(NULL)
+	StdPlugin(const char* m = NULL)
+#ifdef DEV_BUILD
+		: RefCntIface<C>(m), owner(NULL)
+#else
+		: owner(NULL)
+#endif
 	{ }
 
-	IReferenceCounted* getOwner()
+	IReferenceCounted* getOwner() override
 	{
 		return owner;
 	}
 
-	void setOwner(IReferenceCounted* iface)
+	void setOwner(IReferenceCounted* iface) override
 	{
 		owner = iface;
 	}
@@ -209,9 +240,6 @@ public:
 	PluginManagerInterfacePtr()
 		: AccessAutoInterface<IPluginManager>(getMasterInterface()->getPluginManager())
 	{ }
-/*	explicit PluginManagerInterfacePtr(IMaster* master)
-		: AccessAutoInterface<IPluginManager>(master->getPluginManager())
-	{ } */
 };
 
 
@@ -272,7 +300,7 @@ public:
 	typedef void VoidNoParam();
 
 	explicit UnloadDetectorHelper(MemoryPool&)
-		: cleanup(NULL), flagOsUnload(false)
+		: cleanup(NULL), thdDetach(NULL), flagOsUnload(false)
 	{ }
 
 	void registerMe()
@@ -307,6 +335,11 @@ public:
 		cleanup = function;
 	}
 
+	void setThreadDetach(VoidNoParam* function)
+	{
+		thdDetach = function;
+	}
+
 	void doClean()
 	{
 		flagOsUnload = false;
@@ -318,8 +351,15 @@ public:
 		}
 	}
 
+	void threadDetach()
+	{
+		if (thdDetach)
+			thdDetach();
+	}
+
 private:
 	VoidNoParam* cleanup;
+	VoidNoParam* thdDetach;
 	bool flagOsUnload;
 };
 
@@ -327,42 +367,40 @@ typedef GlobalPtr<UnloadDetectorHelper, InstanceControl::PRIORITY_DETECT_UNLOAD>
 UnloadDetectorHelper* getUnloadDetector();
 
 // Generic status checker
-inline void check(IStatus* status)
+inline void check(IStatus* status, ISC_STATUS exclude = 0)
 {
 	if (status->getState() & IStatus::STATE_ERRORS)
 	{
-		status_exception::raise(status);
+		if (status->getErrors()[1] != exclude)
+			status_exception::raise(status);
 	}
 }
 
-
-// debugger for reference counters
-
-#ifdef NEVERDEF
-#define FB_CAT2(a, b) a##b
-#define FB_CAT1(a, b) FB_CAT2(a, b)
-#define FB_RefDeb(c, p, l) Firebird::ReferenceCounterDebugger FB_CAT1(refCntDbg_, l)(c, p)
-#define RefDeb(c, p) FB_RefDeb(c, p, __LINE__)
-
-enum DebugEvent
-{ DEB_AR_JATT, DEB_RLS_JATT, DEB_RLS_YATT, MaxDebugEvent };
-
-class ReferenceCounterDebugger
+// Config keys cache
+class ConfigKeys : private HalfStaticArray<unsigned int, 8>
 {
 public:
-	ReferenceCounterDebugger(DebugEvent code, const char* p);
-	~ReferenceCounterDebugger();
-	static ReferenceCounterDebugger* get(DebugEvent code);
+	ConfigKeys(MemoryPool& p)
+		: HalfStaticArray<unsigned int, 8>(p)
+	{ }
 
-	const char* rcd_point;
-	ReferenceCounterDebugger* rcd_prev;
-	DebugEvent rcd_code;
+	const static unsigned int INVALID_KEY = ~0u;
+
+	unsigned int getKey(IFirebirdConf* config, const char* keyName);
 };
 
-extern IDebug* getImpDebug();
-
-#else
-#define RefDeb(c, p)
+#ifdef NEVERDEF
+static inline int refCount(IReferenceCounted* refCounted)
+{
+#ifdef DEV_BUILD
+	if (refCounted)
+	{
+		refCounted->addRef();
+		return refCounted->release();
+	}
+#endif
+	return 0;
+}
 #endif
 
 } // namespace Firebird

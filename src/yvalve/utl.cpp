@@ -48,7 +48,7 @@
 #include <stdarg.h>
 #include "../common/gdsassert.h"
 
-#include "../jrd/ibase.h"
+#include "ibase.h"
 #include "../yvalve/msg.h"
 #include "../jrd/event.h"
 #include "../yvalve/gds_proto.h"
@@ -56,11 +56,13 @@
 #include "../yvalve/YObjects.h"
 #include "../yvalve/why_proto.h"
 #include "../yvalve/prepa_proto.h"
+#include "../yvalve/PluginManager.h"
 #include "../jrd/constants.h"
 #include "../jrd/build_no.h"
+#include "../common/TimeZoneUtil.h"
 #include "../common/classes/ClumpletWriter.h"
 #include "../common/utils_proto.h"
-#include "../common/classes/MetaName.h"
+#include "../common/classes/MetaString.h"
 #include "../common/classes/TempFile.h"
 #include "../common/classes/DbImplementation.h"
 #include "../common/ThreadStart.h"
@@ -254,13 +256,14 @@ void dump(CheckStatusWrapper* status, ISC_QUAD* blobId, IAttachment* att, ITrans
 	SCHAR buffer[256];
 	const SSHORT short_length = sizeof(buffer);
 
-	for (;;)
+	for (bool cond = true; cond; )
 	{
 		unsigned l = 0;
 		switch (blob->getSegment(status, short_length, buffer, &l))
 		{
 		case Firebird::IStatus::RESULT_ERROR:
 		case Firebird::IStatus::RESULT_NO_DATA:
+			cond = false;
 			break;
 		}
 
@@ -663,6 +666,143 @@ void UtilInterface::decodeTime(ISC_TIME time,
 		*fractions = time % ISC_TIME_SECONDS_PRECISION;
 }
 
+void decodeTimeTzWithFallback(CheckStatusWrapper* status, const ISC_TIME_TZ* timeTz, SLONG gmtFallback,
+	unsigned* hours, unsigned* minutes, unsigned* seconds, unsigned* fractions,
+	unsigned timeZoneBufferLength, char* timeZoneBuffer)
+{
+	try
+	{
+		tm times;
+		int intFractions;
+		bool tzLookup = TimeZoneUtil::decodeTime(*timeTz, true, gmtFallback, &times, &intFractions);
+
+		if (hours)
+			*hours = times.tm_hour;
+
+		if (minutes)
+			*minutes = times.tm_min;
+
+		if (seconds)
+			*seconds = times.tm_sec;
+
+		if (fractions)
+			*fractions = (unsigned) intFractions;
+
+		if (timeZoneBuffer)
+			TimeZoneUtil::format(timeZoneBuffer, timeZoneBufferLength, timeTz->time_zone, !tzLookup, gmtFallback);
+	}
+	catch (const Exception& ex)
+	{
+		ex.stuffException(status);
+	}
+}
+
+void UtilInterface::decodeTimeTz(CheckStatusWrapper* status, const ISC_TIME_TZ* timeTz,
+	unsigned* hours, unsigned* minutes, unsigned* seconds, unsigned* fractions,
+	unsigned timeZoneBufferLength, char* timeZoneBuffer)
+{
+	decodeTimeTzWithFallback(status, timeTz, TimeZoneUtil::NO_OFFSET,
+		hours, minutes, seconds, fractions, timeZoneBufferLength, timeZoneBuffer);
+}
+
+void UtilInterface::decodeTimeTzEx(Firebird::CheckStatusWrapper* status, const ISC_TIME_TZ_EX* timeEx,
+	unsigned* hours, unsigned* minutes, unsigned* seconds, unsigned* fractions,
+	unsigned timeZoneBufferLength, char* timeZoneBuffer)
+{
+	decodeTimeTzWithFallback(status, reinterpret_cast<const ISC_TIME_TZ*>(timeEx),
+		timeZoneBuffer ? timeEx->ext_offset : TimeZoneUtil::NO_OFFSET,
+		hours, minutes, seconds, fractions, timeZoneBufferLength, timeZoneBuffer);
+}
+
+void UtilInterface::encodeTimeTz(CheckStatusWrapper* status, ISC_TIME_TZ* timeTz,
+	unsigned hours, unsigned minutes, unsigned seconds, unsigned fractions, const char* timeZone)
+{
+	try
+	{
+		timeTz->utc_time = encodeTime(hours, minutes, seconds, fractions);
+		timeTz->time_zone = TimeZoneUtil::parse(timeZone, strlen(timeZone));
+		TimeZoneUtil::localTimeToUtc(*timeTz);
+	}
+	catch (const Exception& ex)
+	{
+		ex.stuffException(status);
+	}
+}
+
+void decodeTimeStampWithFallback(CheckStatusWrapper* status, const ISC_TIMESTAMP_TZ* timeStampTz, SLONG gmtFallback,
+	unsigned* year, unsigned* month, unsigned* day, unsigned* hours, unsigned* minutes, unsigned* seconds,
+	unsigned* fractions, unsigned timeZoneBufferLength, char* timeZoneBuffer)
+{
+	try
+	{
+		tm times;
+		int intFractions;
+		bool tzLookup = TimeZoneUtil::decodeTimeStamp(*timeStampTz, true, gmtFallback, &times, &intFractions);
+
+		if (year)
+			*year = times.tm_year + 1900;
+
+		if (month)
+			*month = times.tm_mon + 1;
+
+		if (day)
+			*day = times.tm_mday;
+
+		if (hours)
+			*hours = times.tm_hour;
+
+		if (minutes)
+			*minutes = times.tm_min;
+
+		if (seconds)
+			*seconds = times.tm_sec;
+
+		if (fractions)
+			*fractions = (unsigned) intFractions;
+
+		if (timeZoneBuffer)
+			TimeZoneUtil::format(timeZoneBuffer, timeZoneBufferLength, timeStampTz->time_zone, !tzLookup, gmtFallback);
+	}
+	catch (const Exception& ex)
+	{
+		ex.stuffException(status);
+	}
+}
+
+void UtilInterface::decodeTimeStampTz(CheckStatusWrapper* status, const ISC_TIMESTAMP_TZ* timeStampTz,
+	unsigned* year, unsigned* month, unsigned* day, unsigned* hours, unsigned* minutes, unsigned* seconds,
+	unsigned* fractions, unsigned timeZoneBufferLength, char* timeZoneBuffer)
+{
+	decodeTimeStampWithFallback(status, timeStampTz, TimeZoneUtil::NO_OFFSET,
+		year, month, day, hours, minutes, seconds, fractions, timeZoneBufferLength, timeZoneBuffer);
+}
+
+void UtilInterface::decodeTimeStampTzEx(CheckStatusWrapper* status, const ISC_TIMESTAMP_TZ_EX* timeStampEx,
+	unsigned* year, unsigned* month, unsigned* day, unsigned* hours, unsigned* minutes, unsigned* seconds,
+	unsigned* fractions, unsigned timeZoneBufferLength, char* timeZoneBuffer)
+{
+	decodeTimeStampWithFallback(status, reinterpret_cast<const ISC_TIMESTAMP_TZ*>(timeStampEx),
+		timeZoneBuffer ? timeStampEx->ext_offset : TimeZoneUtil::NO_OFFSET,
+		year, month, day, hours, minutes, seconds, fractions, timeZoneBufferLength, timeZoneBuffer);
+}
+
+void UtilInterface::encodeTimeStampTz(CheckStatusWrapper* status, ISC_TIMESTAMP_TZ* timeStampTz,
+	unsigned year, unsigned month, unsigned day, unsigned hours, unsigned minutes, unsigned seconds,
+	unsigned fractions, const char* timeZone)
+{
+	try
+	{
+		timeStampTz->utc_timestamp.timestamp_date = encodeDate(year, month, day);
+		timeStampTz->utc_timestamp.timestamp_time = encodeTime(hours, minutes, seconds, fractions);
+		timeStampTz->time_zone = TimeZoneUtil::parse(timeZone, strlen(timeZone));
+		TimeZoneUtil::localTimeStampToUtc(*timeStampTz);
+	}
+	catch (const Exception& ex)
+	{
+		ex.stuffException(status);
+	}
+}
+
 ISC_DATE UtilInterface::encodeDate(unsigned year, unsigned month, unsigned day)
 {
 	tm times;
@@ -738,6 +878,7 @@ public:
 		: pb(NULL), strVal(getPool())
 	{
 		ClumpletReader::Kind k;
+		UCHAR tag = 0;
 		const ClumpletReader::KindList* kl = NULL;
 
 		switch(kind)
@@ -753,9 +894,27 @@ public:
 			break;
 		case TPB:
 			k = ClumpletReader::Tpb;
+			tag = isc_tpb_version3;
+			break;
+		case BATCH:
+			k = ClumpletReader::WideTagged;
+			tag = IBatch::VERSION1;
+			break;
+		case BPB:
+			k = ClumpletReader::Tagged;
+			tag = isc_bpb_version1;
+			break;
+		case SPB_SEND:
+			k = ClumpletReader::SpbSendItems;
+			break;
+		case SPB_RECEIVE:
+			k = ClumpletReader::SpbReceiveItems;
+			break;
+		case SPB_RESPONSE:
+			k = ClumpletReader::SpbResponse;
 			break;
 		default:
-			fatal_exception::raiseFmt("Wrong parameters block kind %d, should be from %d to %d", kind, DPB, TPB);
+			fatal_exception::raiseFmt("Wrong parameters block kind %d, should be from %d to %d", kind, DPB, SPB_RESPONSE);
 			break;
 		}
 
@@ -764,7 +923,7 @@ public:
 			if (kl)
 				pb = FB_NEW_POOL(getPool()) ClumpletWriter(getPool(), kl, MAX_DPB_SIZE);
 			else
-				pb = FB_NEW_POOL(getPool()) ClumpletWriter(getPool(), k, MAX_DPB_SIZE);
+				pb = FB_NEW_POOL(getPool()) ClumpletWriter(getPool(), k, MAX_DPB_SIZE, tag);
 		}
 		else
 		{
@@ -1029,11 +1188,6 @@ public:
 		}
 	}
 
-	void dispose()
-	{
-		delete this;
-	}
-
 private:
 	AutoPtr<ClumpletWriter> pb;
 	unsigned char nextTag;
@@ -1052,6 +1206,171 @@ IXpbBuilder* UtilInterface::getXpbBuilder(CheckStatusWrapper* status,
 		ex.stuffException(status);
 		return NULL;
 	}
+}
+
+class DecFloat16 FB_FINAL : public AutoIface<IDecFloat16Impl<DecFloat16, CheckStatusWrapper> >
+{
+public:
+	// IDecFloat16 implementation
+	void toBcd(const FB_DEC16* from, int* sign, unsigned char* bcd, int* exp)
+	{
+		*sign = decDoubleToBCD(reinterpret_cast<const decDouble*>(from), exp, bcd);
+	}
+
+	void toString(CheckStatusWrapper* status, const FB_DEC16* from, unsigned bufSize, char* buffer)
+	{
+		try
+		{
+			if (bufSize >= STRING_SIZE)
+				decDoubleToString(reinterpret_cast<const decDouble*>(from), buffer);
+			else
+			{
+				char temp[STRING_SIZE];
+				decDoubleToString(reinterpret_cast<const decDouble*>(from), temp);
+				unsigned int len = strlen(temp);
+				if (len < bufSize)
+					strncpy(buffer, temp, bufSize);
+				else
+				{
+					(Arg::Gds(isc_arith_except) << Arg::Gds(isc_string_truncation) <<
+					 Arg::Gds(isc_trunc_limits) << Arg::Num(bufSize) << Arg::Num(len));
+				}
+			}
+		}
+		catch (const Exception& ex)
+		{
+			ex.stuffException(status);
+		}
+	}
+
+	void fromBcd(int sign, const unsigned char* bcd, int exp, FB_DEC16* to)
+	{
+		decDoubleFromBCD(reinterpret_cast<decDouble*>(to), exp, bcd, sign ? DECFLOAT_Sign : 0);
+	}
+
+	void fromString(CheckStatusWrapper* status, const char* from, FB_DEC16* to)
+	{
+		try
+		{
+			DecimalStatus decSt(FB_DEC_Errors);
+			Decimal64* val = reinterpret_cast<Decimal64*>(to);
+			val->set(from, decSt);
+		}
+		catch (const Exception& ex)
+		{
+			ex.stuffException(status);
+		}
+	}
+};
+
+IDecFloat16* UtilInterface::getDecFloat16(CheckStatusWrapper* status)
+{
+	static DecFloat16 decFloat16;
+	return &decFloat16;
+}
+
+class DecFloat34 FB_FINAL : public AutoIface<IDecFloat34Impl<DecFloat34, CheckStatusWrapper> >
+{
+public:
+	// IDecFloat34 implementation
+	void toBcd(const FB_DEC34* from, int* sign, unsigned char* bcd, int* exp)
+	{
+		*sign = decQuadToBCD(reinterpret_cast<const decQuad*>(from), exp, bcd);
+	}
+
+	void toString(CheckStatusWrapper* status, const FB_DEC34* from, unsigned bufSize, char* buffer)
+	{
+		try
+		{
+			if (bufSize >= STRING_SIZE)
+				decQuadToString(reinterpret_cast<const decQuad*>(from), buffer);
+			else
+			{
+				char temp[STRING_SIZE];
+				decQuadToString(reinterpret_cast<const decQuad*>(from), temp);
+				unsigned int len = strlen(temp);
+				if (len < bufSize)
+					strncpy(buffer, temp, bufSize);
+				else
+				{
+					(Arg::Gds(isc_arith_except) << Arg::Gds(isc_string_truncation) <<
+					 Arg::Gds(isc_trunc_limits) << Arg::Num(bufSize) << Arg::Num(len));
+				}
+			}
+		}
+		catch (const Exception& ex)
+		{
+			ex.stuffException(status);
+		}
+	}
+
+	void fromBcd(int sign, const unsigned char* bcd, int exp, FB_DEC34* to)
+	{
+		decQuadFromBCD(reinterpret_cast<decQuad*>(to), exp, bcd, sign ? DECFLOAT_Sign : 0);
+	}
+
+	void fromString(CheckStatusWrapper* status, const char* from, FB_DEC34* to)
+	{
+		try
+		{
+			DecimalStatus decSt(FB_DEC_Errors);
+			Decimal128* val = reinterpret_cast<Decimal128*>(to);
+			val->set(from, decSt);
+		}
+		catch (const Exception& ex)
+		{
+			ex.stuffException(status);
+		}
+	}
+};
+
+IDecFloat34* UtilInterface::getDecFloat34(CheckStatusWrapper* status)
+{
+	static DecFloat34 decFloat34;
+	return &decFloat34;
+}
+
+class IfaceInt128 FB_FINAL : public AutoIface<IInt128Impl<IfaceInt128, CheckStatusWrapper> >
+{
+public:
+	// IInt128 implementation
+	void toString(CheckStatusWrapper* status, const FB_I128* from, int scale, unsigned bufSize, char* buffer)
+	{
+		try
+		{
+			const Int128* i128 = (Int128*)from;
+			i128->toString(scale, bufSize, buffer);
+		}
+		catch (const Exception& ex)
+		{
+			ex.stuffException(status);
+		}
+	}
+
+	void fromString(CheckStatusWrapper* status, int scale, const char* from, FB_I128* to)
+	{
+		try
+		{
+			Int128* i128 = (Int128*)to;
+			scale -= CVT_decompose(from, static_cast<USHORT>(strlen(from)), i128, errorFunction);
+			i128->setScale(scale);
+		}
+		catch (const Exception& ex)
+		{
+			ex.stuffException(status);
+		}
+	}
+
+	static void errorFunction(const Arg::StatusVector& v)
+	{
+		v.raise();
+	}
+};
+
+IInt128* UtilInterface::getInt128(CheckStatusWrapper* status)
+{
+	static IfaceInt128 ifaceInt128;
+	return &ifaceInt128;
 }
 
 unsigned UtilInterface::setOffsets(CheckStatusWrapper* status, IMessageMetadata* metadata,
@@ -1087,103 +1406,6 @@ unsigned UtilInterface::setOffsets(CheckStatusWrapper* status, IMessageMetadata*
 	}
 
 	return 0;
-}
-
-// Deal with events
-class EventBlock FB_FINAL : public DisposeIface<IEventBlockImpl<EventBlock, CheckStatusWrapper> >
-{
-public:
-	EventBlock(const char** events)
-		: values(getPool()), buffer(getPool()), counters(getPool())
-	{
-		if (!events[0])
-		{
-			(Arg::Gds(isc_random) << "No events passed as an argument"
-				<< Arg::SqlState("HY024")).raise();
-				// HY024: Invalid attribute value
-		}
-
-		unsigned num = 0;
-		values.push(EPB_version1);
-
-		for (const char** e = events; *e; ++e)
-		{
-			++num;
-
-			string ev(*e);
-			ev.rtrim();
-
-			if (ev.length() > 255)
-			{
-				(Arg::Gds(isc_random) << ("Too long event name: " + ev)
-					<< Arg::SqlState("HY024")).raise();
-					// HY024: Invalid attribute value
-			}
-			values.push(ev.length());
-			values.push(reinterpret_cast<const unsigned char*>(ev.begin()), ev.length());
-			values.push(0);
-			values.push(0);
-			values.push(0);
-			values.push(0);
-		}
-
-		// allocate memory for various buffers
-		buffer.getBuffer(values.getCount());
-		counters.getBuffer(num);
-	}
-
-	unsigned getLength()
-	{
-		return values.getCount();
-	}
-
-	unsigned char* getValues()
-	{
-		return values.begin();
-	}
-
-	unsigned char* getBuffer()
-	{
-		return buffer.begin();
-	}
-
-	unsigned getCount()
-	{
-		return counters.getCount();
-	}
-
-	unsigned* getCounters()
-	{
-		return (unsigned*) counters.begin();
-	}
-
-	void counts()
-	{
-		isc_event_counts(counters.begin(), values.getCount(), values.begin(), buffer.begin());
-	}
-
-	void dispose()
-	{
-		delete this;
-	}
-
-private:
-	UCharBuffer values;
-	UCharBuffer buffer;
-	HalfStaticArray<ULONG, 16> counters;
-};
-
-IEventBlock* UtilInterface::createEventBlock(CheckStatusWrapper* status, const char** events)
-{
-	try
-	{
-		return FB_NEW EventBlock(events);
-	}
-	catch (const Exception& ex)
-	{
-		ex.stuffException(status);
-		return NULL;
-	}
 }
 
 } // namespace Why
@@ -1295,7 +1517,7 @@ void API_ROUTINE_VARARG isc_expand_dpb(SCHAR** dpb, SSHORT* dpb_size, ...)
 
 	va_start(args, dpb_size);
 
-	while (type = va_arg(args, int))
+	while ((type = va_arg(args, int)))
 	{
 		switch (type)
 		{
@@ -1366,7 +1588,7 @@ void API_ROUTINE_VARARG isc_expand_dpb(SCHAR** dpb, SSHORT* dpb_size, ...)
 
 	va_start(args, dpb_size);
 
-	while (type = va_arg(args, int))
+	while ((type = va_arg(args, int)))
 	{
 		switch (type)
 		{
@@ -1554,8 +1776,8 @@ int API_ROUTINE gds__edit(const TEXT* file_name, USHORT /*type*/)
 		editor = "Notepad";
 #endif
 
-	struct stat before;
-	stat(file_name, &before);
+	struct STAT before;
+	os_utils::stat(file_name, &before);
 	// The path of the editor + the path of the file + quotes + one space.
 	// We aren't using quotes around the editor for now.
 	TEXT buffer[MAXPATHLEN * 2 + 5];
@@ -1563,8 +1785,8 @@ int API_ROUTINE gds__edit(const TEXT* file_name, USHORT /*type*/)
 
 	FB_UNUSED(system(buffer));
 
-	struct stat after;
-	stat(file_name, &after);
+	struct STAT after;
+	os_utils::stat(file_name, &after);
 
 	return (before.st_mtime != after.st_mtime || before.st_size != after.st_size);
 }
@@ -2163,7 +2385,7 @@ int API_ROUTINE blob__display(SLONG blob_id[2],
  *	PASCAL callable version of EDIT_blob.
  *
  **************************************/
-	const MetaName temp(field_name, *name_length);
+	const MetaString temp(field_name, *name_length);
 
 	return BLOB_display(reinterpret_cast<ISC_QUAD*>(blob_id), *database, *transaction, temp.c_str());
 }
@@ -2337,7 +2559,7 @@ int API_ROUTINE blob__edit(SLONG blob_id[2],
  *	into an internal edit call.
  *
  **************************************/
-	const MetaName temp(field_name, *name_length);
+	const MetaString temp(field_name, *name_length);
 
 	return BLOB_edit(reinterpret_cast<ISC_QUAD*>(blob_id), *database, *transaction, temp.c_str());
 }
@@ -2823,7 +3045,7 @@ static void isc_expand_dpb_internal(const UCHAR** dpb, SSHORT* dpb_size, ...)
 
 	va_start(args, dpb_size);
 
-	while (type = va_arg(args, int))
+	while ((type = va_arg(args, int)))
 	{
 		switch (type)
 		{
@@ -2892,7 +3114,7 @@ static void isc_expand_dpb_internal(const UCHAR** dpb, SSHORT* dpb_size, ...)
 
 	va_start(args, dpb_size);
 
-	while (type = va_arg(args, int))
+	while ((type = va_arg(args, int)))
 	{
 		switch (type)
 		{
@@ -3039,6 +3261,7 @@ void ThreadCleanup::initThreadCleanup()
 void ThreadCleanup::finiThreadCleanup()
 {
 	pthread_setspecific(key, NULL);
+	PluginManager::threadDetach();
 }
 
 
@@ -3071,6 +3294,7 @@ void ThreadCleanup::initThreadCleanup()
 
 void ThreadCleanup::finiThreadCleanup()
 {
+	PluginManager::threadDetach();
 }
 #endif // #ifdef WIN_NT
 

@@ -28,7 +28,7 @@
 #ifdef HAVE_UNISTD_H
 #include <unistd.h>
 #endif
-#include "../jrd/ibase.h"
+#include "ibase.h"
 #include "../common/msg_encode.h"
 
 // The MSG.GDB database is found under the /msgs component subdirectory.
@@ -430,7 +430,7 @@ static void build_iberror_h()
 		if (last_code + 1 != N.CODE && N.FAC_CODE == 0)
 		{
 			fprintf(stderr,
-				"Warning: missing codes between %d and %d (exclusive)\n",
+				"Warning: 1 missing codes between %d and %d (exclusive)\n",
 				last_code, (int) N.CODE);
 		}
 		last_code = N.CODE;
@@ -474,7 +474,7 @@ static void build_iberror_h()
 		if (last_code + 1 != N.CODE && N.FAC_CODE == 0)
 		{
 			fprintf(stderr,
-				"Warning: missing codes between %d and %d (exclusive)\n",
+				"Warning: 2 missing codes between %d and %d (exclusive)\n",
 				last_code, (int) N.CODE);
 		}
 		last_code = N.CODE;
@@ -539,7 +539,7 @@ static void build_iberror_h()
 //		if (last_code + 1 != N.CODE && N.FAC_CODE == 0)
 //		{
 //			fprintf(stderr,
-//					   "Warning: missing codes between %d and %d (exclusive)\n",
+//					   "Warning: 3 missing codes between %d and %d (exclusive)\n",
 //					   last_code, (int) N.CODE);
 //		}
 //		last_code = N.CODE;
@@ -610,7 +610,7 @@ static void build_iberror_h()
 //		if (last_code + 1 != N.CODE && N.FAC_CODE == 0)
 //		{
 //			fprintf(stderr,
-//					   "Warning: missing codes between %d and %d (exclusive)\n",
+//					   "Warning: 4 missing codes between %d and %d (exclusive)\n",
 //					   last_code, (int) N.CODE);
 //		}
 //		last_code = N.CODE;
@@ -739,7 +739,7 @@ static void build_other_headers()
 
 	int numLines = FB_NELEM(pas_boiler_plate);
 	for (i = 0; i < numLines; i++) {
-		char buffer[256];
+		char buffer[1400];
 		strcpy(buffer, pas_boiler_plate[i]);
 		char* gds = strstr(buffer, "gds_arg");
 		if (gds)
@@ -820,7 +820,7 @@ static void build_other_headers()
 		if (last_code + 1 != N.CODE && N.FAC_CODE == 0)
 		{
 			fprintf(stderr,
-					   "Warning: missing codes between %d and %d (exclusive)\n",
+					   "Warning: 5 missing codes between %d and %d (exclusive)\n",
 					   last_code, (int) N.CODE);
 		}
 		last_code = N.CODE;
@@ -923,7 +923,7 @@ static void build_other_headers()
 static void move_if_not_identical(const char* original, const char* new_file, const char *directory)
 {
 	char origName[1000];
-	char buffer[1000];
+	char buffer[1400];
 #if defined(WIN_NT) && !defined(__GNUC__)
 	if ( directory != NULL) {
 		sprintf(origName, "%s\\%s", directory, original);

@@ -94,10 +94,7 @@ namespace
 		{
 			if (!(csb_ptr && (m_csb = *csb_ptr)))
 			{
-				FB_SIZE_T count = 5;
-				if (view_csb)
-					count += view_csb->csb_rpt.getCapacity();
-				m_csb = CompilerScratch::newCsb(pool, count);
+				m_csb = FB_NEW_POOL(pool) CompilerScratch(pool);
 				m_csb->csb_g_flags |= flags;
 			}
 
@@ -180,11 +177,13 @@ namespace
 				*tdbb->getDefaultPool());
 
 			DmlNode* relationNode = PAR_parse_node(tdbb, csb);
-			if (relationNode->kind != DmlNode::KIND_REC_SOURCE)
+			if (relationNode->getKind() != DmlNode::KIND_REC_SOURCE)
 				PAR_syntax_error(csb, "TABLE");
 
-			RelationSourceNode* relationSource = static_cast<RelationSourceNode*>(relationNode);
-			if (relationSource->type != RelationSourceNode::TYPE)
+			RelationSourceNode* relationSource = nodeAs<RelationSourceNode>(
+				static_cast<RecordSourceNode*>(relationNode));
+
+			if (!relationSource)
 				PAR_syntax_error(csb, "TABLE");
 
 			rse->rse_relations.add(relationSource);
@@ -210,7 +209,7 @@ namespace
 		}
 	};
 
-	static RegisterNode<FetchNode> regFetch(blr_fetch);
+	static RegisterNode<FetchNode> regFetch({blr_fetch});
 }	// namespace
 
 
@@ -372,6 +371,16 @@ USHORT PAR_datatype(BlrReader& blrReader, dsc* desc)
 			desc->dsc_length = sizeof(ISC_QUAD);
 			break;
 
+		case blr_timestamp_tz:
+			desc->dsc_dtype = dtype_timestamp_tz;
+			desc->dsc_length = sizeof(ISC_TIMESTAMP_TZ);
+			break;
+
+		case blr_ex_timestamp_tz:
+			desc->dsc_dtype = dtype_ex_timestamp_tz;
+			desc->dsc_length = sizeof(ISC_TIMESTAMP_TZ_EX);
+			break;
+
 		case blr_sql_date:
 			desc->dsc_dtype = dtype_sql_date;
 			desc->dsc_length = type_lengths[dtype_sql_date];
@@ -382,10 +391,36 @@ USHORT PAR_datatype(BlrReader& blrReader, dsc* desc)
 			desc->dsc_length = type_lengths[dtype_sql_time];
 			break;
 
+		case blr_sql_time_tz:
+			desc->dsc_dtype = dtype_sql_time_tz;
+			desc->dsc_length = type_lengths[dtype_sql_time_tz];
+			break;
+
+		case blr_ex_time_tz:
+			desc->dsc_dtype = dtype_ex_time_tz;
+			desc->dsc_length = type_lengths[dtype_ex_time_tz];
+			break;
+
 		case blr_double:
 		case blr_d_float:
 			desc->dsc_dtype = dtype_double;
 			desc->dsc_length = sizeof(double);
+			break;
+
+		case blr_dec64:
+			desc->dsc_dtype = dtype_dec64;
+			desc->dsc_length = sizeof(Decimal64);
+			break;
+
+		case blr_dec128:
+			desc->dsc_dtype = dtype_dec128;
+			desc->dsc_length = sizeof(Decimal128);
+			break;
+
+		case blr_int128:
+			desc->dsc_dtype = dtype_int128;
+			desc->dsc_length = sizeof(Int128);
+			desc->dsc_scale = (int) blrReader.getByte();
 			break;
 
 		case blr_blob2:
@@ -483,9 +518,12 @@ USHORT PAR_desc(thread_db* tdbb, CompilerScratch* csb, dsc* desc, ItemInfo* item
 				}
 			}
 
-			CompilerScratch::Dependency dependency(obj_field);
-			dependency.name = name;
-			csb->csb_dependencies.push(dependency);
+			if (csb->csb_g_flags & csb_get_dependencies)
+			{
+				CompilerScratch::Dependency dependency(obj_field);
+				dependency.name = name;
+				csb->csb_dependencies.push(dependency);
+			}
 
 			break;
 		}
@@ -545,10 +583,13 @@ USHORT PAR_desc(thread_db* tdbb, CompilerScratch* csb, dsc* desc, ItemInfo* item
 				}
 			}
 
-			CompilerScratch::Dependency dependency(obj_relation);
-			dependency.relation = MET_lookup_relation(tdbb, *relationName);
-			dependency.subName = fieldName;
-			csb->csb_dependencies.push(dependency);
+			if (csb->csb_g_flags & csb_get_dependencies)
+			{
+				CompilerScratch::Dependency dependency(obj_relation);
+				dependency.relation = MET_lookup_relation(tdbb, *relationName);
+				dependency.subName = fieldName;
+				csb->csb_dependencies.push(dependency);
+			}
 
 			break;
 		}
@@ -559,7 +600,7 @@ USHORT PAR_desc(thread_db* tdbb, CompilerScratch* csb, dsc* desc, ItemInfo* item
 			break;
 	}
 
-	if (desc->getTextType() != CS_NONE)
+	if ((csb->csb_g_flags & csb_get_dependencies) && desc->getTextType() != CS_NONE)
 	{
 		CompilerScratch::Dependency dependency(obj_collation);
 		dependency.number = INTL_TEXT_TYPE(*desc);
@@ -654,6 +695,26 @@ CompoundStmtNode* PAR_make_list(thread_db* tdbb, StmtNodeStack& stack)
 }
 
 
+ULONG PAR_marks(Jrd::CompilerScratch* csb)
+{
+	if (csb->csb_blr_reader.getByte() != blr_marks)
+		PAR_syntax_error(csb, "blr_marks");
+
+	switch (csb->csb_blr_reader.getByte())
+	{
+	case 1:
+		return csb->csb_blr_reader.getByte();
+
+	case 2:
+		return csb->csb_blr_reader.getWord();
+
+	case 4:
+		return csb->csb_blr_reader.getLong();
+	}
+	PAR_syntax_error(csb, "valid length for blr_marks value (1, 2, or 4)");
+	return 0;
+}
+
 CompilerScratch* PAR_parse(thread_db* tdbb, const UCHAR* blr, ULONG blr_length,
 	bool internal_flag, ULONG dbginfo_length, const UCHAR* dbginfo)
 {
@@ -669,7 +730,9 @@ CompilerScratch* PAR_parse(thread_db* tdbb, const UCHAR* blr, ULONG blr_length,
  **************************************/
 	SET_TDBB(tdbb);
 
-	CompilerScratch* csb = CompilerScratch::newCsb(*tdbb->getDefaultPool(), 5);
+	MemoryPool& pool = *tdbb->getDefaultPool();
+	AutoPtr<CompilerScratch> csb(FB_NEW_POOL(pool) CompilerScratch(pool));
+
 	csb->csb_blr_reader = BlrReader(blr, blr_length);
 
 	if (internal_flag)
@@ -686,7 +749,7 @@ CompilerScratch* PAR_parse(thread_db* tdbb, const UCHAR* blr, ULONG blr_length,
 	if (csb->csb_blr_reader.getByte() != (UCHAR) blr_eoc)
 		PAR_syntax_error(csb, "end_of_command");
 
-	return csb;
+	return csb.release();
 }
 
 
@@ -760,7 +823,7 @@ void PAR_error(CompilerScratch* csb, const Arg::StatusVector& v, bool isSyntaxEr
 
 
 // Look for named field in procedure output fields.
-SSHORT PAR_find_proc_field(const jrd_prc* procedure, const Firebird::MetaName& name)
+SSHORT PAR_find_proc_field(const jrd_prc* procedure, const MetaName& name)
 {
 	const Array<NestConst<Parameter> >& list = procedure->getOutputFields();
 
@@ -777,8 +840,7 @@ SSHORT PAR_find_proc_field(const jrd_prc* procedure, const Firebird::MetaName& n
 
 
 // Parse a counted argument list, given the count.
-ValueListNode* PAR_args(thread_db* tdbb, CompilerScratch* csb, UCHAR count,
-	USHORT allocCount)
+ValueListNode* PAR_args(thread_db* tdbb, CompilerScratch* csb, USHORT count, USHORT allocCount)
 {
 	SET_TDBB(tdbb);
 
@@ -804,7 +866,7 @@ ValueListNode* PAR_args(thread_db* tdbb, CompilerScratch* csb, UCHAR count,
 ValueListNode* PAR_args(thread_db* tdbb, CompilerScratch* csb)
 {
 	SET_TDBB(tdbb);
-	UCHAR count = csb->csb_blr_reader.getByte();
+	const UCHAR count = csb->csb_blr_reader.getByte();
 	return PAR_args(tdbb, csb, count, count);
 }
 
@@ -871,6 +933,9 @@ void PAR_dependency(thread_db* tdbb, CompilerScratch* csb, StreamType stream, SS
  *
  **************************************/
 	SET_TDBB(tdbb);
+
+	if (!(csb->csb_g_flags & csb_get_dependencies))
+		return;
 
 	CompilerScratch::Dependency dependency(0);
 
@@ -970,6 +1035,8 @@ static PlanNode* par_plan(thread_db* tdbb, CompilerScratch* csb)
 
 		node_type = (USHORT) csb->csb_blr_reader.getByte();
 
+		const bool isGbak = tdbb->getAttachment()->isGbak();
+
 		switch (node_type)
 		{
 		case blr_navigational:
@@ -988,7 +1055,7 @@ static PlanNode* par_plan(thread_db* tdbb, CompilerScratch* csb)
 
 				if (idx_status == MET_object_unknown || idx_status == MET_object_inactive)
 				{
-					if (tdbb->getAttachment()->isGbak())
+					if (isGbak)
 					{
 						PAR_warning(Arg::Warning(isc_indexname) << Arg::Str(name) <<
 																   Arg::Str(relation->rel_name));
@@ -996,7 +1063,15 @@ static PlanNode* par_plan(thread_db* tdbb, CompilerScratch* csb)
 					else
 					{
 						PAR_error(csb, Arg::Gds(isc_indexname) << Arg::Str(name) <<
-															  Arg::Str(relation->rel_name));
+															  	  Arg::Str(relation->rel_name));
+					}
+				}
+				else if (idx_status == MET_object_deferred_active)
+				{
+					if (!isGbak)
+					{
+						PAR_error(csb, Arg::Gds(isc_indexname) << Arg::Str(name) <<
+																  Arg::Str(relation->rel_name));
 					}
 				}
 
@@ -1046,7 +1121,7 @@ static PlanNode* par_plan(thread_db* tdbb, CompilerScratch* csb)
 
 					if (idx_status == MET_object_unknown || idx_status == MET_object_inactive)
 					{
-						if (tdbb->getAttachment()->isGbak())
+						if (isGbak)
 						{
 							PAR_warning(Arg::Warning(isc_indexname) << Arg::Str(name) <<
 																	   Arg::Str(relation->rel_name));
@@ -1054,7 +1129,15 @@ static PlanNode* par_plan(thread_db* tdbb, CompilerScratch* csb)
 						else
 						{
 							PAR_error(csb, Arg::Gds(isc_indexname) << Arg::Str(name) <<
-																  Arg::Str(relation->rel_name));
+																  	  Arg::Str(relation->rel_name));
+						}
+					}
+					else if (idx_status == MET_object_deferred_active)
+					{
+						if (!isGbak)
+						{
+							PAR_error(csb, Arg::Gds(isc_indexname) << Arg::Str(name) <<
+																	  Arg::Str(relation->rel_name));
 						}
 					}
 
@@ -1204,6 +1287,7 @@ RecordSourceNode* PAR_parseRecordSource(thread_db* tdbb, CompilerScratch* csb)
 			return ProcedureSourceNode::parse(tdbb, csb, blrOp);
 
 		case blr_rse:
+		case blr_lateral_rse:
 		case blr_rs_stream:
 			return PAR_rse(tdbb, csb, blrOp);
 
@@ -1238,6 +1322,9 @@ RseNode* PAR_rse(thread_db* tdbb, CompilerScratch* csb, SSHORT rse_op)
 
 	int count = (unsigned int) csb->csb_blr_reader.getByte();
 	RseNode* rse = FB_NEW_POOL(*tdbb->getDefaultPool()) RseNode(*tdbb->getDefaultPool());
+
+	if (rse_op == blr_lateral_rse)
+		rse->flags |= RseNode::FLAG_LATERAL;
 
 	while (--count >= 0)
 		rse->rse_relations.add(PAR_parseRecordSource(tdbb, csb));
@@ -1301,8 +1388,8 @@ RseNode* PAR_rse(thread_db* tdbb, CompilerScratch* csb, SSHORT rse_op)
 			// PAR_parseRecordSource() called RelationSourceNode::parse() => MET_scan_relation().
 			for (FB_SIZE_T iter = 0; iter < rse->rse_relations.getCount(); ++iter)
 			{
-				const RecordSourceNode* subNode = rse->rse_relations[iter];
-				if (subNode->type != RelationSourceNode::TYPE)
+				const RelationSourceNode* subNode = nodeAs<RelationSourceNode>(rse->rse_relations[iter]);
+				if (!subNode)
 					continue;
 				const RelationSourceNode* relNode = static_cast<const RelationSourceNode*>(subNode);
 				const jrd_rel* relation = relNode->relation;
@@ -1359,6 +1446,7 @@ RseNode* PAR_rse(thread_db* tdbb, CompilerScratch* csb)
 	switch (blrOp)
 	{
 		case blr_rse:
+		case blr_lateral_rse:
 		case blr_rs_stream:
 			return PAR_rse(tdbb, csb, blrOp);
 
@@ -1404,7 +1492,7 @@ SortNode* PAR_sort(thread_db* tdbb, CompilerScratch* csb, UCHAR expectedBlr,
 	if (count == 0 && nullForEmpty)
 		return NULL;
 
-	SortNode* sort = PAR_sort_internal(tdbb, csb, blrOp, count);
+	SortNode* sort = PAR_sort_internal(tdbb, csb, blrOp == blr_sort, count);
 
 	if (blrOp != blr_sort)
 		sort->unique = true;
@@ -1415,8 +1503,7 @@ SortNode* PAR_sort(thread_db* tdbb, CompilerScratch* csb, UCHAR expectedBlr,
 
 // Parse the internals of a sort clause. This is used for blr_sort, blr_project, blr_group_by
 // and blr_partition_by.
-SortNode* PAR_sort_internal(thread_db* tdbb, CompilerScratch* csb, UCHAR blrOp,
-	USHORT count)
+SortNode* PAR_sort_internal(thread_db* tdbb, CompilerScratch* csb, bool allClauses, USHORT count)
 {
 	SET_TDBB(tdbb);
 
@@ -1424,37 +1511,37 @@ SortNode* PAR_sort_internal(thread_db* tdbb, CompilerScratch* csb, UCHAR blrOp,
 		*tdbb->getDefaultPool());
 
 	NestConst<ValueExprNode>* ptr = sort->expressions.getBuffer(count);
-	bool* ptr2 = sort->descending.getBuffer(count);
-	int* ptr3 = sort->nullOrder.getBuffer(count);
+	SortDirection* ptr2 = sort->direction.getBuffer(count);
+	NullsPlacement* ptr3 = sort->nullOrder.getBuffer(count);
 
 	while (count-- > 0)
 	{
-		if (blrOp == blr_sort)
+		if (allClauses)
 		{
 			UCHAR code = csb->csb_blr_reader.getByte();
 
 			switch (code)
 			{
 				case blr_nullsfirst:
-					*ptr3++ = rse_nulls_first;
+					*ptr3++ = NULLS_FIRST;
 					code = csb->csb_blr_reader.getByte();
 					break;
 
 				case blr_nullslast:
-					*ptr3++ = rse_nulls_last;
+					*ptr3++ = NULLS_LAST;
 					code = csb->csb_blr_reader.getByte();
 					break;
 
 				default:
-					*ptr3++ = rse_nulls_default;
+					*ptr3++ = NULLS_DEFAULT;
 			}
 
-			*ptr2++ = (code == blr_descending);
+			*ptr2++ = (code == blr_descending) ? ORDER_DESC : ORDER_ASC;
 		}
 		else
 		{
-			*ptr2++ = false;	// ascending
-			*ptr3++ = rse_nulls_default;
+			*ptr2++ = ORDER_ANY;
+			*ptr3++ = NULLS_DEFAULT;
 		}
 
 		*ptr++ = PAR_parse_value(tdbb, csb);
@@ -1469,7 +1556,7 @@ BoolExprNode* PAR_parse_boolean(thread_db* tdbb, CompilerScratch* csb)
 {
 	DmlNode* node = PAR_parse_node(tdbb, csb);
 
-	if (node->kind != DmlNode::KIND_BOOLEAN)
+	if (node->getKind() != DmlNode::KIND_BOOLEAN)
 		PAR_syntax_error(csb, "boolean");
 
 	return static_cast<BoolExprNode*>(node);
@@ -1480,7 +1567,7 @@ ValueExprNode* PAR_parse_value(thread_db* tdbb, CompilerScratch* csb)
 {
 	DmlNode* node = PAR_parse_node(tdbb, csb);
 
-	if (node->kind != DmlNode::KIND_VALUE)
+	if (node->getKind() != DmlNode::KIND_VALUE)
 		PAR_syntax_error(csb, "value");
 
 	return static_cast<ValueExprNode*>(node);
@@ -1491,7 +1578,7 @@ StmtNode* PAR_parse_stmt(thread_db* tdbb, CompilerScratch* csb)
 {
 	DmlNode* node = PAR_parse_node(tdbb, csb);
 
-	if (node->kind != DmlNode::KIND_STATEMENT)
+	if (node->getKind() != DmlNode::KIND_STATEMENT)
 		PAR_syntax_error(csb, "statement");
 
 	return static_cast<StmtNode*>(node);
@@ -1517,6 +1604,7 @@ DmlNode* PAR_parse_node(thread_db* tdbb, CompilerScratch* csb)
 	switch (blr_operator)
 	{
 		case blr_rse:
+		case blr_lateral_rse:
 		case blr_rs_stream:
 		case blr_singular:
 		case blr_scrollable:
@@ -1548,7 +1636,7 @@ DmlNode* PAR_parse_node(thread_db* tdbb, CompilerScratch* csb)
 	DmlNode* node = blr_parsers[blr_operator](tdbb, *tdbb->getDefaultPool(), csb, blr_operator);
 	FB_SIZE_T pos = 0;
 
-	if (node->kind == DmlNode::KIND_STATEMENT && csb->csb_dbg_info->blrToSrc.find(blr_offset, pos))
+	if (node->getKind() == DmlNode::KIND_STATEMENT && csb->csb_dbg_info->blrToSrc.find(blr_offset, pos))
 	{
 		MapBlrToSrcItem& i = csb->csb_dbg_info->blrToSrc[pos];
 		StmtNode* stmt = static_cast<StmtNode*>(node);
@@ -1577,6 +1665,7 @@ void PAR_syntax_error(CompilerScratch* csb, const TEXT* string)
 
 	csb->csb_blr_reader.seekBackward(1);
 
+	// BLR syntax error: expected @1 at offset @2, encountered @3
 	PAR_error(csb, Arg::Gds(isc_syntaxerr) << Arg::Str(string) <<
 										  Arg::Num(csb->csb_blr_reader.getOffset()) <<
 										  Arg::Num(csb->csb_blr_reader.peekByte()));

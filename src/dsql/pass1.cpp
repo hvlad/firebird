@@ -141,13 +141,13 @@
 #include "firebird.h"
 #include <string.h>
 #include <stdio.h>
-#include "../jrd/ibase.h"
+#include "ibase.h"
 #include "../dsql/dsql.h"
 #include "../dsql/Nodes.h"
 #include "../dsql/BoolNodes.h"
 #include "../dsql/ExprNodes.h"
 #include "../jrd/intl.h"
-#include "../jrd/blr.h"
+#include "firebird/impl/blr.h"
 #include "../jrd/jrd.h"
 #include "../jrd/constants.h"
 #include "../jrd/intl_classes.h"
@@ -179,7 +179,6 @@ using namespace Firebird;
 
 static string pass1_alias_concat(const string&, const string&);
 static void pass1_expand_contexts(DsqlContextStack& contexts, dsql_ctx* context);
-static ValueListNode* pass1_expand_select_list(DsqlCompilerScratch*, ValueListNode*, RecSourceListNode*);
 static ValueListNode* pass1_group_by_list(DsqlCompilerScratch*, ValueListNode*, ValueListNode*);
 static ValueExprNode* pass1_make_derived_field(thread_db*, DsqlCompilerScratch*, ValueExprNode*);
 static RseNode* pass1_rse(DsqlCompilerScratch*, RecordSourceNode*, ValueListNode*, RowsClause*, bool, USHORT);
@@ -190,8 +189,9 @@ static void pass1_union_auto_cast(DsqlCompilerScratch*, ExprNode*, const dsc&, F
 static void remap_streams_to_parent_context(ExprNode*, dsql_ctx*);
 
 
-AggregateFinder::AggregateFinder(DsqlCompilerScratch* aDsqlScratch, bool aWindow)
-	: dsqlScratch(aDsqlScratch),
+AggregateFinder::AggregateFinder(MemoryPool& pool, DsqlCompilerScratch* aDsqlScratch, bool aWindow)
+	: PermanentStorage(pool),
+	  dsqlScratch(aDsqlScratch),
 	  window(aWindow),
 	  currentLevel(dsqlScratch->scopeLevel),
 	  deepestLevel(0),
@@ -199,9 +199,9 @@ AggregateFinder::AggregateFinder(DsqlCompilerScratch* aDsqlScratch, bool aWindow
 {
 }
 
-bool AggregateFinder::find(DsqlCompilerScratch* dsqlScratch, bool window, ExprNode* node)
+bool AggregateFinder::find(MemoryPool& pool, DsqlCompilerScratch* dsqlScratch, bool window, ExprNode* node)
 {
-	AggregateFinder visitor(dsqlScratch, window);
+	AggregateFinder visitor(pool, dsqlScratch, window);
 	return visitor.visit(node);
 }
 
@@ -211,18 +211,20 @@ bool AggregateFinder::visit(ExprNode* node)
 }
 
 
-Aggregate2Finder::Aggregate2Finder(USHORT aCheckScopeLevel, FieldMatchType aMatchType, bool aWindowOnly)
-	: checkScopeLevel(aCheckScopeLevel),
+Aggregate2Finder::Aggregate2Finder(MemoryPool& pool, USHORT aCheckScopeLevel,
+		FieldMatchType aMatchType, bool aWindowOnly)
+	: PermanentStorage(pool),
+	  checkScopeLevel(aCheckScopeLevel),
 	  matchType(aMatchType),
 	  windowOnly(aWindowOnly),
 	  currentScopeLevelEqual(true)
 {
 }
 
-bool Aggregate2Finder::find(USHORT checkScopeLevel, FieldMatchType matchType, bool windowOnly,
-	ExprNode* node)
+bool Aggregate2Finder::find(MemoryPool& pool, USHORT checkScopeLevel,
+	FieldMatchType matchType, bool windowOnly, ExprNode* node)
 {
-	Aggregate2Finder visitor(checkScopeLevel, matchType, windowOnly);
+	Aggregate2Finder visitor(pool, checkScopeLevel, matchType, windowOnly);
 	return visitor.visit(node);
 }
 
@@ -232,16 +234,17 @@ bool Aggregate2Finder::visit(ExprNode* node)
 }
 
 
-FieldFinder::FieldFinder(USHORT aCheckScopeLevel, FieldMatchType aMatchType)
-	: checkScopeLevel(aCheckScopeLevel),
+FieldFinder::FieldFinder(MemoryPool& pool, USHORT aCheckScopeLevel, FieldMatchType aMatchType)
+	: PermanentStorage(pool),
+	  checkScopeLevel(aCheckScopeLevel),
 	  matchType(aMatchType),
 	  field(false)
 {
 }
 
-bool FieldFinder::find(USHORT checkScopeLevel, FieldMatchType matchType, ExprNode* node)
+bool FieldFinder::find(MemoryPool& pool, USHORT checkScopeLevel, FieldMatchType matchType, ExprNode* node)
 {
-	FieldFinder visitor(checkScopeLevel, matchType);
+	FieldFinder visitor(pool, checkScopeLevel, matchType);
 	return visitor.visit(node);
 }
 
@@ -251,8 +254,10 @@ bool FieldFinder::visit(ExprNode* node)
 }
 
 
-InvalidReferenceFinder::InvalidReferenceFinder(const dsql_ctx* aContext, const ValueListNode* aList)
-	: context(aContext),
+InvalidReferenceFinder::InvalidReferenceFinder(DsqlCompilerScratch* aDsqlScratch,
+		const dsql_ctx* aContext, const ValueListNode* aList)
+	: dsqlScratch(aDsqlScratch),
+	  context(aContext),
 	  list(aList),
 	  insideOwnMap(false),
 	  insideHigherMap(false)
@@ -260,9 +265,10 @@ InvalidReferenceFinder::InvalidReferenceFinder(const dsql_ctx* aContext, const V
 	DEV_BLKCHK(list, dsql_type_nod);
 }
 
-bool InvalidReferenceFinder::find(const dsql_ctx* context, const ValueListNode* list, ExprNode* node)
+bool InvalidReferenceFinder::find(DsqlCompilerScratch* dsqlScratch, const dsql_ctx* context,
+	const ValueListNode* list, ExprNode* node)
 {
-	InvalidReferenceFinder visitor(context, list);
+	InvalidReferenceFinder visitor(dsqlScratch, context, list);
 	return visitor.visit(node);
 }
 
@@ -290,7 +296,7 @@ bool InvalidReferenceFinder::visit(ExprNode* node)
 		const NestConst<ValueExprNode>* ptr = list->items.begin();
 		for (const NestConst<ValueExprNode>* const end = list->items.end(); ptr != end; ++ptr)
 		{
-			if (PASS1_node_match(node, *ptr, true))
+			if (PASS1_node_match(dsqlScratch, node, *ptr, true))
 				return false;
 		}
 	}
@@ -299,13 +305,13 @@ bool InvalidReferenceFinder::visit(ExprNode* node)
 }
 
 
-FieldRemapper::FieldRemapper(DsqlCompilerScratch* aDsqlScratch, dsql_ctx* aContext, bool aWindow,
-			ValueListNode* aPartitionNode, ValueListNode* aOrderNode)
-	: dsqlScratch(aDsqlScratch),
+FieldRemapper::FieldRemapper(MemoryPool& pool, DsqlCompilerScratch* aDsqlScratch, dsql_ctx* aContext, bool aWindow,
+			WindowClause* aWindowNode)
+	: PermanentStorage(pool),
+	  dsqlScratch(aDsqlScratch),
 	  context(aContext),
 	  window(aWindow),
-	  partitionNode(aPartitionNode),
-	  orderNode(aOrderNode),
+	  windowNode(aWindowNode),
 	  currentLevel(dsqlScratch->scopeLevel)
 {
 	DEV_BLKCHK(dsqlScratch, dsql_type_req);
@@ -352,11 +358,11 @@ dsql_ctx* PASS1_make_context(DsqlCompilerScratch* dsqlScratch, RecordSourceNode*
 	RelationSourceNode* relNode = NULL;
 	SelectExprNode* selNode = NULL;
 
-	if ((procNode = relationNode->as<ProcedureSourceNode>()))
+	if ((procNode = nodeAs<ProcedureSourceNode>(relationNode)))
 		relation_name = procNode->dsqlName.identifier;
-	else if ((relNode = relationNode->as<RelationSourceNode>()))
+	else if ((relNode = nodeAs<RelationSourceNode>(relationNode)))
 		relation_name = relNode->dsqlName;
-	else if ((selNode = relationNode->as<SelectExprNode>()))
+	else if ((selNode = nodeAs<SelectExprNode>(relationNode)))
 		relation_name = selNode->alias.c_str();
 
 	SelectExprNode* cte = NULL;
@@ -368,7 +374,10 @@ dsql_ctx* PASS1_make_context(DsqlCompilerScratch* dsqlScratch, RecordSourceNode*
 	else if (procNode && (procNode->dsqlName.package.hasData() || procNode->sourceList))
 	{
 		if (procNode->dsqlName.package.isEmpty())
-			procedure = dsqlScratch->getSubProcedure(procNode->dsqlName.identifier);
+		{
+			DeclareSubProcNode* subProcedure = dsqlScratch->getSubProcedure(procNode->dsqlName.identifier);
+			procedure = subProcedure ? subProcedure->dsqlProcedure : NULL;
+		}
 
 		if (!procedure)
 		{
@@ -391,7 +400,10 @@ dsql_ctx* PASS1_make_context(DsqlCompilerScratch* dsqlScratch, RecordSourceNode*
 	else
 	{
 		if (procNode && procNode->dsqlName.package.isEmpty())
-			procedure = dsqlScratch->getSubProcedure(procNode->dsqlName.identifier);
+		{
+			DeclareSubProcNode* subProcedure = dsqlScratch->getSubProcedure(procNode->dsqlName.identifier);
+			procedure = subProcedure ? subProcedure->dsqlProcedure : NULL;
+		}
 
 		if (!procedure)
 			relation = METD_get_relation(dsqlScratch->getTransaction(), dsqlScratch, relation_name);
@@ -431,6 +443,9 @@ dsql_ctx* PASS1_make_context(DsqlCompilerScratch* dsqlScratch, RecordSourceNode*
 
 		if (selNode->dsqlFlags & RecordSourceNode::DFLAG_CURSOR)
 			context->ctx_flags |= CTX_cursor;
+
+		if (selNode->dsqlFlags & RecordSourceNode::DFLAG_LATERAL)
+			context->ctx_flags |= CTX_lateral;
 	}
 	else
 		context->ctx_context = dsqlScratch->contextNumber++;
@@ -446,11 +461,11 @@ dsql_ctx* PASS1_make_context(DsqlCompilerScratch* dsqlScratch, RecordSourceNode*
 	// find the context alias name, if it exists.
 	string str;
 
-	if ((procNode = relationNode->as<ProcedureSourceNode>()))
+	if ((procNode = nodeAs<ProcedureSourceNode>(relationNode)))
 		str = procNode->alias;
-	else if ((relNode = relationNode->as<RelationSourceNode>()))
+	else if ((relNode = nodeAs<RelationSourceNode>(relationNode)))
 		str = relNode->alias;
-	else if ((selNode = relationNode->as<SelectExprNode>()))
+	else if ((selNode = nodeAs<SelectExprNode>(relationNode)))
 	{
 		str = selNode->alias;
 		// ASF: In the case of a UNION contained in a CTE, selNode->querySpec will be a
@@ -544,8 +559,10 @@ dsql_ctx* PASS1_make_context(DsqlCompilerScratch* dsqlScratch, RecordSourceNode*
 				 ++input, field = field->fld_next)
 			{
 				DEV_BLKCHK(field, dsql_type_fld);
-				MAKE_desc_from_field(&desc_node, field);
-				PASS1_set_parameter_type(dsqlScratch, *input, &desc_node, false);
+				DsqlDescMaker::fromField(&desc_node, field);
+				PASS1_set_parameter_type(dsqlScratch, *input,
+					[&] (dsc* desc) { *desc = desc_node; },
+					false);
 			}
 		}
 	}
@@ -669,11 +686,11 @@ void PASS1_check_unique_fields_names(StrArray& names, const CompoundStmtNode* fi
 		const DeclareVariableNode* varNode;
 		const DeclareCursorNode* cursorNode;
 
-		if ((varNode = (*ptr)->as<DeclareVariableNode>()))
+		if ((varNode = nodeAs<DeclareVariableNode>(*ptr)))
 			name = varNode->dsqlDef->name.c_str();
-		else if ((cursorNode = (*ptr)->as<DeclareCursorNode>()))
+		else if ((cursorNode = nodeAs<DeclareCursorNode>(*ptr)))
 			name = cursorNode->dsqlName.c_str();
-		else if ((*ptr)->as<DeclareSubProcNode>() || (*ptr)->as<DeclareSubFuncNode>())
+		else if (nodeAs<DeclareSubProcNode>(*ptr) || nodeAs<DeclareSubFuncNode>(*ptr))
 			continue;
 
 		fb_assert(name);
@@ -781,15 +798,15 @@ void PASS1_field_unknown(const TEXT* qualifier_name, const TEXT* field_name,
     @param ignoreMapCast
 
  **/
-bool PASS1_node_match(const ExprNode* node1, const ExprNode* node2, bool ignoreMapCast)
+bool PASS1_node_match(DsqlCompilerScratch* dsqlScratch, const ExprNode* node1, const ExprNode* node2,
+	bool ignoreMapCast)
 {
 	thread_db* tdbb = JRD_get_thread_data();
 
 	DEV_BLKCHK(node1, dsql_type_nod);
 	DEV_BLKCHK(node2, dsql_type_nod);
 
-	if (--tdbb->tdbb_quantum < 0)
-		JRD_reschedule(tdbb, 0, true);
+	JRD_reschedule(tdbb);
 
 	if (!node1 && !node2)
 		return true;
@@ -797,11 +814,11 @@ bool PASS1_node_match(const ExprNode* node1, const ExprNode* node2, bool ignoreM
 	if (!node1 || !node2)
 		return false;
 
-	const CastNode* castNode1 = node1->as<CastNode>();
+	const CastNode* castNode1 = nodeAs<CastNode>(node1);
 
 	if (ignoreMapCast && castNode1)
 	{
-		const CastNode* castNode2 = node2->as<CastNode>();
+		const CastNode* castNode2 = nodeAs<CastNode>(node2);
 
 		// If node2 is also cast and same type continue with both sources.
 		if (castNode2 &&
@@ -810,49 +827,49 @@ bool PASS1_node_match(const ExprNode* node1, const ExprNode* node2, bool ignoreM
 			castNode1->castDesc.dsc_length == castNode2->castDesc.dsc_length &&
 			castNode1->castDesc.dsc_sub_type == castNode2->castDesc.dsc_sub_type)
 		{
-			return PASS1_node_match(castNode1->source, castNode2->source, ignoreMapCast);
+			return PASS1_node_match(dsqlScratch, castNode1->source, castNode2->source, ignoreMapCast);
 		}
 
-		return PASS1_node_match(castNode1->source, node2, ignoreMapCast);
+		return PASS1_node_match(dsqlScratch, castNode1->source, node2, ignoreMapCast);
 	}
 
-	const DsqlMapNode* mapNode1 = node1->as<DsqlMapNode>();
+	const DsqlMapNode* mapNode1 = nodeAs<DsqlMapNode>(node1);
 
 	if (ignoreMapCast && mapNode1)
 	{
-		const DsqlMapNode* mapNode2 = node2->as<DsqlMapNode>();
+		const DsqlMapNode* mapNode2 = nodeAs<DsqlMapNode>(node2);
 
 		if (mapNode2)
 		{
 			if (mapNode1->context != mapNode2->context)
 				return false;
 
-			return PASS1_node_match(mapNode1->map->map_node, mapNode2->map->map_node, ignoreMapCast);
+			return PASS1_node_match(dsqlScratch, mapNode1->map->map_node, mapNode2->map->map_node, ignoreMapCast);
 		}
 
-		return PASS1_node_match(mapNode1->map->map_node, node2, ignoreMapCast);
+		return PASS1_node_match(dsqlScratch, mapNode1->map->map_node, node2, ignoreMapCast);
 	}
 
-	const DsqlAliasNode* aliasNode1 = node1->as<DsqlAliasNode>();
-	const DsqlAliasNode* aliasNode2 = node2->as<DsqlAliasNode>();
+	const DsqlAliasNode* aliasNode1 = nodeAs<DsqlAliasNode>(node1);
+	const DsqlAliasNode* aliasNode2 = nodeAs<DsqlAliasNode>(node2);
 
 	// We don't care about the alias itself but only about its field.
 	if (aliasNode1 || aliasNode2)
 	{
 		if (aliasNode1 && aliasNode2)
-			return PASS1_node_match(aliasNode1->value, aliasNode2->value, ignoreMapCast);
+			return PASS1_node_match(dsqlScratch, aliasNode1->value, aliasNode2->value, ignoreMapCast);
 
 		if (aliasNode1)
-			return PASS1_node_match(aliasNode1->value, node2, ignoreMapCast);
+			return PASS1_node_match(dsqlScratch, aliasNode1->value, node2, ignoreMapCast);
 
 		if (aliasNode2)
-			return PASS1_node_match(node1, aliasNode2->value, ignoreMapCast);
+			return PASS1_node_match(dsqlScratch, node1, aliasNode2->value, ignoreMapCast);
 	}
 
 	// Handle derived fields.
 
-	const DerivedFieldNode* derivedField1 = node1->as<DerivedFieldNode>();
-	const DerivedFieldNode* derivedField2 = node2->as<DerivedFieldNode>();
+	const DerivedFieldNode* derivedField1 = nodeAs<DerivedFieldNode>(node1);
+	const DerivedFieldNode* derivedField2 = nodeAs<DerivedFieldNode>(node2);
 
 	if (derivedField1 || derivedField2)
 	{
@@ -864,17 +881,17 @@ bool PASS1_node_match(const ExprNode* node1, const ExprNode* node2, bool ignoreM
 				return false;
 			}
 
-			return PASS1_node_match(derivedField1->value, derivedField2->value, ignoreMapCast);
+			return PASS1_node_match(dsqlScratch, derivedField1->value, derivedField2->value, ignoreMapCast);
 		}
 
 		if (derivedField1)
-			return PASS1_node_match(derivedField1->value, node2, ignoreMapCast);
+			return PASS1_node_match(dsqlScratch, derivedField1->value, node2, ignoreMapCast);
 
 		if (derivedField2)
-			return PASS1_node_match(node1, derivedField2->value, ignoreMapCast);
+			return PASS1_node_match(dsqlScratch, node1, derivedField2->value, ignoreMapCast);
 	}
 
-	return node1->type == node2->type && node1->dsqlMatch(node2, ignoreMapCast);
+	return node1->getType() == node2->getType() && node1->dsqlMatch(dsqlScratch, node2, ignoreMapCast);
 }
 
 
@@ -976,14 +993,16 @@ RseNode* PASS1_derived_table(DsqlCompilerScratch* dsqlScratch, SelectExprNode* i
 	DsqlContextStack* const req_base = dsqlScratch->context;
 	const string aliasRelationPrefix = dsqlScratch->aliasRelationPrefix;
 
-	// Change context, because when we are processing the derived table rse
-	// it may not reference to other streams in the same scope_level.
+	// Change context, because the derived table cannot reference other streams
+	// at the same scope_level (unless this is a lateral derived table).
 	DsqlContextStack temp;
 	// Put special contexts (NEW/OLD) also on the stack
 	for (DsqlContextStack::iterator stack(*dsqlScratch->context); stack.hasData(); ++stack)
 	{
 		dsql_ctx* local_context = stack.object();
-		if ((local_context->ctx_scope_level < dsqlScratch->scopeLevel) ||
+
+		if ((context->ctx_flags & CTX_lateral) ||
+			(local_context->ctx_scope_level < dsqlScratch->scopeLevel) ||
 			(local_context->ctx_flags & CTX_system))
 		{
 			temp.push(local_context);
@@ -999,7 +1018,7 @@ RseNode* PASS1_derived_table(DsqlCompilerScratch* dsqlScratch, SelectExprNode* i
 	dsqlScratch->aliasRelationPrefix = pass1_alias_concat(aliasRelationPrefix, alias);
 
 	RecordSourceNode* query = input->querySpec;
-	UnionSourceNode* unionQuery = query->as<UnionSourceNode>();
+	UnionSourceNode* unionQuery = nodeAs<UnionSourceNode>(query);
 	RseNode* rse = NULL;
 	const bool isRecursive = unionQuery && unionQuery->recursive;
 	USHORT recursive_map_ctx = 0;
@@ -1047,9 +1066,8 @@ RseNode* PASS1_derived_table(DsqlCompilerScratch* dsqlScratch, SelectExprNode* i
 		//   the worse thing is that a UNION currently can't be used in
 		//   deciding the JOIN order.
 		bool foundSubSelect = false;
-		RseNode* queryNode = query->as<RseNode>();
-		if (queryNode)
-			foundSubSelect = SubSelectFinder::find(queryNode->dsqlSelectList);
+		if (auto queryNode = nodeAs<RseNode>(query))
+			foundSubSelect = SubSelectFinder::find(dsqlScratch->getPool(), queryNode->dsqlSelectList);
 
 		if (foundSubSelect)
 		{
@@ -1127,13 +1145,13 @@ RseNode* PASS1_derived_table(DsqlCompilerScratch* dsqlScratch, SelectExprNode* i
 		for (FB_SIZE_T count = 0; count < input->columns->getCount(); ++count)
 		{
 			ValueExprNode* select_item = rse->dsqlSelectList->items[count];
-			MAKE_desc(dsqlScratch, &select_item->nodDesc, select_item);
+			DsqlDescMaker::fromNode(dsqlScratch, select_item);
 
 			// Make new derived field node.
 
 			DerivedFieldNode* derivedField = FB_NEW_POOL(pool) DerivedFieldNode(pool,
 				(*input->columns)[count], dsqlScratch->scopeLevel, select_item);
-			derivedField->nodDesc = select_item->nodDesc;
+			derivedField->setDsqlDesc(select_item->getDsqlDesc());
 			rse->dsqlSelectList->items[count] = derivedField;
 		}
 	}
@@ -1147,9 +1165,9 @@ RseNode* PASS1_derived_table(DsqlCompilerScratch* dsqlScratch, SelectExprNode* i
 				rse->dsqlSelectList->items[count]);
 
 			// Auto-create dummy column name for pass1_any()
-			if (ignoreColumnChecks && !ExprNode::is<DerivedFieldNode>(select_item))
+			if (ignoreColumnChecks && !nodeIs<DerivedFieldNode>(select_item))
 			{
-				MAKE_desc(dsqlScratch, &select_item->nodDesc, select_item);
+				DsqlDescMaker::fromNode(dsqlScratch, select_item);
 
 				// Construct dummy fieldname
 				char fieldname[25];
@@ -1159,7 +1177,7 @@ RseNode* PASS1_derived_table(DsqlCompilerScratch* dsqlScratch, SelectExprNode* i
 
 				DerivedFieldNode* derivedField = FB_NEW_POOL(pool) DerivedFieldNode(pool,
 					fieldname, dsqlScratch->scopeLevel, select_item);
-				derivedField->nodDesc = select_item->nodDesc;
+				derivedField->setDsqlDesc(select_item->getDsqlDesc());
 				select_item = derivedField;
 			}
 
@@ -1175,7 +1193,7 @@ RseNode* PASS1_derived_table(DsqlCompilerScratch* dsqlScratch, SelectExprNode* i
 		ValueExprNode* select_item = rse->dsqlSelectList->items[count];
 		DerivedFieldNode* derivedField;
 
-		if ((derivedField = ExprNode::as<DerivedFieldNode>(select_item)))
+		if ((derivedField = nodeAs<DerivedFieldNode>(select_item)))
 			derivedField->context = context;
 		else
 		{
@@ -1191,13 +1209,11 @@ RseNode* PASS1_derived_table(DsqlCompilerScratch* dsqlScratch, SelectExprNode* i
 	// Check for ambiguous column names inside this derived table.
 	for (count = 0; count < rse->dsqlSelectList->items.getCount(); ++count)
 	{
-		const DerivedFieldNode* selectItem1 =
-			rse->dsqlSelectList->items[count]->as<DerivedFieldNode>();
+		const DerivedFieldNode* selectItem1 = nodeAs<DerivedFieldNode>(rse->dsqlSelectList->items[count]);
 
 		for (FB_SIZE_T count2 = (count + 1); count2 < rse->dsqlSelectList->items.getCount(); ++count2)
 		{
-			const DerivedFieldNode* selectItem2 =
-				rse->dsqlSelectList->items[count2]->as<DerivedFieldNode>();
+			const DerivedFieldNode* selectItem2 = nodeAs<DerivedFieldNode>(rse->dsqlSelectList->items[count2]);
 
 			if (selectItem1->name == selectItem2->name)
 			{
@@ -1219,13 +1235,14 @@ RseNode* PASS1_derived_table(DsqlCompilerScratch* dsqlScratch, SelectExprNode* i
 		dsqlScratch->recursiveCtx = context;
 		dsqlScratch->context = &temp;
 
-		const string* const* saveCteAlias = dsqlScratch->currCteAlias;
+		const string* const saveCteAlias =
+			dsqlScratch->currCteAlias ? *dsqlScratch->currCteAlias : NULL;
 		dsqlScratch->resetCTEAlias(alias);
 
 		rse = PASS1_rse(dsqlScratch, input, updateLock);
 
 		if (saveCteAlias)
-			dsqlScratch->resetCTEAlias(**saveCteAlias);
+			dsqlScratch->resetCTEAlias(*saveCteAlias);
 		dsqlScratch->recursiveCtx = saveRecursiveCtx;
 
 		// Finish off by cleaning up contexts and put them into derivedContext
@@ -1253,10 +1270,10 @@ RseNode* PASS1_derived_table(DsqlCompilerScratch* dsqlScratch, SelectExprNode* i
 		ValueExprNode* map_item = items->items[0];
 		DerivedFieldNode* derivedField;
 
-		if ((derivedField = ExprNode::as<DerivedFieldNode>(map_item)))
+		if ((derivedField = nodeAs<DerivedFieldNode>(map_item)))
 			map_item = derivedField->value;
 
-		dsql_ctx* map_context = ExprNode::as<DsqlMapNode>(map_item)->context;
+		dsql_ctx* map_context = nodeAs<DsqlMapNode>(map_item)->context;
 
 		map_context->ctx_flags |= CTX_recursive;
 		map_context->ctx_recursive = recursive_map_ctx;
@@ -1274,17 +1291,16 @@ RseNode* PASS1_derived_table(DsqlCompilerScratch* dsqlScratch, SelectExprNode* i
 
 /**
 
- 	pass1_expand_select_list
+	PASS1_expand_select_list
 
-    @brief	Expand asterisk nodes into fields.
+	@brief	Expand asterisk nodes into fields.
 
-
-    @param dsqlScratch
-    @param list
-    @param streams
+	@param dsqlScratch
+	@param list
+	@param streams
 
  **/
-static ValueListNode* pass1_expand_select_list(DsqlCompilerScratch* dsqlScratch, ValueListNode* list,
+ValueListNode* PASS1_expand_select_list(DsqlCompilerScratch* dsqlScratch, ValueListNode* list,
 	RecSourceListNode* streams)
 {
 	thread_db* tdbb = JRD_get_thread_data();
@@ -1315,7 +1331,7 @@ void PASS1_expand_select_node(DsqlCompilerScratch* dsqlScratch, ExprNode* node, 
 	RelationSourceNode* relNode;
 	FieldNode* fieldNode;
 
-	if ((rseNode = ExprNode::as<RseNode>(node)))
+	if ((rseNode = nodeAs<RseNode>(node)))
 	{
 		ValueListNode* sub_items = rseNode->dsqlSelectList;
 
@@ -1332,7 +1348,7 @@ void PASS1_expand_select_node(DsqlCompilerScratch* dsqlScratch, ExprNode* node, 
 
 				DerivedFieldNode* derivedField;
 
-				if (!(derivedField = select_item->as<DerivedFieldNode>()))
+				if (!(derivedField = nodeAs<DerivedFieldNode>(select_item)))
 				{
 					// Internal dsql error: alias type expected by PASS1_expand_select_node
 					ERRD_post(Arg::Gds(isc_sqlerr) << Arg::Num(-104) <<
@@ -1359,7 +1375,7 @@ void PASS1_expand_select_node(DsqlCompilerScratch* dsqlScratch, ExprNode* node, 
 			}
 		}
 	}
-	else if ((procNode = ExprNode::as<ProcedureSourceNode>(node)))
+	else if ((procNode = nodeAs<ProcedureSourceNode>(node)))
 	{
 		dsql_ctx* context = procNode->dsqlContext;
 
@@ -1379,27 +1395,36 @@ void PASS1_expand_select_node(DsqlCompilerScratch* dsqlScratch, ExprNode* node, 
 			}
 		}
 	}
-	else if ((relNode = ExprNode::as<RelationSourceNode>(node)))
+	else if ((relNode = nodeAs<RelationSourceNode>(node)))
 	{
 		dsql_ctx* context = relNode->dsqlContext;
 
 		if (context->ctx_relation)
 		{
+			thread_db* const tdbb = JRD_get_thread_data();
+
 			for (dsql_fld* field = context->ctx_relation->rel_fields; field; field = field->fld_next)
 			{
 				DEV_BLKCHK(field, dsql_type_fld);
 
 				NestConst<ValueExprNode> select_item = NULL;
+
 				if (!hide_using || context->getImplicitJoinField(field->fld_name, select_item))
 				{
 					if (!select_item)
-						select_item = MAKE_field(context, field, NULL);
+					{
+						if (context->ctx_flags & CTX_null)
+							select_item = NullNode::instance();
+						else
+							select_item = MAKE_field(context, field, NULL);
+					}
+
 					list->add(select_item);
 				}
 			}
 		}
 	}
-	else if ((fieldNode = ExprNode::as<FieldNode>(node)))
+	else if ((fieldNode = nodeAs<FieldNode>(node)))
 	{
 		RecordSourceNode* recSource = NULL;
 		ValueExprNode* value = fieldNode->internalDsqlPass(dsqlScratch, &recSource);
@@ -1411,7 +1436,7 @@ void PASS1_expand_select_node(DsqlCompilerScratch* dsqlScratch, ExprNode* node, 
 	}
 	else
 	{
-		fb_assert(node->kind == DmlNode::KIND_VALUE);
+		fb_assert(node->getKind() == DmlNode::KIND_VALUE);
 		list->add(static_cast<ValueExprNode*>(node));
 	}
 }
@@ -1456,7 +1481,7 @@ static ValueListNode* pass1_group_by_list(DsqlCompilerScratch* dsqlScratch, Valu
 		FieldNode* field;
 		LiteralNode* literal;
 
-		if ((field = ExprNode::as<FieldNode>(sub)))
+		if ((field = nodeAs<FieldNode>(sub)))
 		{
 			// check for alias or field node
 			if (selectList && field->dsqlQualifier.isEmpty() && field->dsqlName.hasData())
@@ -1470,7 +1495,7 @@ static ValueListNode* pass1_group_by_list(DsqlCompilerScratch* dsqlScratch, Valu
 			if (!frnode)
 				frnode = field->internalDsqlPass(dsqlScratch, NULL);
 		}
-		else if ((literal = ExprNode::as<LiteralNode>(sub)) && (literal->litDesc.dsc_dtype == dtype_long))
+		else if ((literal = nodeAs<LiteralNode>(sub)) && (literal->litDesc.dsc_dtype == dtype_long))
 		{
 			const ULONG position = literal->getSlong();
 
@@ -1510,10 +1535,16 @@ void PASS1_limit(DsqlCompilerScratch* dsqlScratch, NestConst<ValueExprNode> firs
 		descNode.makeInt64(0);
 
 	rse->dsqlFirst = Node::doDsqlPass(dsqlScratch, firstNode, false);
-	PASS1_set_parameter_type(dsqlScratch, rse->dsqlFirst, &descNode, false);
+
+	PASS1_set_parameter_type(dsqlScratch, rse->dsqlFirst,
+		[&] (dsc* desc) { *desc = descNode; },
+		false);
 
 	rse->dsqlSkip = Node::doDsqlPass(dsqlScratch, skipNode, false);
-	PASS1_set_parameter_type(dsqlScratch, rse->dsqlSkip, &descNode, false);
+
+	PASS1_set_parameter_type(dsqlScratch, rse->dsqlSkip,
+		[&] (dsc* desc) { *desc = descNode; },
+		false);
 }
 
 
@@ -1533,17 +1564,17 @@ ValueExprNode* PASS1_lookup_alias(DsqlCompilerScratch* dsqlScratch, const MetaNa
 		FieldNode* fieldNode;
 		DerivedFieldNode* derivedField;
 
-		if ((aliasNode = node->as<DsqlAliasNode>()))
+		if ((aliasNode = nodeAs<DsqlAliasNode>(node)))
 		{
 			if (aliasNode->name == name)
 				matchingNode = node;
 		}
-		else if ((fieldNode = node->as<FieldNode>()))
+		else if ((fieldNode = nodeAs<FieldNode>(node)))
 		{
 			if (fieldNode->dsqlField->fld_name == name.c_str())
 				matchingNode = node;
 		}
-		else if ((derivedField = node->as<DerivedFieldNode>()))
+		else if ((derivedField = nodeAs<DerivedFieldNode>(node)))
 		{
 			if (derivedField->name == name)
 				matchingNode = node;
@@ -1560,11 +1591,11 @@ ValueExprNode* PASS1_lookup_alias(DsqlCompilerScratch* dsqlScratch, const MetaNa
 				TEXT buffer1[256];
 				buffer1[0] = 0;
 
-				if (returnNode->is<DsqlAliasNode>())
+				if (nodeIs<DsqlAliasNode>(returnNode))
 					strcat(buffer1, "an alias");
-				else if (returnNode->is<FieldNode>())
+				else if (nodeIs<FieldNode>(returnNode))
 					strcat(buffer1, "a field");
-				else if (returnNode->is<DerivedFieldNode>())
+				else if (nodeIs<DerivedFieldNode>(returnNode))
 					strcat(buffer1, "a derived field");
 				else
 					strcat(buffer1, "an item");
@@ -1572,11 +1603,11 @@ ValueExprNode* PASS1_lookup_alias(DsqlCompilerScratch* dsqlScratch, const MetaNa
 				TEXT buffer2[256];
 				buffer2[0] = 0;
 
-				if (matchingNode->is<DsqlAliasNode>())
+				if (nodeIs<DsqlAliasNode>(matchingNode))
 					strcat(buffer2, "an alias");
-				else if (matchingNode->is<FieldNode>())
+				else if (nodeIs<FieldNode>(matchingNode))
 					strcat(buffer2, "a field");
-				else if (matchingNode->is<DerivedFieldNode>())
+				else if (nodeIs<DerivedFieldNode>(matchingNode))
 					strcat(buffer2, "a derived field");
 				else
 					strcat(buffer2, "an item");
@@ -1618,56 +1649,56 @@ static ValueExprNode* pass1_make_derived_field(thread_db* tdbb, DsqlCompilerScra
 	FieldNode* fieldNode;
 	DerivedFieldNode* derivedField;
 
-	if ((aliasNode = ExprNode::as<DsqlAliasNode>(select_item)))
+	if ((aliasNode = nodeAs<DsqlAliasNode>(select_item)))
 	{
 		// Create a derived field and ignore alias node.
 		DerivedFieldNode* newField = FB_NEW_POOL(pool) DerivedFieldNode(pool,
 			aliasNode->name, dsqlScratch->scopeLevel, aliasNode->value);
-		newField->nodDesc = aliasNode->value->nodDesc;
+		newField->setDsqlDesc(aliasNode->value->getDsqlDesc());
 		return newField;
 	}
-	else if ((subQueryNode = ExprNode::as<SubQueryNode>(select_item)))
+	else if ((subQueryNode = nodeAs<SubQueryNode>(select_item)))
 	{
 		// Try to generate derived field from sub-select
 		ValueExprNode* derived_field = pass1_make_derived_field(tdbb, dsqlScratch,
 			subQueryNode->value1);
 
-		if ((derivedField = ExprNode::as<DerivedFieldNode>(derived_field)))
+		if ((derivedField = nodeAs<DerivedFieldNode>(derived_field)))
 		{
 			derivedField->value = select_item;
 			return derived_field;
 		}
 	}
-	else if ((mapNode = ExprNode::as<DsqlMapNode>(select_item)))
+	else if ((mapNode = nodeAs<DsqlMapNode>(select_item)))
 	{
 		// Aggregate's have map on top.
 		ValueExprNode* derived_field = pass1_make_derived_field(tdbb, dsqlScratch, mapNode->map->map_node);
 
 		// If we had succesfully made a derived field node change it with orginal map.
-		if ((derivedField = ExprNode::as<DerivedFieldNode>(derived_field)))
+		if ((derivedField = nodeAs<DerivedFieldNode>(derived_field)))
 		{
 			derivedField->value = select_item;
 			derivedField->scope = dsqlScratch->scopeLevel;
-			derived_field->nodDesc = select_item->nodDesc;
+			derivedField->setDsqlDesc(select_item->getDsqlDesc());
 			return derived_field;
 		}
 	}
-	else if ((fieldNode = ExprNode::as<FieldNode>(select_item)))
+	else if ((fieldNode = nodeAs<FieldNode>(select_item)))
 	{
 		// Create a derived field and hook in.
 
 		DerivedFieldNode* newField = FB_NEW_POOL(pool) DerivedFieldNode(pool,
 			fieldNode->dsqlField->fld_name, dsqlScratch->scopeLevel, select_item);
-		newField->nodDesc = fieldNode->nodDesc;
+		newField->setDsqlDesc(fieldNode->getDsqlDesc());
 		return newField;
 	}
-	else if ((derivedField = ExprNode::as<DerivedFieldNode>(select_item)))
+	else if ((derivedField = nodeAs<DerivedFieldNode>(select_item)))
 	{
 		// Create a derived field that points to a derived field.
 
 		DerivedFieldNode* newField = FB_NEW_POOL(pool) DerivedFieldNode(pool,
 			derivedField->name, dsqlScratch->scopeLevel, select_item);
-		newField->nodDesc = select_item->nodDesc;
+		newField->setDsqlDesc(select_item->getDsqlDesc());
 		return newField;
 	}
 
@@ -1730,7 +1761,7 @@ static RseNode* pass1_rse(DsqlCompilerScratch* dsqlScratch, RecordSourceNode* in
 	ValueListNode* order, RowsClause* rows, bool updateLock, USHORT flags)
 {
 	string save_alias;
-	RseNode* rseNode = input->as<RseNode>();
+	RseNode* rseNode = nodeAs<RseNode>(input);
 	const bool isRecursive = rseNode && (rseNode->dsqlFlags & RecordSourceNode::DFLAG_RECURSIVE);
 	AutoSetRestore<USHORT> autoScopeLevel(&dsqlScratch->scopeLevel, dsqlScratch->scopeLevel);
 
@@ -1765,10 +1796,7 @@ static RseNode* pass1_rse_impl(DsqlCompilerScratch* dsqlScratch, RecordSourceNod
 	thread_db* tdbb = JRD_get_thread_data();
 	MemoryPool& pool = *tdbb->getDefaultPool();
 
-	SelectExprNode* selNode = input->as<SelectExprNode>();
-	UnionSourceNode* unionNode = input->as<UnionSourceNode>();
-
-	if (selNode)
+	if (auto selNode = nodeAs<SelectExprNode>(input))
 	{
 		WithClause* withClause = selNode->withClause;
 		try
@@ -1794,13 +1822,13 @@ static RseNode* pass1_rse_impl(DsqlCompilerScratch* dsqlScratch, RecordSourceNod
 			throw;
 		}
 	}
-	else if (unionNode)
+	else if (auto unionNode = nodeAs<UnionSourceNode>(input))
 	{
 		fb_assert(unionNode->dsqlClauses->items.hasData());
 		return pass1_union(dsqlScratch, unionNode, order, rows, updateLock, flags);
 	}
 
-	RseNode* inputRse = input->as<RseNode>();
+	RseNode* inputRse = nodeAs<RseNode>(input);
 	fb_assert(inputRse);
 
 	// Save the original base of the context stack and process relations
@@ -1820,7 +1848,7 @@ static RseNode* pass1_rse_impl(DsqlCompilerScratch* dsqlScratch, RecordSourceNod
 
 		if (updateLock &&
 			(streamList->items.getCount() != 1 ||
-				!(relNode = streamList->items[0]->as<RelationSourceNode>()) ||
+				!(relNode = nodeAs<RelationSourceNode>(streamList->items[0])) ||
 				!(relation = relNode->dsqlContext->ctx_relation) ||
 				(relation->rel_flags & (REL_view | REL_external))))
 		{
@@ -1851,8 +1879,8 @@ static RseNode* pass1_rse_impl(DsqlCompilerScratch* dsqlScratch, RecordSourceNod
 
 		// AB: An aggregate pointing to it's own parent_context isn't
 		// allowed, HAVING should be used instead
-		if (Aggregate2Finder::find(dsqlScratch->scopeLevel, FIELD_MATCH_TYPE_EQUAL, false,
-				rse->dsqlWhere))
+		if (Aggregate2Finder::find(dsqlScratch->getPool(), dsqlScratch->scopeLevel,
+				FIELD_MATCH_TYPE_EQUAL, false, rse->dsqlWhere))
 		{
 			// Cannot use an aggregate in a WHERE clause, use HAVING instead
 			ERRD_post(Arg::Gds(isc_sqlerr) << Arg::Num(-104) <<
@@ -1872,7 +1900,7 @@ static RseNode* pass1_rse_impl(DsqlCompilerScratch* dsqlScratch, RecordSourceNod
 	ValueListNode* selectList = inputRse->dsqlSelectList;
 	// First expand select list, this will expand nodes with asterisk.
 	++dsqlScratch->inSelectList;
-	selectList = pass1_expand_select_list(dsqlScratch, selectList, rse->dsqlStreams);
+	selectList = PASS1_expand_select_list(dsqlScratch, selectList, rse->dsqlStreams);
 
 	if ((flags & RecordSourceNode::DFLAG_VALUE) &&
 		(!selectList || selectList->items.getCount() > 1))
@@ -1883,13 +1911,31 @@ static RseNode* pass1_rse_impl(DsqlCompilerScratch* dsqlScratch, RecordSourceNod
 				  Arg::Gds(isc_dsql_count_mismatch));
 	}
 
+	if (inputRse->dsqlNamedWindows)
+	{
+		for (NamedWindowsClause::iterator i = inputRse->dsqlNamedWindows->begin();
+			 i != inputRse->dsqlNamedWindows->end();
+			 ++i)
+		{
+			if (dsqlScratch->context->object()->ctx_named_windows.exist(i->first))
+			{
+				ERRD_post(
+					Arg::Gds(isc_sqlerr) << Arg::Num(-204) <<
+					Arg::Gds(isc_dsql_window_duplicate) << i->first);
+			}
+
+			i->second->dsqlPass(dsqlScratch);
+			dsqlScratch->context->object()->ctx_named_windows.put(i->first, i->second);
+		}
+	}
+
 	// Pass select list
 	rse->dsqlSelectList = pass1_sel_list(dsqlScratch, selectList);
 	--dsqlScratch->inSelectList;
 
 	if (inputRse->dsqlFlags & RecordSourceNode::DFLAG_RECURSIVE)
 	{
-		if (Aggregate2Finder::find(dsqlScratch->scopeLevel, FIELD_MATCH_TYPE_EQUAL, false,
+		if (Aggregate2Finder::find(dsqlScratch->getPool(), dsqlScratch->scopeLevel, FIELD_MATCH_TYPE_EQUAL, false,
 				rse->dsqlSelectList))
 		{
 			// Recursive member of CTE cannot use aggregate function
@@ -1907,7 +1953,7 @@ static RseNode* pass1_rse_impl(DsqlCompilerScratch* dsqlScratch, RecordSourceNod
 
 		if (inputRse->dsqlFlags & RecordSourceNode::DFLAG_RECURSIVE)
 		{
-			if (Aggregate2Finder::find(dsqlScratch->scopeLevel, FIELD_MATCH_TYPE_EQUAL, false,
+			if (Aggregate2Finder::find(dsqlScratch->getPool(), dsqlScratch->scopeLevel, FIELD_MATCH_TYPE_EQUAL, false,
 					rse->dsqlOrder))
 			{
 				// Recursive member of CTE cannot use aggregate function
@@ -1925,8 +1971,8 @@ static RseNode* pass1_rse_impl(DsqlCompilerScratch* dsqlScratch, RecordSourceNod
 
 	if (inputRse->dsqlGroup ||
 		inputRse->dsqlHaving ||
-		(rse->dsqlSelectList && AggregateFinder::find(dsqlScratch, false, rse->dsqlSelectList)) ||
-		(rse->dsqlOrder && AggregateFinder::find(dsqlScratch, false, rse->dsqlOrder)))
+		(rse->dsqlSelectList && AggregateFinder::find(dsqlScratch->getPool(), dsqlScratch, false, rse->dsqlSelectList)) ||
+		(rse->dsqlOrder && AggregateFinder::find(dsqlScratch->getPool(), dsqlScratch, false, rse->dsqlOrder)))
 	{
 		// dimitr: don't allow WITH LOCK for aggregates
 		if (updateLock)
@@ -1978,8 +2024,8 @@ static RseNode* pass1_rse_impl(DsqlCompilerScratch* dsqlScratch, RecordSourceNod
 
 		// AB: An field pointing to another parent_context isn't
 		// allowed and GROUP BY items can't contain aggregates
-		if (FieldFinder::find(dsqlScratch->scopeLevel, FIELD_MATCH_TYPE_LOWER, aggregate->dsqlGroup) ||
-			Aggregate2Finder::find(dsqlScratch->scopeLevel, FIELD_MATCH_TYPE_LOWER_EQUAL,
+		if (FieldFinder::find(dsqlScratch->getPool(), dsqlScratch->scopeLevel, FIELD_MATCH_TYPE_LOWER, aggregate->dsqlGroup) ||
+			Aggregate2Finder::find(dsqlScratch->getPool(), dsqlScratch->scopeLevel, FIELD_MATCH_TYPE_LOWER_EQUAL,
 				false, aggregate->dsqlGroup))
 		{
 			// Cannot use an aggregate in a GROUP BY clause
@@ -2012,7 +2058,7 @@ static RseNode* pass1_rse_impl(DsqlCompilerScratch* dsqlScratch, RecordSourceNod
 		// sort, group and distinct have the same limit for now
 		if (selectList->items.getCount() > MAX_SORT_ITEMS)
 		{
-			// Cannot have more than 255 items in DISTINCT list.
+			// Cannot have more than 255 items in DISTINCT / UNION DISTINCT list.
 			ERRD_post(Arg::Gds(isc_sqlerr) << Arg::Num(-104) <<
 					  Arg::Gds(isc_dsql_command_err) <<
 					  Arg::Gds(isc_dsql_max_distinct_items));
@@ -2021,7 +2067,7 @@ static RseNode* pass1_rse_impl(DsqlCompilerScratch* dsqlScratch, RecordSourceNod
 
 	if (parent_context)
 	{
-		FieldRemapper remapper(dsqlScratch, parent_context, false);
+		FieldRemapper remapper(dsqlScratch->getPool(), dsqlScratch, parent_context, false);
 
 		// Reset context of select items to point to the parent stream
 
@@ -2035,7 +2081,7 @@ static RseNode* pass1_rse_impl(DsqlCompilerScratch* dsqlScratch, RecordSourceNod
 			NestConst<ValueExprNode>* ptr = valueList->items.begin();
 			for (const NestConst<ValueExprNode>* const end = valueList->items.end(); ptr != end; ++ptr)
 			{
-				if (InvalidReferenceFinder::find(parent_context, aggregate->dsqlGroup, *ptr))
+				if (InvalidReferenceFinder::find(dsqlScratch, parent_context, aggregate->dsqlGroup, *ptr))
 				{
 					// Invalid expression in the select list
 					// (not contained in either an aggregate or the GROUP BY clause)
@@ -2057,7 +2103,7 @@ static RseNode* pass1_rse_impl(DsqlCompilerScratch* dsqlScratch, RecordSourceNod
 			NestConst<ValueExprNode>* ptr = valueList->items.begin();
 			for (const NestConst<ValueExprNode>* const end = valueList->items.end(); ptr != end; ++ptr)
 			{
-				if (InvalidReferenceFinder::find(parent_context, aggregate->dsqlGroup, *ptr))
+				if (InvalidReferenceFinder::find(dsqlScratch, parent_context, aggregate->dsqlGroup, *ptr))
 				{
 					// Invalid expression in the ORDER BY clause
 					// (not contained in either an aggregate or the GROUP BY clause)
@@ -2083,7 +2129,7 @@ static RseNode* pass1_rse_impl(DsqlCompilerScratch* dsqlScratch, RecordSourceNod
 
 			// AB: Check for invalid contructions inside the HAVING clause
 
-			if (InvalidReferenceFinder::find(parent_context, aggregate->dsqlGroup,
+			if (InvalidReferenceFinder::find(dsqlScratch, parent_context, aggregate->dsqlGroup,
 					parentRse->dsqlWhere))
 			{
 				// Invalid expression in the HAVING clause
@@ -2092,7 +2138,7 @@ static RseNode* pass1_rse_impl(DsqlCompilerScratch* dsqlScratch, RecordSourceNod
 						  Arg::Gds(isc_dsql_agg_having_err) << Arg::Str("HAVING clause"));
 			}
 
-			if (AggregateFinder::find(dsqlScratch, true, parentRse->dsqlWhere))
+			if (AggregateFinder::find(dsqlScratch->getPool(), dsqlScratch, true, parentRse->dsqlWhere))
 			{
 				// Cannot use an aggregate in a WHERE clause, use HAVING instead
 				ERRD_post(Arg::Gds(isc_sqlerr) << Arg::Num(-104) <<
@@ -2105,11 +2151,12 @@ static RseNode* pass1_rse_impl(DsqlCompilerScratch* dsqlScratch, RecordSourceNod
 		parent_context->ctx_context = dsqlScratch->contextNumber++;
 	}
 
-	const bool sortWindow = rse->dsqlOrder && AggregateFinder::find(dsqlScratch, true, rse->dsqlOrder);
+	bool isWindow = (rse->dsqlOrder && AggregateFinder::find(dsqlScratch->getPool(), dsqlScratch, true, rse->dsqlOrder)) ||
+		(rse->dsqlSelectList && AggregateFinder::find(dsqlScratch->getPool(), dsqlScratch, true, rse->dsqlSelectList)) ||
+		inputRse->dsqlNamedWindows;
 
 	// WINDOW functions
-	if ((rse->dsqlSelectList && AggregateFinder::find(dsqlScratch, true, rse->dsqlSelectList)) ||
-		sortWindow)
+	if (isWindow)
 	{
 		AutoSetRestore<bool> autoProcessingWindow(&dsqlScratch->processingWindow, true);
 
@@ -2159,7 +2206,7 @@ static RseNode* pass1_rse_impl(DsqlCompilerScratch* dsqlScratch, RecordSourceNod
 			NestConst<ValueExprNode>* ptr = valueList->items.begin();
 			for (const NestConst<ValueExprNode>* const end = valueList->items.end(); ptr != end; ++ptr)
 			{
-				if (InvalidReferenceFinder::find(parent_context, aggregate->dsqlGroup, *ptr))
+				if (InvalidReferenceFinder::find(dsqlScratch, parent_context, aggregate->dsqlGroup, *ptr))
 				{
 					// Invalid expression in the select list
 					// (not contained in either an aggregate or the GROUP BY clause)
@@ -2169,7 +2216,7 @@ static RseNode* pass1_rse_impl(DsqlCompilerScratch* dsqlScratch, RecordSourceNod
 			}
 		}
 
-		FieldRemapper remapper(dsqlScratch, parent_context, true);
+		FieldRemapper remapper(dsqlScratch->getPool(), dsqlScratch, parent_context, true);
 
 		ExprNode::doDsqlFieldRemapper(remapper, parentRse->dsqlSelectList, rse->dsqlSelectList);
 		rse->dsqlSelectList = NULL;
@@ -2183,7 +2230,7 @@ static RseNode* pass1_rse_impl(DsqlCompilerScratch* dsqlScratch, RecordSourceNod
 				NestConst<ValueExprNode>* ptr = valueList->items.begin();
 				for (const NestConst<ValueExprNode>* const end = valueList->items.end(); ptr != end; ++ptr)
 				{
-					if (InvalidReferenceFinder::find(parent_context, aggregate->dsqlGroup, *ptr))
+					if (InvalidReferenceFinder::find(dsqlScratch, parent_context, aggregate->dsqlGroup, *ptr))
 					{
 						// Invalid expression in the ORDER BY list
 						// (not contained in either an aggregate or the GROUP BY clause)
@@ -2207,14 +2254,15 @@ static RseNode* pass1_rse_impl(DsqlCompilerScratch* dsqlScratch, RecordSourceNod
 		// Remap the nodes to the partition context
 		for (FB_SIZE_T i = 0, mapCount = parent_context->ctx_win_maps.getCount(); i < mapCount; ++i)
 		{
-			PartitionMap* partitionMap = parent_context->ctx_win_maps[i];
-			if (partitionMap->partition)
-			{
-				partitionMap->partitionRemapped = Node::doDsqlPass(dsqlScratch, partitionMap->partition);
+			WindowMap* windowMap = parent_context->ctx_win_maps[i];
 
-				FieldRemapper remapper2(dsqlScratch, parent_context, true, partitionMap->partition,
-					partitionMap->order);
-				ExprNode::doDsqlFieldRemapper(remapper2, partitionMap->partitionRemapped);
+			if (windowMap->window && windowMap->window->partition)
+			{
+				windowMap->partitionRemapped = Node::doDsqlPass(dsqlScratch,
+					windowMap->window->partition);
+
+				FieldRemapper remapper2(dsqlScratch->getPool(), dsqlScratch, parent_context, true, windowMap->window);
+				ExprNode::doDsqlFieldRemapper(remapper2, windowMap->partitionRemapped);
 			}
 		}
 
@@ -2289,7 +2337,7 @@ ValueListNode* PASS1_sort(DsqlCompilerScratch* dsqlScratch, ValueListNode* input
 	for (FB_SIZE_T sortloop = 0; sortloop < input->items.getCount(); ++sortloop)
 	{
 		DEV_BLKCHK(input->items[sortloop], dsql_type_nod);
-		NestConst<OrderNode> node1 = input->items[sortloop]->as<OrderNode>();
+		NestConst<OrderNode> node1 = nodeAs<OrderNode>(input->items[sortloop]);
 		if (!node1)
 		{
 			ERRD_post(Arg::Gds(isc_sqlerr) << Arg::Num(-104) <<
@@ -2301,7 +2349,7 @@ ValueListNode* PASS1_sort(DsqlCompilerScratch* dsqlScratch, ValueListNode* input
 		// get node of value to be ordered by
 		NestConst<ValueExprNode> orderValue = node1->value;
 
-		NestConst<CollateNode> collateNode = orderValue->as<CollateNode>();
+		NestConst<CollateNode> collateNode = nodeAs<CollateNode>(orderValue);
 
 		if (collateNode)
 		{
@@ -2312,7 +2360,7 @@ ValueListNode* PASS1_sort(DsqlCompilerScratch* dsqlScratch, ValueListNode* input
 		FieldNode* field;
 		LiteralNode* literal;
 
-		if ((field = orderValue->as<FieldNode>()))
+		if ((field = nodeAs<FieldNode>(orderValue)))
 		{
 			ValueExprNode* aliasNode = NULL;
 
@@ -2327,7 +2375,7 @@ ValueListNode* PASS1_sort(DsqlCompilerScratch* dsqlScratch, ValueListNode* input
 
 			orderValue = aliasNode ? aliasNode : field->internalDsqlPass(dsqlScratch, NULL);
 		}
-		else if ((literal = orderValue->as<LiteralNode>()) && literal->litDesc.dsc_dtype == dtype_long)
+		else if ((literal = nodeAs<LiteralNode>(orderValue)) && literal->litDesc.dsc_dtype == dtype_long)
 		{
 			const ULONG position = literal->getSlong();
 
@@ -2425,7 +2473,7 @@ static RseNode* pass1_union(DsqlCompilerScratch* dsqlScratch, UnionSourceNode* i
 			dsqlScratch->scopeLevel--;
 
 			if (updateLock)
-				(*uptr)->as<RseNode>()->flags &= ~RseNode::FLAG_WRITELOCK;
+				nodeAs<RseNode>(*uptr)->flags &= ~RseNode::FLAG_WRITELOCK;
 
 			while (*(dsqlScratch->context) != base)
 				dsqlScratch->unionContext.push(dsqlScratch->context->pop());
@@ -2438,14 +2486,22 @@ static RseNode* pass1_union(DsqlCompilerScratch* dsqlScratch, UnionSourceNode* i
 	} // end scope block
 
 	// generate the list of fields to select.
-	ValueListNode* items = unionSource->dsqlClauses->items[0]->as<RseNode>()->dsqlSelectList;
+	ValueListNode* items = nodeAs<RseNode>(unionSource->dsqlClauses->items[0])->dsqlSelectList;
+
+	if (!input->dsqlAll && items->items.getCount() > MAX_SORT_ITEMS)
+	{
+		// Cannot have more than 255 items in DISTINCT / UNION DISTINCT list.
+		ERRD_post(Arg::Gds(isc_sqlerr) << Arg::Num(-104) <<
+					Arg::Gds(isc_dsql_command_err) <<
+					Arg::Gds(isc_dsql_max_distinct_items));
+	}
 
 	// loop through the list nodes, checking to be sure that they have the
 	// same number of items
 
 	for (FB_SIZE_T i = 1; i < unionSource->dsqlClauses->items.getCount(); ++i)
 	{
-		const ValueListNode* nod1 = unionSource->dsqlClauses->items[i]->as<RseNode>()->dsqlSelectList;
+		const ValueListNode* nod1 = nodeAs<RseNode>(unionSource->dsqlClauses->items[i])->dsqlSelectList;
 
 		if (items->items.getCount() != nod1->items.getCount())
 		{
@@ -2472,36 +2528,26 @@ static RseNode* pass1_union(DsqlCompilerScratch* dsqlScratch, UnionSourceNode* i
 	ValueListNode* tmp_list = FB_NEW_POOL(pool) ValueListNode(
 		pool, unionSource->dsqlClauses->items.getCount());
 
+	Array<dsc> descs(unionSource->dsqlClauses->items.getCount());
+
 	for (FB_SIZE_T j = 0; j < items->items.getCount(); ++j)
 	{
 		for (FB_SIZE_T i = 0; i < unionSource->dsqlClauses->items.getCount(); ++i)
 		{
-			ValueListNode* nod1 = unionSource->dsqlClauses->items[i]->as<RseNode>()->dsqlSelectList;
-			MAKE_desc(dsqlScratch, &nod1->items[j]->nodDesc, nod1->items[j]);
+			ValueListNode* nod1 = nodeAs<RseNode>(unionSource->dsqlClauses->items[i])->dsqlSelectList;
+			DsqlDescMaker::fromNode(dsqlScratch, nod1->items[j]);
 			tmp_list->items[i] = nod1->items[j];
-
-			// We look only at the items->nod_arg[] when creating the
-			// output descriptors. Make sure that the sub-rses
-			// descriptor flags are copied onto items->nod_arg[]->nodDesc.
-			// Bug 65584.
-			// -Sudesh 07/28/1999.
-			if (i > 0)
-			{
-				if (nod1->items[j]->nodDesc.dsc_flags & DSC_nullable)
-					items->items[j]->nodDesc.dsc_flags |= DSC_nullable;
-			}
 		}
 
 		dsc desc;
-		MAKE_desc_from_list(dsqlScratch, &desc, tmp_list, "UNION");
-		// Only mark upper node as a NULL node when all sub-nodes are NULL
-		items->items[j]->nodDesc.dsc_flags &= ~DSC_null;
-		items->items[j]->nodDesc.dsc_flags |= (desc.dsc_flags & DSC_null);
+		DsqlDescMaker::fromList(dsqlScratch, &desc, tmp_list, "UNION");
+
+		descs.push(desc);
 
 		pass1_union_auto_cast(dsqlScratch, unionSource->dsqlClauses, desc, j);
 	}
 
-	items = unionSource->dsqlClauses->items[0]->as<RseNode>()->dsqlSelectList;
+	items = nodeAs<RseNode>(unionSource->dsqlClauses->items[0])->dsqlSelectList;
 
 	// Create mappings for union.
 
@@ -2520,10 +2566,21 @@ static RseNode* pass1_union(DsqlCompilerScratch* dsqlScratch, UnionSourceNode* i
 			fb_assert(count != 0); // no wrap, please!
 			map->map_node = *uptr++;
 			map->map_next = union_context->ctx_map;
-			map->map_partition = NULL;
+			map->map_window = NULL;
 			union_context->ctx_map = map;
 
-		    *ptr = FB_NEW_POOL(pool) DsqlMapNode(pool, union_context, map);
+			auto mapNode = FB_NEW_POOL(pool) DsqlMapNode(pool, union_context, map);
+
+			if (descs[map->map_position].dsc_flags & DSC_nullable)
+				mapNode->setNullable = true;
+
+			if ((items->items[map->map_position]->getDsqlDesc().dsc_flags & DSC_null) &&
+				!(descs[map->map_position].dsc_flags & DSC_null))
+			{
+				mapNode->clearNull = true;
+			}
+
+			*ptr = mapNode;
 		}
 
 		unionRse->dsqlSelectList = union_items;
@@ -2540,14 +2597,14 @@ static RseNode* pass1_union(DsqlCompilerScratch* dsqlScratch, UnionSourceNode* i
 			 ptr != end;
 			 ++ptr, ++uptr)
 		{
-			OrderNode* order1 = (*ptr)->as<OrderNode>();
+			OrderNode* order1 = nodeAs<OrderNode>(*ptr);
 			const ValueExprNode* position = order1->value;
-			const CollateNode* collateNode = position->as<CollateNode>();
+			const CollateNode* collateNode = nodeAs<CollateNode>(position);
 
 			if (collateNode)
 				position = collateNode->arg;
 
-			const LiteralNode* literal = position->as<LiteralNode>();
+			const LiteralNode* literal = nodeAs<LiteralNode>(position);
 
 			if (!literal || literal->litDesc.dsc_dtype != dtype_long)
 			{
@@ -2626,28 +2683,30 @@ static void pass1_union_auto_cast(DsqlCompilerScratch* dsqlScratch, ExprNode* in
 	RseNode* rseNode;
 	UnionSourceNode* unionNode;
 
-	if ((recSourceList = input->as<RecSourceListNode>()))
+	if ((recSourceList = nodeAs<RecSourceListNode>(input)))
 	{
 		NestConst<RecordSourceNode>* ptr = recSourceList->items.begin();
 		for (const NestConst<RecordSourceNode>* const end = recSourceList->items.end(); ptr != end; ++ptr)
 			pass1_union_auto_cast(dsqlScratch, *ptr, desc, position);
 	}
-	else if ((rseNode = input->as<RseNode>()) && !rseNode->dsqlExplicitJoin &&
+	else if ((rseNode = nodeAs<RseNode>(input)) && !rseNode->dsqlExplicitJoin &&
 		!rseNode->dsqlContext)	// not derived table
 	{
 		pass1_union_auto_cast(dsqlScratch, rseNode->dsqlStreams, desc, position);
 
 		if (rseNode->dsqlStreams->items.getCount() == 1 &&
-			(unionNode = rseNode->dsqlStreams->items[0]->as<UnionSourceNode>()) &&
+			(unionNode = nodeAs<UnionSourceNode>(rseNode->dsqlStreams->items[0])) &&
 			unionNode->dsqlParentRse == rseNode)
 		{
-			// We're now in a UNION under a UNION so don't change the existing mappings.
+			// We're now in a UNION under a UNION (for example A UNION ALL B UNION C) so don't
+			// change the existing mappings.
 			// Only replace the node where the map points to, because they could be changed.
 			ValueListNode* sub_rse_items =
-				unionNode->dsqlClauses->items[0]->as<RseNode>()->dsqlSelectList;
-			dsql_map* map = rseNode->dsqlSelectList->items[position]->as<DsqlMapNode>()->map;
+				nodeAs<RseNode>(unionNode->dsqlClauses->items[0])->dsqlSelectList;
+			auto mapNode = nodeAs<DsqlMapNode>(rseNode->dsqlSelectList->items[position]);
+			dsql_map* map = mapNode->map;
 			map->map_node = sub_rse_items->items[position];
-			rseNode->dsqlSelectList->items[position]->nodDesc = desc;
+			mapNode->setDsqlDesc(desc);
 		}
 		else
 		{
@@ -2663,12 +2722,12 @@ static void pass1_union_auto_cast(DsqlCompilerScratch* dsqlScratch, ExprNode* in
 			else
 			{
 				ValueExprNode* select_item = list->items[position];
-				MAKE_desc(dsqlScratch, &select_item->nodDesc, select_item);
+				DsqlDescMaker::fromNode(dsqlScratch, select_item);
 
-				if (select_item->nodDesc.dsc_dtype != desc.dsc_dtype ||
-					select_item->nodDesc.dsc_length != desc.dsc_length ||
-					select_item->nodDesc.dsc_scale != desc.dsc_scale ||
-					select_item->nodDesc.dsc_sub_type != desc.dsc_sub_type)
+				if (select_item->getDsqlDesc().dsc_dtype != desc.dsc_dtype ||
+					select_item->getDsqlDesc().dsc_length != desc.dsc_length ||
+					select_item->getDsqlDesc().dsc_scale != desc.dsc_scale ||
+					select_item->getDsqlDesc().dsc_sub_type != desc.dsc_sub_type)
 				{
 					// Because this select item has a different descriptor then
 					// our finally descriptor CAST it.
@@ -2678,18 +2737,22 @@ static void pass1_union_auto_cast(DsqlCompilerScratch* dsqlScratch, ExprNode* in
 					DerivedFieldNode* derivedField;
 
 					// Pick a existing cast if available else make a new one.
-					if ((aliasNode = ExprNode::as<DsqlAliasNode>(select_item)) &&
-						aliasNode->value && (castNode = aliasNode->value->as<CastNode>()))
+					if ((aliasNode = nodeAs<DsqlAliasNode>(select_item)) &&
+						aliasNode->value &&
+						(castNode = nodeAs<CastNode>(aliasNode->value)))
 					{
 					}
-					else if ((derivedField = ExprNode::as<DerivedFieldNode>(select_item)) &&
-						(castNode = derivedField->value->as<CastNode>()))
-					{
-					}
-					else if ((castNode = ExprNode::as<CastNode>(select_item)))
+					else if ((derivedField = nodeAs<DerivedFieldNode>(select_item)) &&
+						(castNode = nodeAs<CastNode>(derivedField->value)))
 					{
 					}
 					else
+						castNode = nodeAs<CastNode>(select_item);
+
+					if (castNode && !DSC_EQUIV(&castNode->getDsqlDesc(), &desc, false))
+						castNode = NULL;
+
+					if (!castNode)
 					{
 						castNode = FB_NEW_POOL(*tdbb->getDefaultPool()) CastNode(
 							*tdbb->getDefaultPool());
@@ -2700,31 +2763,36 @@ static void pass1_union_auto_cast(DsqlCompilerScratch* dsqlScratch, ExprNode* in
 						// We want to leave the ALIAS node on his place, because a UNION
 						// uses the select_items from the first sub-rse to determine the
 						// columnname.
-						if ((aliasNode = ExprNode::as<DsqlAliasNode>(select_item)))
+						if ((aliasNode = nodeAs<DsqlAliasNode>(select_item)))
 							castNode->source = aliasNode->value;
-						else if ((derivedField = ExprNode::as<DerivedFieldNode>(select_item)))
+						else if ((derivedField = nodeAs<DerivedFieldNode>(select_item)))
 							castNode->source = derivedField->value;
 						else
 							castNode->source = select_item;
 
 						// When a cast is created we're losing our fieldname, thus
 						// create an alias to keep it.
-						const ValueExprNode* name_node = select_item;
+						ValueExprNode* name_node = select_item;
 						const DsqlMapNode* mapNode;
 
-						while ((mapNode = ExprNode::as<DsqlMapNode>(name_node)))
+						while ((mapNode = nodeAs<DsqlMapNode>(name_node)))
 						{
 							// Skip all the DsqlMapNodes.
 							name_node = mapNode->map->map_node;
 						}
 
-						const FieldNode* fieldNode;
-
-						if ((fieldNode = ExprNode::as<FieldNode>(name_node)))
+						if (auto fieldNode = nodeAs<FieldNode>(name_node))
 						{
 							// Create new node for alias and copy fieldname.
 							newAliasNode = FB_NEW_POOL(*tdbb->getDefaultPool()) DsqlAliasNode(
 								*tdbb->getDefaultPool(), fieldNode->dsqlField->fld_name, NULL);
+							// The alias value will be assigned a bit later.
+						}
+						else if ((derivedField = nodeAs<DerivedFieldNode>(name_node)))
+						{
+							// Create new node for alias and copy fieldname.
+							newAliasNode = FB_NEW_POOL(*tdbb->getDefaultPool()) DsqlAliasNode(
+								*tdbb->getDefaultPool(), derivedField->name, NULL);
 							// The alias value will be assigned a bit later.
 						}
 					}
@@ -2752,31 +2820,32 @@ static void pass1_union_auto_cast(DsqlCompilerScratch* dsqlScratch, ExprNode* in
 
 					// Finally copy the descriptors to the root nodes and swap
 					// the necessary nodes.
-					castNode->nodDesc = desc;
+					castNode->setDsqlDesc(desc);
 
-					if (select_item->nodDesc.dsc_flags & DSC_nullable)
-						castNode->nodDesc.dsc_flags |= DSC_nullable;
-
-					if ((aliasNode = ExprNode::as<DsqlAliasNode>(select_item)))
+					if ((aliasNode = nodeAs<DsqlAliasNode>(select_item)))
 					{
 						aliasNode->value = castNode;
-						aliasNode->value->nodDesc = desc;
-						select_item->nodDesc = desc;
+						aliasNode->setDsqlDesc(desc);
 					}
-					else if ((derivedField = ExprNode::as<DerivedFieldNode>(select_item)))
+					else if ((derivedField = nodeAs<DerivedFieldNode>(select_item)))
 					{
 						derivedField->value = castNode;
-						derivedField->value->nodDesc = desc;
-						select_item->nodDesc = desc;
+						derivedField->setDsqlDesc(desc);
 					}
 					else
 					{
+						if (select_item->getDsqlDesc().dsc_flags & DSC_nullable)
+						{
+							dsc castDesc = castNode->getDsqlDesc();
+							castDesc.dsc_flags |= DSC_nullable;
+							castNode->setDsqlDesc(castDesc);
+						}
+
 						// If a new alias was created for keeping original field-name
 						// make the alias the "top" node.
 						if (newAliasNode)
 						{
 							newAliasNode->value = castNode;
-							newAliasNode->value->nodDesc = castNode->nodDesc;
 							list->items[position] = newAliasNode;
 						}
 						else
@@ -2786,7 +2855,7 @@ static void pass1_union_auto_cast(DsqlCompilerScratch* dsqlScratch, ExprNode* in
 			}
 		}
 	}
-	else if ((unionNode = input->as<UnionSourceNode>()))
+	else if ((unionNode = nodeAs<UnionSourceNode>(input)))
 	{
 		recSourceList = unionNode->dsqlClauses;
 
@@ -2801,21 +2870,21 @@ static void pass1_union_auto_cast(DsqlCompilerScratch* dsqlScratch, ExprNode* in
 
 
 // Post an item to a map for a context.
-DsqlMapNode* PASS1_post_map(DsqlCompilerScratch* dsqlScratch, ValueExprNode* node, dsql_ctx* context,
-	ValueListNode* partitionNode, ValueListNode* orderNode)
+DsqlMapNode* PASS1_post_map(DsqlCompilerScratch* dsqlScratch, ValueExprNode* node,
+	dsql_ctx* context, WindowClause* windowNode)
 {
 	DEV_BLKCHK(node, dsql_type_nod);
 	DEV_BLKCHK(context, dsql_type_ctx);
 
 	thread_db* tdbb = JRD_get_thread_data();
 
-	PartitionMap* partitionMap = NULL;
+	WindowMap* windowMap = NULL;
 	dsql_map* map = NULL;
 
 	if (dsqlScratch->processingWindow)
 	{
-		partitionMap = context->getPartitionMap(dsqlScratch, partitionNode, orderNode);
-		map = partitionMap->map;
+		windowMap = context->getWindowMap(dsqlScratch, windowNode);
+		map = windowMap->map;
 	}
 	else
 		map = context->ctx_map;
@@ -2824,7 +2893,7 @@ DsqlMapNode* PASS1_post_map(DsqlCompilerScratch* dsqlScratch, ValueExprNode* nod
 
 	while (map)
 	{
-		if (PASS1_node_match(node, map->map_node, false))
+		if (PASS1_node_match(dsqlScratch, node, map->map_node, false))
 			break;
 
 		++count;
@@ -2833,7 +2902,7 @@ DsqlMapNode* PASS1_post_map(DsqlCompilerScratch* dsqlScratch, ValueExprNode* nod
 
 	if (!map)
 	{
-		dsql_map** next = partitionMap ? &partitionMap->map : &context->ctx_map;
+		dsql_map** next = windowMap ? &windowMap->map : &context->ctx_map;
 
 		if (*next)
 		{
@@ -2844,10 +2913,10 @@ DsqlMapNode* PASS1_post_map(DsqlCompilerScratch* dsqlScratch, ValueExprNode* nod
 		map = *next = FB_NEW_POOL(*tdbb->getDefaultPool()) dsql_map;
 		map->map_position = count;
 		map->map_node = node;
-		map->map_partition = partitionMap;
+		map->map_window = windowMap;
 	}
 
-	MAKE_desc(dsqlScratch, &node->nodDesc, node);
+	DsqlDescMaker::fromNode(dsqlScratch, node);
 
 	return FB_NEW_POOL(*tdbb->getDefaultPool()) DsqlMapNode(*tdbb->getDefaultPool(), context, map);
 }
@@ -2865,47 +2934,52 @@ static void remap_streams_to_parent_context(ExprNode* input, dsql_ctx* parent_co
 	RseNode* rseNode;
 	UnionSourceNode* unionNode;
 
-	if ((listNode = input->as<RecSourceListNode>()))
+	if ((listNode = nodeAs<RecSourceListNode>(input)))
 	{
 		NestConst<RecordSourceNode>* ptr = listNode->items.begin();
 		for (const NestConst<RecordSourceNode>* const end = listNode->items.end(); ptr != end; ++ptr)
 			remap_streams_to_parent_context(*ptr, parent_context);
 	}
-	else if ((procNode = input->as<ProcedureSourceNode>()))
+	else if ((procNode = nodeAs<ProcedureSourceNode>(input)))
 	{
 		DEV_BLKCHK(procNode->dsqlContext, dsql_type_ctx);
 		procNode->dsqlContext->ctx_parent = parent_context;
 	}
-	else if ((relNode = input->as<RelationSourceNode>()))
+	else if ((relNode = nodeAs<RelationSourceNode>(input)))
 	{
 		DEV_BLKCHK(relNode->dsqlContext, dsql_type_ctx);
 		relNode->dsqlContext->ctx_parent = parent_context;
 	}
-	else if ((rseNode = input->as<RseNode>()))
+	else if ((rseNode = nodeAs<RseNode>(input)))
 		remap_streams_to_parent_context(rseNode->dsqlStreams, parent_context);
-	else if ((unionNode = input->as<UnionSourceNode>()))
+	else if ((unionNode = nodeAs<UnionSourceNode>(input)))
 		remap_streams_to_parent_context(unionNode->dsqlClauses, parent_context);
 	else
-		fb_assert(input->as<AggregateSourceNode>());
+		fb_assert(nodeAs<AggregateSourceNode>(input));
 }
 
 
 // Setup the datatype of a parameter.
 bool PASS1_set_parameter_type(DsqlCompilerScratch* dsqlScratch, ValueExprNode* inNode,
-	const dsc* desc, bool force_varchar)
+	std::function<void (dsc*)> makeDesc, bool forceVarchar)
 {
-	return inNode && inNode->setParameterType(dsqlScratch, desc, force_varchar);
+	return inNode && inNode->setParameterType(dsqlScratch, makeDesc, forceVarchar);
 }
 
 // Setup the datatype of a parameter.
 bool PASS1_set_parameter_type(DsqlCompilerScratch* dsqlScratch, ValueExprNode* inNode,
-	ValueExprNode* node, bool force_varchar)
+	NestConst<ValueExprNode> node, bool forceVarchar)
 {
 	if (!inNode)
 		return false;
 
-	MAKE_desc(dsqlScratch, &node->nodDesc, node);
-	return inNode->setParameterType(dsqlScratch, &node->nodDesc, force_varchar);
+	auto makeDesc = [&] (dsc* desc)
+		{
+			DsqlDescMaker::fromNode(dsqlScratch, node);
+			*desc = node->getDsqlDesc();
+		};
+
+	return inNode->setParameterType(dsqlScratch, makeDesc, forceVarchar);
 }
 
 
@@ -2929,31 +3003,42 @@ bool dsql_ctx::getImplicitJoinField(const MetaName& name, NestConst<ValueExprNod
 	return true;
 }
 
-// Returns (creating, if necessary) the PartitionMap of a given partition (that may be NULL).
-PartitionMap* dsql_ctx::getPartitionMap(DsqlCompilerScratch* dsqlScratch, ValueListNode* partitionNode,
-	ValueListNode* orderNode)
+// Returns (creating, if necessary) the WindowMap of a given partition (that may be NULL).
+WindowMap* dsql_ctx::getWindowMap(DsqlCompilerScratch* dsqlScratch, WindowClause* windowNode)
 {
 	thread_db* tdbb = JRD_get_thread_data();
+	MemoryPool& pool = *tdbb->getDefaultPool();
 
-	PartitionMap* partitionMap = NULL;
+	bool isNullWindow = windowNode == NULL;
+	WindowClause nullWindow(pool, NULL, NULL, NULL, NULL, WindowClause::Exclusion::NO_OTHERS);
 
-	for (Array<PartitionMap*>::iterator i = ctx_win_maps.begin();
-		 !partitionMap && i != ctx_win_maps.end();
+	if (isNullWindow)
+		windowNode = &nullWindow;
+
+	WindowMap* windowMap = NULL;
+
+	for (Array<WindowMap*>::iterator i = ctx_win_maps.begin();
+		 !windowMap && i != ctx_win_maps.end();
 		 ++i)
 	{
-		if (PASS1_node_match((*i)->partition, partitionNode, false) &&
-			PASS1_node_match((*i)->order, orderNode, false))
+		if (PASS1_node_match(dsqlScratch, (*i)->window, windowNode, false))
 		{
-			partitionMap = *i;
+			windowMap = *i;
 		}
 	}
 
-	if (!partitionMap)
+	if (!windowMap)
 	{
-		partitionMap = FB_NEW_POOL(*tdbb->getDefaultPool()) PartitionMap(partitionNode, orderNode);
-		ctx_win_maps.add(partitionMap);
-		partitionMap->context = dsqlScratch->contextNumber++;
+		if (isNullWindow)
+		{
+			windowNode = FB_NEW_POOL(pool) WindowClause(pool, NULL, NULL, NULL, NULL,
+				WindowClause::Exclusion::NO_OTHERS);
+		}
+
+		windowMap = FB_NEW_POOL(*tdbb->getDefaultPool()) WindowMap(windowNode);
+		ctx_win_maps.add(windowMap);
+		windowMap->context = dsqlScratch->contextNumber++;
 	}
 
-	return partitionMap;
+	return windowMap;
 }

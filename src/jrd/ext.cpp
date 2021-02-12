@@ -72,6 +72,9 @@ __int64 __cdecl _ftelli64(FILE*);
 #ifdef WIN_NT
 #define FTELL64 _ftelli64
 #define FSEEK64 _fseeki64
+#elif defined(LSB_BUILD)
+#define FTELL64 ftello64
+#define FSEEK64 fseeko64
 #else
 #define FTELL64 ftello
 #define FSEEK64 fseeko
@@ -106,7 +109,7 @@ namespace Jrd
 		}
 
 	private:
-		RefPtr<Config> config;
+		RefPtr<const Config> config;
 	};
 }
 
@@ -186,8 +189,8 @@ double EXT_cardinality(thread_db* tdbb, jrd_rel* relation)
 		struct __stat64 statistics;
 		if (!_fstat64(_fileno(file->ext_ifi), &statistics))
 #else
-		struct stat statistics;
-		if (!fstat(fileno(file->ext_ifi), &statistics))
+		struct STAT statistics;
+		if (!os_utils::fstat(fileno(file->ext_ifi), &statistics))
 #endif
 		{
 			file_size = statistics.st_size;
@@ -343,7 +346,7 @@ void EXT_fini(jrd_rel* relation, bool close_only)
 }
 
 
-bool EXT_get(thread_db* /*tdbb*/, record_param* rpb, FB_UINT64& position)
+bool EXT_get(thread_db* tdbb, record_param* rpb, FB_UINT64& position)
 {
 /**************************************
  *
@@ -429,14 +432,14 @@ bool EXT_get(thread_db* /*tdbb*/, record_param* rpb, FB_UINT64& position)
 		if (!desc_ptr->dsc_length || !field)
 			continue;
 
-		const LiteralNode* literal = ExprNode::as<LiteralNode>(field->fld_missing_value);
+		const LiteralNode* literal = nodeAs<LiteralNode>(field->fld_missing_value);
 
 		if (literal)
 		{
 			desc = *desc_ptr;
 			desc.dsc_address = record->getData() + (IPTR) desc.dsc_address;
 
-			if (!MOV_compare(&literal->litDesc, &desc))
+			if (!MOV_compare(tdbb, &literal->litDesc, &desc))
 				continue;
 		}
 
@@ -531,7 +534,7 @@ void EXT_store(thread_db* tdbb, record_param* rpb)
 		if (field && !field->fld_computation && desc_ptr->dsc_length && record->isNull(i))
 		{
 			UCHAR* p = record->getData() + (IPTR) desc_ptr->dsc_address;
-			LiteralNode* literal = ExprNode::as<LiteralNode>(field->fld_missing_value);
+			LiteralNode* literal = nodeAs<LiteralNode>(field->fld_missing_value);
 
 			if (literal)
 			{

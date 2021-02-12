@@ -29,6 +29,8 @@
 namespace
 {
 
+IMaster* master = NULL;
+
 class PluginModule : public IPluginModuleImpl<PluginModule, CheckStatusWrapper>
 {
 public:
@@ -56,6 +58,8 @@ public:
 		pluginManager = NULL;
 	}
 
+	void threadDetach() {}
+
 private:
 	IPluginManager* pluginManager;
 };
@@ -64,7 +68,8 @@ class CryptKeyHolder : public IKeyHolderPluginImpl<CryptKeyHolder, CheckStatusWr
 {
 public:
 	explicit CryptKeyHolder(IPluginConfig* cnf) throw()
-		: callbackInterface(this), named(NULL), config(cnf), key(0), owner(NULL)
+		: callbackInterface(this), named(NULL), tempStatus(master->getStatus()),
+		  config(cnf), key(0), owner(NULL)
 	{
 		config->addRef();
 	}
@@ -72,11 +77,13 @@ public:
 	~CryptKeyHolder()
 	{
 		config->release();
+		tempStatus.dispose();
 	}
 
 	// IKeyHolderPlugin implementation
 	int keyCallback(CheckStatusWrapper* status, ICryptKeyCallback* callback);
 	ICryptKeyCallback* keyHandle(CheckStatusWrapper* status, const char* keyName);
+	ICryptKeyCallback* chainHandle(CheckStatusWrapper* status);
 
 	int release()
 	{
@@ -105,7 +112,21 @@ public:
 
 	ISC_UCHAR getKey()
 	{
+		if (!key)
+			keyCallback(&tempStatus, NULL);
+
 		return key;
+	}
+
+	FB_BOOLEAN useOnlyOwnKeys(CheckStatusWrapper* status)
+	{
+		IConfigEntry* e = getEntry(status, "OnlyOwnKey");
+		if (!e)
+			return FB_TRUE;	// safe default
+
+		FB_BOOLEAN rc = e->getBoolValue();
+		e->release();
+		return rc;
 	}
 
 private:
@@ -163,6 +184,7 @@ private:
 
 	CallbackInterface callbackInterface;
 	NamedCallback *named;
+	CheckStatusWrapper tempStatus;
 
 	IPluginConfig* config;
 	ISC_UCHAR key;
@@ -189,8 +211,6 @@ IConfigEntry* CryptKeyHolder::getEntry(CheckStatusWrapper* status, const char* e
 
 int CryptKeyHolder::keyCallback(CheckStatusWrapper* status, ICryptKeyCallback* callback)
 {
-	status->init();
-
 	if (key != 0)
 		return 1;
 
@@ -200,9 +220,18 @@ int CryptKeyHolder::keyCallback(CheckStatusWrapper* status, ICryptKeyCallback* c
 	{
 		FB_BOOLEAN b = confEntry->getBoolValue();
 		confEntry->release();
+
 		if (b)
 		{
-			key = 0x5a;
+			confEntry = getEntry(status, "Key");
+			if (confEntry)
+			{
+				key = confEntry->getIntValue();
+				confEntry->release();
+			}
+			else
+				key = 0x5a;
+
 			return 1;
 		}
 	}
@@ -247,6 +276,12 @@ ICryptKeyCallback* CryptKeyHolder::keyHandle(CheckStatusWrapper* status, const c
 	return NULL;
 }
 
+ICryptKeyCallback* CryptKeyHolder::chainHandle(CheckStatusWrapper* status)
+{
+	return &callbackInterface;
+}
+
+
 class Factory : public IPluginFactoryImpl<Factory, CheckStatusWrapper>
 {
 public:
@@ -263,12 +298,13 @@ Factory factory;
 
 } // anonymous namespace
 
-extern "C" void FB_DLL_EXPORT FB_PLUGIN_ENTRY_POINT(IMaster* master)
+extern "C" void FB_DLL_EXPORT FB_PLUGIN_ENTRY_POINT(IMaster* m)
 {
+	master = m;
 	IPluginManager* pluginManager = master->getPluginManager();
 
 	module.registerMe(pluginManager);
-	pluginManager->registerPluginFactory(IPluginManager::TYPE_KEY_HOLDER, "CryptKeyHolder_example",
+	pluginManager->registerPluginFactory(IPluginManager::TYPE_KEY_HOLDER, "fbSampleKeyHolder",
 		&factory);
 }
 

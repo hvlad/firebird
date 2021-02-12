@@ -32,11 +32,7 @@
 #include "firebird.h"
 #include "../../jrd/ntrace.h"
 #include "TracePluginConfig.h"
-#include "TraceUnicodeUtils.h"
-#include "../../jrd/intl_classes.h"
-#include "../../jrd/evl_string.h"
-#include "../../common/TextType.h"
-#include "../../jrd/SimilarToMatcher.h"
+#include "../../common/SimilarToRegex.h"
 #include "../../common/classes/rwlock.h"
 #include "../../common/classes/GenericMap.h"
 #include "../../common/classes/locks.h"
@@ -168,16 +164,21 @@ private:
 	// Lock for log rotation
 	Firebird::RWLock renameLock;
 
-	UnicodeCollationHolder unicodeCollation;
-	Firebird::AutoPtr<Firebird::SimilarToMatcher<UCHAR, Jrd::UpcaseConverter<> > >
-		include_matcher, exclude_matcher;
+	Firebird::AutoPtr<Firebird::SimilarToRegex> include_matcher, exclude_matcher;
 
-	void appendGlobalCounts(const PerformanceInfo* info);
-	void appendTableCounts(const PerformanceInfo* info);
+	// Filters for gds error codes
+	typedef Firebird::SortedArray<ISC_STATUS> GdsCodesArray;
+	GdsCodesArray include_codes;
+	GdsCodesArray exclude_codes;
+
+	void appendGlobalCounts(const Firebird::PerformanceInfo* info);
+	void appendTableCounts(const Firebird::PerformanceInfo* info);
 	void appendParams(Firebird::ITraceParams* params);
 	void appendServiceQueryParams(size_t send_item_length, const ntrace_byte_t* send_items,
 								  size_t recv_item_length, const ntrace_byte_t* recv_items);
 	void formatStringArgument(Firebird::string& result, const UCHAR* str, size_t len);
+	bool filterStatus(const ISC_STATUS* status, GdsCodesArray& arr);
+	void str2Array(const Firebird::string& str, GdsCodesArray& arr);
 
 	// register various objects
 	void register_connection(Firebird::ITraceDatabaseConnection* connection);
@@ -270,7 +271,6 @@ private:
 
 public:
 	// TracePlugin implementation
-	int release();
 	const char* trace_get_error();
 
 	// Create/close attachment

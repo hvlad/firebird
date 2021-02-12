@@ -60,7 +60,6 @@ namespace Why
 			Firebird::ITransaction* transaction);
 		Dtc* getDtc();
 		Firebird::IMetadataBuilder* getMetadataBuilder(Firebird::CheckStatusWrapper* status, unsigned fieldCount);
-		//Firebird::IDebug* getDebug();
 		int serverMode(int mode);
 		Firebird::IUtil* getUtilInterface();
 		Firebird::IConfigManager* getConfigManager();

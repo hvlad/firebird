@@ -31,8 +31,8 @@
 
 #include "../include/fb_blk.h"
 #include "../common/classes/array.h"
-#include "../common/classes/MetaName.h"
-#include "../common/classes/QualifiedName.h"
+#include "../jrd/MetaName.h"
+#include "../jrd/QualifiedName.h"
 
 #include "../jrd/RecordNumber.h"
 #include "../common/dsc.h"
@@ -49,7 +49,6 @@ public:
 	UCHAR str_data[2];			// one byte for ALLOC and one for the NULL
 };
 
-const UCHAR DEFAULT_DOUBLE  = dtype_double;
 const ULONG MAX_RECORD_SIZE	= 65535;
 
 namespace Jrd {
@@ -82,8 +81,13 @@ struct impure_value
 		SLONG vlu_dbkey[2];
 		float vlu_float;
 		double vlu_double;
+		Firebird::Decimal64 vlu_dec64;
+		Firebird::Decimal128 vlu_dec128;
+		Firebird::Int128 vlu_int128;
 		GDS_TIMESTAMP vlu_timestamp;
+		ISC_TIMESTAMP_TZ vlu_timestamp_tz;
 		GDS_TIME vlu_sql_time;
+		ISC_TIME_TZ vlu_sql_time_tz;
 		GDS_DATE vlu_sql_date;
 		bid vlu_bid;
 
@@ -94,6 +98,8 @@ struct impure_value
 	void make_long(const SLONG val, const signed char scale = 0);
 	void make_int64(const SINT64 val, const signed char scale = 0);
 	void make_double(const double val);
+	void make_decimal128(const Firebird::Decimal128 val);
+	void make_decimal_fixed(const Firebird::Int128 val, const signed char scale);
 };
 
 // Do not use these methods where dsc_sub_type is not explicitly set to zero.
@@ -125,6 +131,26 @@ inline void impure_value::make_double(const double val)
 	this->vlu_desc.dsc_scale = 0;
 	this->vlu_desc.dsc_sub_type = 0;
 	this->vlu_desc.dsc_address = reinterpret_cast<UCHAR*>(&this->vlu_misc.vlu_double);
+}
+
+inline void impure_value::make_decimal128(const Firebird::Decimal128 val)
+{
+	this->vlu_misc.vlu_dec128 = val;
+	this->vlu_desc.dsc_dtype = dtype_dec128;
+	this->vlu_desc.dsc_length = sizeof(Firebird::Decimal128);
+	this->vlu_desc.dsc_scale = 0;
+	this->vlu_desc.dsc_sub_type = 0;
+	this->vlu_desc.dsc_address = reinterpret_cast<UCHAR*>(&this->vlu_misc.vlu_dec128);
+}
+
+inline void impure_value::make_decimal_fixed(const Firebird::Int128 val, const signed char scale)
+{
+	this->vlu_misc.vlu_int128 = val;
+	this->vlu_desc.dsc_dtype = dtype_int128;
+	this->vlu_desc.dsc_length = sizeof(Firebird::Int128);
+	this->vlu_desc.dsc_scale = scale;
+	this->vlu_desc.dsc_sub_type = 0;
+	this->vlu_desc.dsc_address = reinterpret_cast<UCHAR*>(&this->vlu_misc.vlu_int128);
 }
 
 struct impure_value_ex : public impure_value

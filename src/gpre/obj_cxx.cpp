@@ -33,7 +33,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdarg.h>
-#include "../jrd/ibase.h"
+#include "ibase.h"
 #include "../gpre/gpre.h"
 #include "../gpre/pat.h"
 #include "../gpre/msc_proto.h"
@@ -138,11 +138,7 @@ static const char* const NULL_STRING	= "NULL";
 static const char* const NULL_STATUS	= "NULL";
 static const char* const NULL_SQLDA		= "NULL";
 
-#ifdef DARWIN
-static const char* const GDS_INCLUDE	= "<Firebird/ibase.h>";
-#else
 static const char* const GDS_INCLUDE	= "<ibase.h>";
-#endif
 
 static const char* const DCL_LONG	= "ISC_LONG";
 static const char* const DCL_QUAD	= "ISC_QUAD";
@@ -1075,10 +1071,9 @@ static void gen_blob_open( const act* action, USHORT column)
 		endp(column);
 		if (gpreGlob.sw_auto)
 			column -= INDENT;
-		set_sqlcode(action, column);
 		if (action->act_type == ACT_blob_create)
 		{
-			printa(column, "if (!SQLCODE)");
+			printa(column, "if (!(%s->getErrors() & Firebird::IStatus::STATE_ERRORS))", global_status_name);
 			align(column + INDENT);
 			fprintf(gpreGlob.out_file, "%s = %s;", reference->ref_value, s);
 		}
@@ -2235,6 +2230,8 @@ static void gen_finish( const act* action, int column)
 		db = ready->rdy_database;
 		printa(column, "%s->detach(%s);",
 			   db->dbb_name->sym_string, status_vector(action));
+		success(column, true, status_vector(action));
+		printa(column + INDENT, "%s = 0;", db->dbb_name->sym_string);
 	}
 	// no hanbdles, so we finish all known databases
 
@@ -2250,6 +2247,8 @@ static void gen_finish( const act* action, int column)
 				printa(column, "if (%s)", db->dbb_name->sym_string);
 			printa(column + INDENT, "%s->detach(%s);",
 				   db->dbb_name->sym_string, status_vector(action));
+			success(column, true, status_vector(action));
+			printa(column + INDENT, "%s = 0;", db->dbb_name->sym_string);
 		}
 	}
 
@@ -3357,8 +3356,6 @@ static void gen_t_start( const act* action, int column)
 
 		printa(column, "}\t\t// end fbComponents scope\n");
 	}
-
-	set_sqlcode(action, column);
 }
 
 
@@ -3435,9 +3432,10 @@ static void gen_trans( const act* action, int column)
 			   (action->act_type == ACT_commit) ?
 			   		"commit" : (action->act_type == ACT_rollback) ? "rollback" : "prepare",
 				status_vector(action));
+		success(column, true, status_vector(action));
+		printa(column + INDENT, "%s = 0;", tranText);
+		break;
 	}
-
-	set_sqlcode(action, column);
 }
 
 

@@ -52,7 +52,6 @@
 #include "../common/sdl.h"
 #include "../jrd/intl.h"
 #include "../jrd/cch.h"
-#include "../dsql/ExprNodes.h"
 #include "../common/gdsassert.h"
 #include "../jrd/blb_proto.h"
 #include "../jrd/blf_proto.h"
@@ -67,6 +66,7 @@
 #include "../jrd/met_proto.h"
 #include "../jrd/mov_proto.h"
 #include "../jrd/pag_proto.h"
+#include "../jrd/scl_proto.h"
 #include "../common/sdl_proto.h"
 #include "../common/dsc_proto.h"
 #include "../common/classes/array.h"
@@ -87,7 +87,7 @@ static ArrayField* find_array(jrd_tra*, const bid*);
 static BlobFilter* find_filter(thread_db*, SSHORT, SSHORT);
 //static blob_page* get_next_page(thread_db*, blb*, WIN *);
 //static void insert_page(thread_db*, blb*);
-static void move_from_string(Jrd::thread_db*, const dsc*, dsc*, const ValueExprNode*);
+static void move_from_string(Jrd::thread_db*, const dsc*, dsc*, const record_param* rpb, USHORT fieldId);
 static void move_to_string(Jrd::thread_db*, dsc*, dsc*);
 static void slice_callback(array_slice*, ULONG, dsc*);
 static blb* store_array(thread_db*, jrd_tra*, bid*);
@@ -171,7 +171,7 @@ void blb::BLB_check_well_formed(Jrd::thread_db* tdbb, const dsc* desc)
 }
 
 
-void blb::BLB_close(thread_db* tdbb)
+bool blb::BLB_close(thread_db* tdbb)
 {
 /**************************************
  *
@@ -183,6 +183,7 @@ void blb::BLB_close(thread_db* tdbb)
  *      Close a blob.  If the blob is open for retrieval, release the
  *      blob block.  If it's a temporary blob, flush out the last page
  *      (if necessary) in preparation for materialization.
+ *      Return true if the blob was physically destroyed.
  *
  **************************************/
 
@@ -198,7 +199,7 @@ void blb::BLB_close(thread_db* tdbb)
 	if (!(blb_flags & BLB_temporary))
 	{
 		destroy(true);
-		return;
+		return true;
 	}
 
 	if (blb_level == 0)
@@ -222,6 +223,7 @@ void blb::BLB_close(thread_db* tdbb)
 	}
 
 	freeBuffer();
+	return false;
 }
 
 
@@ -623,8 +625,10 @@ USHORT blb::BLB_get_segment(thread_db* tdbb, void* segment, USHORT buffer_length
 	SET_TDBB(tdbb);
 	Database* dbb = tdbb->getDatabase();
 
-	if (--tdbb->tdbb_quantum < 0)
-		JRD_reschedule(tdbb, 0, true);
+	if (blb_flags & BLB_temporary)
+		ERR_post(Arg::Gds(isc_cannot_read_new_blob));
+
+	JRD_reschedule(tdbb);
 
 	// If we reached end of file, we're still there
 
@@ -945,7 +949,7 @@ SLONG blb::BLB_lseek(USHORT mode, SLONG offset)
 // which in turn calls blb::create2 that writes in the blob id. Although the
 // compiler allows to modify from_desc->dsc_address' contents when from_desc is
 // constant, this is misleading so I didn't make the source descriptor constant.
-void blb::move(thread_db* tdbb, dsc* from_desc, dsc* to_desc, const ValueExprNode* field)
+void blb::move(thread_db* tdbb, dsc* from_desc, dsc* to_desc, const record_param* rpb, USHORT fieldId)
 {
 /**************************************
  *
@@ -976,7 +980,7 @@ void blb::move(thread_db* tdbb, dsc* from_desc, dsc* to_desc, const ValueExprNod
 		if (!DTYPE_IS_BLOB_OR_QUAD(from_desc->dsc_dtype))
 		{
 			// anything that can be copied into a string can be copied into a blob
-			move_from_string(tdbb, from_desc, to_desc, field);
+			move_from_string(tdbb, from_desc, to_desc, rpb, fieldId);
 			return;
 		}
 	}
@@ -988,23 +992,11 @@ void blb::move(thread_db* tdbb, dsc* from_desc, dsc* to_desc, const ValueExprNod
 	else
 		fb_assert(false);
 
-	bool simpleMove = true;
-
 	// If the target node is a field, we need more work to do.
 
-	const FieldNode* fieldNode = NULL;
-
-	if (field)
-	{
-		if ((fieldNode = ExprNode::as<FieldNode>(field)))
-		{
-			// We should not materialize the blob if the destination field
-			// stream (nod_union, for example) doesn't have a relation.
-			simpleMove = tdbb->getRequest()->req_rpb[fieldNode->fieldStream].rpb_relation == NULL;
-		}
-		else if (!(ExprNode::is<ParameterNode>(field) || ExprNode::is<VariableNode>(field)))
-			BUGCHECK(199);	// msg 199 expected field node
-	}
+	// We should not materialize the blob if the destination field
+	// stream (nod_union, for example) doesn't have a relation.
+	const bool simpleMove = !rpb || (rpb->rpb_relation == NULL);
 
 	// Use local copy of source blob id to not change contents of from_desc in
 	// a case when it points to materialized temporary blob (see below for
@@ -1060,8 +1052,6 @@ void blb::move(thread_db* tdbb, dsc* from_desc, dsc* to_desc, const ValueExprNod
 	}
 
 	jrd_req* request = tdbb->getRequest();
-	const USHORT id = fieldNode->fieldId;
-	record_param* rpb = &request->req_rpb[fieldNode->fieldStream];
 	jrd_rel* relation = rpb->rpb_relation;
 
 	if (relation->isVirtual()) {
@@ -1076,12 +1066,12 @@ void blb::move(thread_db* tdbb, dsc* from_desc, dsc* to_desc, const ValueExprNod
 
 	if ((request->req_flags & req_null) || source->isEmpty())
 	{
-		record->setNull(id);
+		record->setNull(fieldId);
 		destination->clear();
 		return;
 	}
 
-	record->clearNull(id);
+	record->clearNull(fieldId);
 	jrd_tra* transaction = request->req_transaction;
 	transaction = transaction->getOuter();
 
@@ -1214,6 +1204,9 @@ void blb::move(thread_db* tdbb, dsc* from_desc, dsc* to_desc, const ValueExprNod
 	blob->blb_relation = relation;
 	blob->blb_sub_type = to_desc->getBlobSubType();
 	blob->blb_charset = to_desc->getCharSet();
+#ifdef CHECK_BLOB_FIELD_ACCESS_FOR_SELECT
+	blob->blb_fld_id = fieldId;
+#endif
 	destination->set_permanent(relation->rel_id, DPM_store_blob(tdbb, blob, record));
 	// This is the only place in the engine where blobs are materialized
 	// If new places appear code below should transform to common sub-routine
@@ -1408,6 +1401,14 @@ blb* blb::open2(thread_db* tdbb,
 		blob->blb_pg_space_id = blob->blb_relation->getPages(tdbb)->rel_pg_space_id;
 		DPM_get_blob(tdbb, blob, blobId.get_permanent_number(), false, 0);
 
+#ifdef CHECK_BLOB_FIELD_ACCESS_FOR_SELECT
+		if (!blob->blb_relation->isSystem() && blob->blb_fld_id < blob->blb_relation->rel_fields->count())
+		{
+			jrd_fld* fld = (*blob->blb_relation->rel_fields)[blob->blb_fld_id];
+			transaction->checkBlob(tdbb, &blobId, fld, true);
+		}
+#endif
+
 		// If the blob is known to be damaged, ignore it.
 
 		if (blob->blb_flags & BLB_damaged)
@@ -1542,7 +1543,7 @@ void blb::BLB_put_segment(thread_db* tdbb, const void* seg, USHORT segment_lengt
 	// Make sure blob is a temporary blob.  If not, complain bitterly.
 
 	if (!(blb_flags & BLB_temporary))
-		IBERROR(195);			// msg 195 cannot update old blob
+		ERR_post(Arg::Gds(isc_cannot_update_old_blob));
 
 	if (blb_filter)
 	{
@@ -2501,7 +2502,7 @@ void blb::insert_page(thread_db* tdbb)
 
 
 static void move_from_string(thread_db* tdbb, const dsc* from_desc, dsc* to_desc,
-	const ValueExprNode* field)
+	const record_param* rpb, USHORT fieldId)
 {
 /**************************************
  *
@@ -2537,7 +2538,9 @@ static void move_from_string(thread_db* tdbb, const dsc* from_desc, dsc* to_desc
 	transaction = transaction->getOuter();
 
 	UCharBuffer bpb;
-	BLB_gen_bpb_from_descs(from_desc, to_desc, bpb);
+
+	if (!(from_desc->isText() && from_desc->getCharSet() == CS_BINARY))
+		BLB_gen_bpb_from_descs(from_desc, to_desc, bpb);
 
 	bid temp_bid;
 	temp_bid.clear();
@@ -2555,7 +2558,7 @@ static void move_from_string(thread_db* tdbb, const dsc* from_desc, dsc* to_desc
 	blob->BLB_put_segment(tdbb, fromstr, length);
 	blob->BLB_close(tdbb);
 	ULONG blob_temp_id = blob->getTempId();
-	blb::move(tdbb, &blob_desc, to_desc, field);
+	blb::move(tdbb, &blob_desc, to_desc, rpb, fieldId);
 
 	// 14-June-2004. Nickolay Samofatov
 	// The code below saves a lot of memory when bunches of records are
@@ -2768,7 +2771,7 @@ static void slice_callback(array_slice* arg, ULONG /*count*/, DSC* descriptors)
 			DynamicVaryStr<1024> tmp_buffer;
 			const USHORT tmp_len = array_desc->dsc_length;
 			const char* p;
-			const USHORT len = MOV_make_string(slice_desc, INTL_TEXT_TYPE(*array_desc), &p,
+			const USHORT len = MOV_make_string(tdbb, slice_desc, INTL_TEXT_TYPE(*array_desc), &p,
 											   tmp_buffer.getBuffer(tmp_len), tmp_len);
 			memcpy(array_desc->dsc_address, &len, sizeof(USHORT));
 			memcpy(array_desc->dsc_address + sizeof(USHORT), p, (int) len);
@@ -2884,6 +2887,9 @@ void blb::fromPageHeader(const Ods::blh* header)
 	blb_level = header->blh_level;
 	blb_sub_type = header->blh_sub_type;
 	blb_charset = header->blh_charset;
+#ifdef CHECK_BLOB_FIELD_ACCESS_FOR_SELECT
+	blb_fld_id = header->blh_fld_id;
+#endif
 }
 
 void blb::toPageHeader(Ods::blh* header) const
@@ -2896,6 +2902,9 @@ void blb::toPageHeader(Ods::blh* header) const
 	header->blh_level = blb_level;
 	header->blh_sub_type = blb_sub_type;
 	header->blh_charset = blb_charset;
+#ifdef CHECK_BLOB_FIELD_ACCESS_FOR_SELECT
+	header->blh_fld_id = blb_fld_id;
+#endif
 }
 
 // Used by DPM_get_blob
@@ -2963,4 +2972,9 @@ void blb::storeToPage(USHORT* length, Firebird::Array<UCHAR>& buffer, const UCHA
 			}
 		}
 	}
+}
+
+void blb::BLB_cancel()
+{
+	BLB_cancel(JRD_get_thread_data());
 }

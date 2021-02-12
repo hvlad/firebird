@@ -41,7 +41,7 @@ FirstRowsStream::FirstRowsStream(CompilerScratch* csb, RecordSource* next, Value
 {
 	fb_assert(m_next && m_value);
 
-	m_impure = CMP_impure(csb, sizeof(Impure));
+	m_impure = csb->allocImpure<Impure>();
 }
 
 void FirstRowsStream::open(thread_db* tdbb) const
@@ -52,7 +52,7 @@ void FirstRowsStream::open(thread_db* tdbb) const
 	impure->irsb_flags = 0;
 
 	const dsc* desc = EVL_expr(tdbb, request, m_value);
-	const SINT64 value = (desc && !(request->req_flags & req_null)) ? MOV_get_int64(desc, 0) : 0;
+	const SINT64 value = (desc && !(request->req_flags & req_null)) ? MOV_get_int64(tdbb, desc, 0) : 0;
 
     if (value < 0)
 		status_exception::raise(Arg::Gds(isc_bad_limit_param));
@@ -83,8 +83,7 @@ void FirstRowsStream::close(thread_db* tdbb) const
 
 bool FirstRowsStream::getRecord(thread_db* tdbb) const
 {
-	if (--tdbb->tdbb_quantum < 0)
-		JRD_reschedule(tdbb, 0, true);
+	JRD_reschedule(tdbb);
 
 	jrd_req* const request = tdbb->getRequest();
 	Impure* const impure = request->getImpure<Impure>(m_impure);

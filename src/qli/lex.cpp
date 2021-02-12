@@ -31,7 +31,7 @@
 #include <stdlib.h>
 #include "../qli/dtr.h"
 #include "../qli/parse.h"
-#include "../jrd/ibase.h"
+#include "ibase.h"
 #include "../qli/all_proto.h"
 #include "../qli/err_proto.h"
 #include "../qli/hsh_proto.h"
@@ -41,6 +41,7 @@
 #include "../common/gdsassert.h"
 #include "../common/utils_proto.h"
 #include "../common/classes/TempFile.h"
+#include "../common/os/os_utils.h"
 
 using Firebird::TempFile;
 using MsgFormat::SafeArg;
@@ -49,10 +50,6 @@ using MsgFormat::SafeArg;
 #ifdef HAVE_UNISTD_H
 #include <unistd.h>
 #endif
-
-//#ifdef HAVE_CTYPES_H
-//#include <ctypes.h>
-//#endif
 
 #ifdef HAVE_IO_H
 #include <io.h> // isatty
@@ -168,7 +165,7 @@ void LEX_edit(SLONG start, SLONG stop)
  *
  **************************************/
 	const Firebird::PathName filename = TempFile::create(SCRATCH);
-	FILE* scratch = fopen(filename.c_str(), "w+b");
+	FILE* scratch = os_utils::fopen(filename.c_str(), "w+b");
 	if (!scratch)
 		IBERROR(61);			// Msg 61 couldn't open scratch file
 
@@ -517,7 +514,7 @@ void LEX_init()
  **************************************/
 	const Firebird::PathName filename = TempFile::create(SCRATCH);
 	strcpy(trace_file_name, filename.c_str());
-	trace_file = fopen(trace_file_name, "w+b");
+	trace_file = os_utils::fopen(trace_file_name, "w+b");
 #ifdef UNIX
 	unlink(trace_file_name);
 #endif
@@ -631,12 +628,12 @@ bool LEX_push_file(const TEXT* filename, const bool error_flag)
  *	if the error flag is set, otherwise return quietly.
  *
  **************************************/
-	FILE *file = fopen(filename, FOPEN_INPUT_TYPE);
+	FILE *file = os_utils::fopen(filename, FOPEN_INPUT_TYPE);
 	if (!file)
 	{
 	    TEXT buffer[64];
 		sprintf(buffer, "%s.com", filename);
-		if (!(file = fopen(buffer, FOPEN_INPUT_TYPE)))
+		if (!(file = os_utils::fopen(buffer, FOPEN_INPUT_TYPE)))
 		{
 			if (error_flag)
 				ERRQ_msg_put(67, filename);

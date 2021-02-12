@@ -689,7 +689,7 @@ void CHeaderGenerator::generate()
 			methods.insert(methods.begin(), p->methods.begin(), p->methods.end());
 
 		fprintf(out, "#define %s%s_VERSION %d\n\n",
-			prefix.c_str(), interface->name.c_str(), (int) methods.size());
+			prefix.c_str(), interface->name.c_str(), interface->version);
 
 		for (vector<Constant*>::iterator j = interface->constants.begin();
 			 j != interface->constants.end();
@@ -882,6 +882,8 @@ void PascalGenerator::generate()
 {
 	fprintf(out, "{ %s }\n\n", AUTOGEN_MSG);
 
+	fprintf(out, "{$IFDEF FPC}\n{$MODE DELPHI}\n{$OBJECTCHECKS OFF}\n{$ENDIF}\n\n");
+
 	fprintf(out, "unit %s;\n\n", unitName.c_str());
 	fprintf(out, "interface\n\n");
 	fprintf(out, "uses Classes");
@@ -1020,12 +1022,7 @@ void PascalGenerator::generate()
 		if (!interface->super)
 			fprintf(out, "\t\tvTable: %sVTable;\n\n", escapeName(interface->name).c_str());
 
-		unsigned version = 0;
-
-		for (Interface* p = interface; p; p = p->super)
-			version += p->methods.size();
-
-		fprintf(out, "\t\tconst VERSION = %d;\n", version);
+		fprintf(out, "\t\tconst VERSION = %d;\n", interface->version);
 
 		for (vector<Constant*>::iterator j = interface->constants.begin();
 			 j != interface->constants.end();
@@ -1308,7 +1305,7 @@ void PascalGenerator::generate()
 		fprintf(out, "\t%sImpl_vTable := %sVTable.create;\n",
 			escapeName(interface->name, true).c_str(), escapeName(interface->name).c_str());
 		fprintf(out, "\t%sImpl_vTable.version := %d;\n",
-			escapeName(interface->name, true).c_str(), (int) methods.size());
+			escapeName(interface->name, true).c_str(), interface->version);
 
 		for (deque<Method*>::iterator j = methods.begin(); j != methods.end(); ++j)
 		{
@@ -1411,6 +1408,7 @@ string PascalGenerator::escapeName(string name, bool interfaceName)
 	if (name == "file" ||
 		name == "function" ||
 		name == "procedure" ||
+		name == "record" ||
 		name == "set" ||
 		name == "to" ||
 		name == "type")

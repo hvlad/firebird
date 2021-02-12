@@ -38,5 +38,6 @@ processing_state	SHOW_metadata(const SCHAR* const*, SCHAR**);
 void	SHOW_read_owner();
 const Firebird::string SHOW_trigger_action(SINT64);
 processing_state	SHOW_maps(bool extract, const SCHAR* map_name);
+bool	SHOW_system_privileges(const char* role, const char* prfx, bool lf);
 
 #endif // ISQL_SHOW_PROTO_H

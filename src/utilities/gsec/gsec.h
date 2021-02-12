@@ -53,12 +53,6 @@ const unsigned int HELP_OPER	= 102;
 const unsigned int ADDMOD_OPER	= 103;
 const unsigned int OLD_DIS_OPER	= 104;
 
-const int USER_NAME_LEN	= 133;
-const int ALT_NAME_LEN	= 129;
-const int NAME_LEN		= 33;
-const int _SERVER_LEN	= 128;
-const int DATABASE_LEN  = _SERVER_LEN + MAXPATHLEN;
-
 } // namespace Auth
 
 namespace Firebird

@@ -31,6 +31,7 @@
 namespace Jrd {
 	class dsql_ctx;
 	class dsql_fld;
+	class TypeClause;
 	class dsql_msg;
 	class dsql_par;
 	class dsql_req;
@@ -46,24 +47,46 @@ namespace Jrd {
 // Parameters to MAKE_constant
 	enum dsql_constant_type {
 		CONSTANT_DOUBLE = 1,	// stored as a string
+		CONSTANT_DECIMAL,		// stored as a string
+		CONSTANT_NUM128,		// stored as a string
 		CONSTANT_DATE,			// stored as a SLONG
 		CONSTANT_TIME,			// stored as a ULONG
 		CONSTANT_TIMESTAMP,		// stored as a QUAD
 		CONSTANT_BOOLEAN,		// stored as a UCHAR
+	};
+
+	class DsqlDescMaker
+	{
+	public:
+		static void fromElement(dsc*, const TypeClause*);
+		static void fromField(dsc*, const TypeClause*);
+		static void fromList(DsqlCompilerScratch*, dsc*,
+			ValueListNode*, const char*, bool = false);
+		static void fromNode(DsqlCompilerScratch*, dsc*,
+			ValueExprNode*, bool = false);
+		static void fromNode(DsqlCompilerScratch*, ValueExprNode*);
+
+	private:
+		static void composeDesc(dsc* desc,
+								USHORT dtype,
+								SSHORT scale,
+								SSHORT subType,
+								FLD_LENGTH length,
+								const SSHORT charsetId,
+								SSHORT collationId,
+								bool nullable);
 	};
 }
 
 
 Jrd::LiteralNode* MAKE_const_slong(SLONG);
 Jrd::LiteralNode* MAKE_const_sint64(SINT64 value, SCHAR scale);
-Jrd::ValueExprNode* MAKE_constant(const char*, Jrd::dsql_constant_type);
+Jrd::ValueExprNode* MAKE_constant(const char*, Jrd::dsql_constant_type, SSHORT = 0);
 Jrd::LiteralNode* MAKE_str_constant(const Jrd::IntlString*, SSHORT);
-void MAKE_desc(Jrd::DsqlCompilerScratch*, dsc*, Jrd::ValueExprNode*);
-void MAKE_desc_from_field(dsc*, const Jrd::dsql_fld*);
-void MAKE_desc_from_list(Jrd::DsqlCompilerScratch*, dsc*, Jrd::ValueListNode*, const TEXT*);
 Jrd::FieldNode* MAKE_field(Jrd::dsql_ctx*, Jrd::dsql_fld*, Jrd::ValueListNode*);
 Jrd::FieldNode* MAKE_field_name(const char*);
 Jrd::dsql_par* MAKE_parameter(Jrd::dsql_msg*, bool, bool, USHORT, const Jrd::ValueExprNode*);
 void MAKE_parameter_names(Jrd::dsql_par*, const Jrd::ValueExprNode*);
+Jrd::LiteralNode* MAKE_system_privilege(const char*);
 
 #endif // DSQL_MAKE_PROTO_H

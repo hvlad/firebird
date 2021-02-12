@@ -32,11 +32,12 @@
 #include "fb_exception.h"
 #include "firebird/Interface.h"
 #include "../common/SimpleStatusVector.h"
+#include "../common/classes/fb_string.h"
 
 namespace Firebird {
 
 class AbstractString;
-class MetaName;
+class MetaString;
 class Exception;
 
 namespace Arg {
@@ -73,12 +74,13 @@ protected:
 		virtual void assign(const Exception& ex) throw() { }
 		virtual ISC_STATUS copyTo(ISC_STATUS*) const throw() { return 0; }
 		virtual void copyTo(IStatus*) const throw() { }
+		virtual void appendTo(IStatus*) const throw() { }
 
 		virtual void shiftLeft(const Base&) throw() { }
 		virtual void shiftLeft(const Warning&) throw() { }
 		virtual void shiftLeft(const char*) throw() { }
 		virtual void shiftLeft(const AbstractString&) throw() { }
-		virtual void shiftLeft(const MetaName&) throw() { }
+		virtual void shiftLeft(const MetaString&) throw() { }
 
 		virtual bool compare(const StatusVector& /*v*/) const throw() { return false; }
 
@@ -86,7 +88,7 @@ protected:
 		virtual ~ImplBase() { }
 	};
 
-	Base(ISC_STATUS k, ISC_STATUS c) throw(Firebird::BadAlloc);
+	Base(ISC_STATUS k, ISC_STATUS c);
 	explicit Base(ImplBase* i) throw() : implementation(i) { }
 	~Base() throw() { delete implementation; }
 
@@ -106,10 +108,17 @@ protected:
 		StaticStatusVector m_status_vector;
 		unsigned int m_warning;
 
+		string m_strings;
+
+		void putStrArg(unsigned startWith);
+		void setStrPointers(const char* oldBase);
+
 		bool appendErrors(const ImplBase* const v) throw();
 		bool appendWarnings(const ImplBase* const v) throw();
 		bool append(const ISC_STATUS* const from, const unsigned int count) throw();
 		void append(const ISC_STATUS* const from) throw();
+
+		ImplStatusVector& operator=(const ImplStatusVector& src);
 
 	public:
 		virtual const ISC_STATUS* value() const throw() { return m_status_vector.begin(); }
@@ -123,16 +132,18 @@ protected:
 		virtual void assign(const Exception& ex) throw();
 		virtual ISC_STATUS copyTo(ISC_STATUS* dest) const throw();
 		virtual void copyTo(IStatus* dest) const throw();
+		virtual void appendTo(IStatus* dest) const throw();
 		virtual void shiftLeft(const Base& arg) throw();
 		virtual void shiftLeft(const Warning& arg) throw();
 		virtual void shiftLeft(const char* text) throw();
 		virtual void shiftLeft(const AbstractString& text) throw();
-		virtual void shiftLeft(const MetaName& text) throw();
+		virtual void shiftLeft(const MetaString& text) throw();
 		virtual bool compare(const StatusVector& v) const throw();
 
 		ImplStatusVector(ISC_STATUS k, ISC_STATUS c) throw()
 			: ImplBase(k, c),
-			  m_status_vector(*getDefaultMemoryPool())
+			  m_status_vector(*getDefaultMemoryPool()),
+			  m_strings(*getDefaultMemoryPool())
 		{
 			clear();
 		}
@@ -142,13 +153,13 @@ protected:
 		explicit ImplStatusVector(const Exception& ex) throw();
 	};
 
-	StatusVector(ISC_STATUS k, ISC_STATUS v) throw(Firebird::BadAlloc);
+	StatusVector(ISC_STATUS k, ISC_STATUS v);
 
 public:
-	explicit StatusVector(const ISC_STATUS* s) throw(Firebird::BadAlloc);
-	explicit StatusVector(const IStatus* s) throw(Firebird::BadAlloc);
-	explicit StatusVector(const Exception& ex) throw(Firebird::BadAlloc);
-	StatusVector() throw(Firebird::BadAlloc);
+	explicit StatusVector(const ISC_STATUS* s);
+	explicit StatusVector(const IStatus* s);
+	explicit StatusVector(const Exception& ex);
+	StatusVector();
 	~StatusVector() { }
 
 	const ISC_STATUS* value() const throw() { return implementation->value(); }
@@ -164,6 +175,7 @@ public:
 	void raise() const;
 	ISC_STATUS copyTo(ISC_STATUS* dest) const throw() { return implementation->copyTo(dest); }
 	void copyTo(IStatus* dest) const throw() { implementation->copyTo(dest); }
+	void appendTo(IStatus* dest) const throw() { implementation->appendTo(dest); }
 
 	// generic argument insert
 	StatusVector& operator<<(const Base& arg) throw()
@@ -199,7 +211,7 @@ public:
 		return *this;
 	}
 
-	StatusVector& operator<<(const MetaName& text) throw()
+	StatusVector& operator<<(const MetaString& text) throw()
 	{
 		implementation->shiftLeft(text);
 		return *this;
@@ -236,13 +248,35 @@ class Str : public Base
 public:
 	explicit Str(const char* text) throw();
 	explicit Str(const AbstractString& text) throw();
-	explicit Str(const MetaName& text) throw();
+	explicit Str(const MetaString& text) throw();
 };
 
 class Num : public Base
 {
 public:
 	explicit Num(ISC_STATUS s) throw();
+};
+
+// On 32-bit architecture ISC_STATUS can't fit 64-bit integer therefore
+// convert such a numbers into text and put string into status-vector.
+// Make sure that temporary instance of this class is not going out of scope
+// before exception is raised !
+class Int64 : public Str
+{
+public:
+	explicit Int64(SINT64 val) throw();
+	explicit Int64(FB_UINT64 val) throw();
+private:
+	char text[24];
+};
+
+class Quad : public Str
+{
+public:
+	explicit Quad(const ISC_QUAD* quad) throw();
+private:
+	//		high  :  low  \0
+	char text[8 + 1 + 8 + 1];
 };
 
 class Interpreted : public StatusVector

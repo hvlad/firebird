@@ -49,6 +49,7 @@ int errno = -1;
 #include <time.h>
 
 #include "../common/os/divorce.h"
+#include "../common/os/os_utils.h"
 #include "../common/isc_proto.h"
 #include "../yvalve/gds_proto.h"
 #include "../common/file_params.h"
@@ -166,7 +167,13 @@ int CLIB_ROUTINE main( int argc, char **argv)
 	if (daemon && fork()) {
 		exit(0);
 	}
-	divorce_terminal(0);
+
+	// Keep stdout and stderr opened and let server emit output
+	// or redirect stdout/stderr to /dev/null or file by user choice
+	// If we want to daemonize - close all fds and let child to reopen it.
+	int mask = 0; // FD_ZERO(&mask);
+	mask |= daemon ? 0 : (1 << 1 | 1 << 2); // FD_SET(1, &mask); FD_SET(2, &mask);
+	divorce_terminal(mask);
 
 	time_t timer = 0;
 
@@ -200,7 +207,7 @@ int CLIB_ROUTINE main( int argc, char **argv)
 
 		if (pidfilename)
 		{
-			FILE *pf = fopen(pidfilename, "w");
+			FILE *pf = os_utils::fopen(pidfilename, "w");
 			if (pf)
 			{
 				fprintf(pf, "%d", child_pid);

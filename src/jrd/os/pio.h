@@ -75,7 +75,6 @@ public:
 	USHORT fil_sequence;		// Sequence number of file
 	USHORT fil_fudge;			// Fudge factor for page relocation
 	int fil_desc;
-	//int *fil_trace;			// Trace file, if any
 	Firebird::Mutex fil_mutex;
 	USHORT fil_flags;
 	SCHAR fil_string[1];		// Expanded file name
@@ -114,7 +113,8 @@ const USHORT FIL_no_fs_cache		= 2;	// not using file system cache
 const USHORT FIL_readonly			= 4;	// file opened in readonly mode
 const USHORT FIL_sh_write			= 8;	// file opened in shared write mode
 const USHORT FIL_no_fast_extend		= 16;	// file not supports fast extending
-const USHORT FIL_aio_init			= 32;	// AIO stuff initialized after (re)open
+const USHORT FIL_raw_device			= 32;	// file is raw device
+const USHORT FIL_aio_init			= 64;	// AIO stuff initialized after (re)open
 
 class BufferDesc;
 class Database;

@@ -45,6 +45,10 @@ void	ISQL_get_character_sets(SSHORT, SSHORT, bool, bool, bool, TEXT*);
 SSHORT	ISQL_get_default_char_set_id();
 void	ISQL_get_default_source(const TEXT*, TEXT*, ISC_QUAD*);
 SSHORT	ISQL_get_field_length(const TEXT*);
+SSHORT	ISQL_get_char_length(
+	SSHORT fieldLength,
+	SSHORT characterLengthNull, SSHORT characterLength,
+	SSHORT characterSetIdNull, SSHORT characterSetId);
 SLONG	ISQL_get_index_segments(TEXT*, const size_t, const TEXT*, bool);
 bool	ISQL_get_null_flag(const TEXT*, TEXT*);
 void	ISQL_get_version(bool);
@@ -53,7 +57,8 @@ SSHORT	ISQL_init(FILE*, FILE*);
 bool	ISQL_is_domain(const TEXT*);
 #endif
 int		ISQL_main(int, char**);
-bool	ISQL_printNumericType(const char* fieldName, const int fieldType, const int fieldScale);
+bool	ISQL_printNumericType(const char* fieldName, const int fieldType, const int fieldSubType,
+	const int fieldPrecision, const int fieldScale);
 void	ISQL_print_validation(FILE*, ISC_QUAD*, bool, Firebird::ITransaction*);
 //void	ISQL_query_database(SSHORT*, FILE*, FILE*, FILE*);
 //void	ISQL_reset_settings();

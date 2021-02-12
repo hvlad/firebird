@@ -29,7 +29,7 @@
 #include "firebird.h"
 #include "../common/IntlParametersBlock.h"
 
-#include "consts_pub.h"
+#include "firebird/impl/consts_pub.h"
 #include "../common/isc_f_proto.h"
 #include "../common/classes/ClumpletWriter.h"
 #include "../common/UtilSvc.h"
@@ -73,11 +73,7 @@ void processCommandLine(IntlParametersBlock::ProcessString* processString, strin
 			{
 				flagIn = false;
 				processString(current);
-				if (result.hasData())
-				{
-					result += ' ';
-				}
-				result += current;
+				UtilSvc::addStringWithSvcTrmntr(current, result);
 				current = "";
 			}
 		}
@@ -90,13 +86,10 @@ void processCommandLine(IntlParametersBlock::ProcessString* processString, strin
 	if (current.hasData())
 	{
 		processString(current);
-		if (result.hasData())
-		{
-			result += ' ';
-		}
-		result += current;
+		UtilSvc::addStringWithSvcTrmntr(current, result);
 	}
 
+	result.rtrim();
 	par = result;
 }
 
@@ -168,10 +161,8 @@ void IntlParametersBlock::processParametersBlock(ProcessString* processString, C
 		st.stuffException(&l);
 		if ((l.getState() & IStatus::STATE_ERRORS) && (l.getErrors()[1] == isc_bad_conn_str) && tagName)
 		{
-			Arg::Gds newErrors(isc_random);
-			string message("Bad international character in tag ");
-			message += tagName;
-			newErrors << message;
+			Arg::Gds newErrors(isc_intl_char);
+			newErrors << tagName;
 
 			const ISC_STATUS* errors = l.getErrors();
 			newErrors << Arg::StatusVector(errors + 2);		// skip isc_bad_conn_str
@@ -233,16 +224,20 @@ IntlParametersBlock::TagType IntlSpb::checkTag(UCHAR tag, const char** tagName)
 
 IntlParametersBlock::TagType IntlSpbStart::checkTag(UCHAR tag, const char** tagName)
 {
+	switch (tag)
+	{
+	FB_IPB_TAG(isc_spb_dbname);
+		return TAG_STRING;
+	}
+
 	switch (mode)
 	{
 	case 0:
 		switch (tag)
 		{
-		FB_IPB_TAG(isc_spb_dbname);
-			return TAG_STRING;
-
 		case isc_action_svc_backup:
 		case isc_action_svc_restore:
+		case isc_action_svc_properties:
 		case isc_action_svc_repair:
 		case isc_action_svc_add_user:
 		case isc_action_svc_delete_user:
@@ -254,6 +249,8 @@ IntlParametersBlock::TagType IntlSpbStart::checkTag(UCHAR tag, const char** tagN
 		case isc_action_svc_trace_start:
 		case isc_action_svc_db_stats:
 		case isc_action_svc_validate:
+		case isc_action_svc_set_mapping:
+		case isc_action_svc_drop_mapping:
 			mode = tag;
 			break;
 		}
@@ -284,6 +281,7 @@ IntlParametersBlock::TagType IntlSpbStart::checkTag(UCHAR tag, const char** tagN
 	case isc_action_svc_display_user_adm:
 		switch (tag)
 		{
+		FB_IPB_TAG(isc_spb_sql_role_name);
 		FB_IPB_TAG(isc_spb_sec_username);
 		FB_IPB_TAG(isc_spb_sec_password);
 		FB_IPB_TAG(isc_spb_sec_groupname);
@@ -315,6 +313,8 @@ IntlParametersBlock::TagType IntlSpbStart::checkTag(UCHAR tag, const char** tagN
 	case isc_action_svc_db_stats:
 		switch (tag)
 		{
+		FB_IPB_TAG(isc_spb_sts_table);
+			return TAG_STRING;
 		FB_IPB_TAG(isc_spb_command_line);
 			return TAG_COMMAND_LINE;
 		}
@@ -323,11 +323,19 @@ IntlParametersBlock::TagType IntlSpbStart::checkTag(UCHAR tag, const char** tagN
 	case isc_action_svc_validate:
 		switch (tag)
 		{
-		FB_IPB_TAG(isc_spb_dbname);
 		FB_IPB_TAG(isc_spb_val_tab_incl);
 		FB_IPB_TAG(isc_spb_val_tab_excl);
 		FB_IPB_TAG(isc_spb_val_idx_incl);
 		FB_IPB_TAG(isc_spb_val_idx_excl);
+			return TAG_STRING;
+		}
+		break;
+
+	case isc_action_svc_set_mapping:
+	case isc_action_svc_drop_mapping:
+		switch (tag)
+		{
+		FB_IPB_TAG(isc_spb_sql_role_name);
 			return TAG_STRING;
 		}
 		break;

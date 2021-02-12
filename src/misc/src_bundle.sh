@@ -58,9 +58,6 @@ rm -rf $DIRNAME
 mv $MODULE $DIRNAME
 pushd $DIRNAME >/dev/null 2>&1
 
-# Remove CVS/SVN information
-rm -rf `find . -name CVS -print`
-rm -rf `find . -name .svn -print`
 
 # Clean gpre-generated files and extern
 cd gen
@@ -73,5 +70,5 @@ cp $SRCROOT/configure .
 
 echo "Creating tarball for $PACKNAME"
 cd ..
-tar cjf $SRCROOT/gen/$PACKNAME.tar.bz2 $PACKNAME
+tar cf - $PACKNAME | xz -9e >$SRCROOT/gen/$PACKNAME.tar.xz
 popd >/dev/null 2>&1

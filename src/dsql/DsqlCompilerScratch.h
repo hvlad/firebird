@@ -26,7 +26,7 @@
 #include "../dsql/dsql.h"
 #include "../dsql/BlrDebugWriter.h"
 #include "../common/classes/array.h"
-#include "../common/classes/MetaName.h"
+#include "../jrd/MetaName.h"
 #include "../common/classes/stack.h"
 #include "../common/classes/alloc.h"
 
@@ -70,7 +70,7 @@ public:
 
 public:
 	DsqlCompilerScratch(MemoryPool& p, dsql_dbb* aDbb, jrd_tra* aTransaction,
-				DsqlCompiledStatement* aStatement)
+				DsqlCompiledStatement* aStatement, DsqlCompilerScratch* aMainScratch = NULL)
 		: BlrDebugWriter(p),
 		  dbb(aDbb),
 		  transaction(aTransaction),
@@ -79,7 +79,6 @@ public:
 		  nestingLevel(0),
 		  ports(p),
 		  relation(NULL),
-		  procedure(NULL),
 		  mainContext(p),
 		  context(&mainContext),
 		  unionContext(p),
@@ -115,6 +114,7 @@ public:
 		  ctes(p),
 		  cteAliases(p),
 		  psql(false),
+		  mainScratch(aMainScratch),
 		  subFunctions(p),
 		  subProcedures(p)
 	{
@@ -169,14 +169,15 @@ public:
 		return statement;
 	}
 
+	void putBlrMarkers(ULONG marks);
 	void putDtype(const TypeClause* field, bool useSubType);
 	void putType(const TypeClause* type, bool useSubType);
 	void putLocalVariables(CompoundStmtNode* parameters, USHORT locals);
 	void putLocalVariable(dsql_var* variable, const DeclareVariableNode* hostParam,
-		const Firebird::MetaName& collationName);
+		const MetaName& collationName);
 	dsql_var* makeVariable(dsql_fld*, const char*, const dsql_var::Type type, USHORT,
 		USHORT, USHORT);
-	dsql_var* resolveVariable(const Firebird::MetaName& varName);
+	dsql_var* resolveVariable(const MetaName& varName);
 	void genReturn(bool eosFlag = false);
 
 	void genParameters(Firebird::Array<NestConst<ParameterClause> >& parameters,
@@ -201,9 +202,9 @@ public:
 	}
 
 	void addCTEs(WithClause* withClause);
-	SelectExprNode* findCTE(const Firebird::MetaName& name);
+	SelectExprNode* findCTE(const MetaName& name);
 	void clearCTEs();
-	void checkUnusedCTEs() const;
+	void checkUnusedCTEs();
 
 	// hvlad: each member of recursive CTE can refer to CTE itself (only once) via
 	// CTE name or via alias. We need to substitute this aliases when processing CTE
@@ -216,6 +217,7 @@ public:
 	void addCTEAlias(const Firebird::string& alias)
 	{
 		thread_db* tdbb = JRD_get_thread_data();
+		fb_assert(currCteAlias == NULL);
 		cteAliases.add(FB_NEW_POOL(*tdbb->getDefaultPool()) Firebird::string(*tdbb->getDefaultPool(), alias));
 	}
 
@@ -247,43 +249,11 @@ public:
 	bool isPsql() const { return psql; }
 	void setPsql(bool value) { psql = value; }
 
-	dsql_udf* getSubFunction(const Firebird::MetaName& name)
-	{
-		dsql_udf* subFunc = NULL;
-		subFunctions.get(name, subFunc);
-		return subFunc;
-	}
+	DeclareSubFuncNode* getSubFunction(const MetaName& name);
+	void putSubFunction(DeclareSubFuncNode* subFunc, bool replace = false);
 
-	void putSubFunction(dsql_udf* subFunc)
-	{
-		if (subFunctions.exist(subFunc->udf_name.identifier))
-		{
-			using namespace Firebird;
-			status_exception::raise(
-				Arg::Gds(isc_dsql_duplicate_spec) << subFunc->udf_name.identifier);
-		}
-
-		subFunctions.put(subFunc->udf_name.identifier, subFunc);
-	}
-
-	dsql_prc* getSubProcedure(const Firebird::MetaName& name)
-	{
-		dsql_prc* subProc = NULL;
-		subProcedures.get(name, subProc);
-		return subProc;
-	}
-
-	void putSubProcedure(dsql_prc* subProc)
-	{
-		if (subProcedures.exist(subProc->prc_name.identifier))
-		{
-			using namespace Firebird;
-			status_exception::raise(
-				Arg::Gds(isc_dsql_duplicate_spec) << subProc->prc_name.identifier);
-		}
-
-		subProcedures.put(subProc->prc_name.identifier, subProc);
-	}
+	DeclareSubProcNode* getSubProcedure(const MetaName& name);
+	void putSubProcedure(DeclareSubProcNode* subProc, bool replace = false);
 
 private:
 	SelectExprNode* pass1RecursiveCte(SelectExprNode* input);
@@ -300,7 +270,6 @@ public:
 	unsigned nestingLevel;				// begin...end nesting level
 	Firebird::Array<dsql_msg*> ports;	// Port messages
 	dsql_rel* relation;					// relation created by this request (for DDL)
-	dsql_prc* procedure;				// procedure created by this request (for DDL)
 	DsqlContextStack mainContext;
 	DsqlContextStack* context;
 	DsqlContextStack unionContext;		// Save contexts for views of unions
@@ -311,7 +280,7 @@ public:
 	USHORT derivedContextNumber;		// Next available context number for derived tables
 	USHORT scopeLevel;					// Scope level for parsing aliases in subqueries
 	USHORT loopLevel;					// Loop level
-	Firebird::Stack<Firebird::MetaName*> labels;	// Loop labels
+	Firebird::Stack<MetaName*> labels;	// Loop labels
 	USHORT cursorNumber;				// Cursor number
 	Firebird::Array<DeclareCursorNode*> cursors; // Cursors
 	USHORT inSelectList;				// now processing "select list"
@@ -323,7 +292,7 @@ public:
 	USHORT clientDialect;				// dialect passed into the API call
 	USHORT inOuterJoin;					// processing inside outer-join part
 	Firebird::string aliasRelationPrefix;	// prefix for every relation-alias.
-	Firebird::MetaName package;			// package being defined
+	MetaName package;			// package being defined
 	Firebird::Stack<SelectExprNode*> currCtes;	// current processing CTE's
 	class dsql_ctx* recursiveCtx;		// context of recursive CTE
 	USHORT recursiveCtxId;				// id of recursive union stream context
@@ -340,8 +309,9 @@ private:
 	Firebird::HalfStaticArray<SelectExprNode*, 4> ctes; // common table expressions
 	Firebird::HalfStaticArray<const Firebird::string*, 4> cteAliases; // CTE aliases in recursive members
 	bool psql;
-	Firebird::GenericMap<Firebird::Left<Firebird::MetaName, dsql_udf*> > subFunctions;
-	Firebird::GenericMap<Firebird::Left<Firebird::MetaName, dsql_prc*> > subProcedures;
+	DsqlCompilerScratch* mainScratch;
+	Firebird::GenericMap<Firebird::Left<MetaName, DeclareSubFuncNode*> > subFunctions;
+	Firebird::GenericMap<Firebird::Left<MetaName, DeclareSubProcNode*> > subProcedures;
 };
 
 class PsqlChanger

@@ -158,10 +158,10 @@ void SHUT_database(thread_db* tdbb, SSHORT flag, SSHORT delay, Sync* guard)
 
 	// Only platform's user locksmith can shutdown or bring online a database
 
-	if (!attachment->locksmith())
+	if (!attachment->locksmith(tdbb, CHANGE_SHUTDOWN_MODE))
 	{
 		ERR_post_nothrow(Arg::Gds(isc_no_priv) << "shutdown" << "database" << dbb->dbb_filename);
-		if (attachment->att_user->usr_flags & USR_mapdown)
+		if (attachment->att_user && attachment->att_user->testFlag(USR_mapdown))
 			ERR_post_nothrow(Arg::Gds(isc_map_down));
 		ERR_punt();
 	}
@@ -340,10 +340,10 @@ void SHUT_online(thread_db* tdbb, SSHORT flag, Sync* guard)
 
 	// Only platform's user locksmith can shutdown or bring online a database
 
-	if (!attachment->att_user->locksmith())
+	if (!attachment->locksmith(tdbb, CHANGE_SHUTDOWN_MODE))
 	{
 		ERR_post_nothrow(Arg::Gds(isc_no_priv) << "bring online" << "database" << dbb->dbb_filename);
-		if (attachment->att_user->usr_flags & USR_mapdown)
+		if (attachment->att_user && attachment->att_user->testFlag(USR_mapdown))
 			ERR_post_nothrow(Arg::Gds(isc_map_down));
 		ERR_punt();
 	}
@@ -521,26 +521,7 @@ static bool shutdown(thread_db* tdbb, SSHORT flag, bool force)
 
 	if (force)
 	{
-		bool found = false;
-		for (Jrd::Attachment* attachment = dbb->dbb_attachments;
-			attachment; attachment = attachment->att_next)
-		{
-			StableAttachmentPart* const sAtt = attachment->getStable();
-			MutexLockGuard guard(*(sAtt->getMutex(true)), FB_FUNCTION);
-
-			if (!(attachment->att_flags & ATT_shutdown_manager))
-			{
-				if (!(attachment->att_flags & ATT_shutdown))
-				{
-					attachment->signalShutdown();
-					found = true;
-				}
-			}
-		}
-
-		if (found)
-			JRD_shutdown_attachments(dbb);
-
+		JRD_shutdown_attachments(dbb);
 		return true;
 	}
 

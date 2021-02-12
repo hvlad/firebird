@@ -23,10 +23,11 @@
 
 # stored configuration values
 
+fb_install_prefix=@prefix@
+
 fb_bindir=@FB_BINDIR@
 fb_libdir=@FB_LIBDIR@
 fb_incdir=@FB_INCDIR@
-fb_udfdir=@FB_UDFDIR@
 fb_sbindir=@FB_SBINDIR@
 fb_confdir=@FB_CONFDIR@
 fb_docdir=@FB_DOCDIR@
@@ -40,10 +41,10 @@ fb_msgdir=@FB_MSGDIR@
 fb_logdir=@FB_LOGDIR@
 fb_glockdir=@FB_GUARDDIR@
 fb_pluginsdir=@FB_PLUGDIR@
+fb_tzdatadir=@FB_TZDATADIR@
 
 fb_cflags="-I$fb_incdir"
 fb_libs="-L$fb_libdir -lfbclient"
-fb_embedlibs="-L$fb_libdir -lfbembed"
 
 BuildVersion=@FIREBIRD_VERSION@.@FB_BUILD_NUM@
 PackageVersion=@FIREBIRD_PACKAGE_VERSION@
@@ -93,9 +94,8 @@ while test $# -gt 0
     case "$1" in
         --cflags) echo $fb_cflags ;;
         --libs) echo $fb_libs ;;
-        --embedlibs) echo $fb_embedlibs ;;
+        --embedlibs) echo $fb_libs ;;
         --bindir) echo $fb_bindir ;;
-        --udfdir) echo $fb_udfdir ;;
         --sbindir) echo $fb_sbindir ;;
         --confdir) echo $fb_confdir ;;
         --docdir) echo $fb_docdir ;;
@@ -108,6 +108,7 @@ while test $# -gt 0
         --logdir) echo $fb_logdir ;;
         --glockdir) echo $fb_glockdir ;;
         --pluginsdir) echo $fb_pluginsdir ;;
+        --tzdatadir) echo $fb_tzdatadir ;;
         --sampledbdir) echo $fb_sampledbdir ;;
         --version) echo $fb_version ;;
         --help) usage ;;

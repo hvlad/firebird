@@ -234,7 +234,7 @@ void VerbAction::mergeTo(thread_db* tdbb, jrd_tra* transaction, VerbAction* next
 	release(transaction);
 }
 
-void VerbAction::undo(thread_db* tdbb, jrd_tra* transaction)
+void VerbAction::undo(thread_db* tdbb, jrd_tra* transaction, bool preserveLocks, VerbAction* preserveAction)
 {
 	// Undo changes recorded for this verb action.
 	// After that, clear the verb action and prepare it for later reuse.
@@ -258,7 +258,7 @@ void VerbAction::undo(thread_db* tdbb, jrd_tra* transaction)
 			if (!DPM_get(tdbb, &rpb, LCK_read))
 				BUGCHECK(186);	// msg 186 record disappeared
 
-			if (have_undo && !(rpb.rpb_flags & rpb_deleted))
+			if ((have_undo || preserveLocks) && !(rpb.rpb_flags & rpb_deleted))
 				VIO_data(tdbb, &rpb, transaction->tra_pool);
 			else
 				CCH_RELEASE(tdbb, &rpb.getWindow(tdbb));
@@ -267,7 +267,50 @@ void VerbAction::undo(thread_db* tdbb, jrd_tra* transaction)
 				BUGCHECK(185);	// msg 185 wrong record version
 
 			if (!have_undo)
-				VIO_backout(tdbb, &rpb, transaction);
+			{
+				if (preserveLocks && rpb.rpb_b_page)
+				{
+					// Fetch previous record version and update in place current version with it
+					record_param temp = rpb;
+					temp.rpb_page = rpb.rpb_b_page;
+					temp.rpb_line = rpb.rpb_b_line;
+					temp.rpb_record = NULL;
+
+					if (temp.rpb_flags & rpb_delta)
+						fb_assert(temp.rpb_prior != NULL);
+					else
+						fb_assert(temp.rpb_prior == NULL);
+
+					if (!DPM_fetch(tdbb, &temp, LCK_read))
+						BUGCHECK(291);		// msg 291 cannot find record back version
+
+					if (!(temp.rpb_flags & rpb_chained) || (temp.rpb_flags & (rpb_blob | rpb_fragment)))
+						ERR_bugcheck_msg("invalid back version");
+
+					VIO_data(tdbb, &temp, tdbb->getDefaultPool());
+
+					Record* const save_record = rpb.rpb_record;
+					if (rpb.rpb_flags & rpb_deleted)
+						rpb.rpb_record = NULL;
+					Record* const dead_record = rpb.rpb_record;
+
+					VIO_update_in_place(tdbb, transaction, &rpb, &temp);
+
+					if (dead_record)
+					{
+						rpb.rpb_record = NULL; // VIO_garbage_collect_idx will play with this record dirty tricks
+						VIO_garbage_collect_idx(tdbb, transaction, &rpb, dead_record);
+					}
+					rpb.rpb_record = save_record;
+
+					delete temp.rpb_record;
+
+					if (preserveAction)
+						RBM_SET(transaction->tra_pool, &preserveAction->vct_records, rpb.rpb_number.getValue());
+				} 
+				else
+					VIO_backout(tdbb, &rpb, transaction);
+			}
 			else
 			{
 				AutoUndoRecord record(vct_undo->current().setupRecord(transaction));
@@ -327,26 +370,6 @@ void VerbAction::release(jrd_tra* transaction)
 
 // Savepoint implementation
 
-Savepoint* Savepoint::start(jrd_tra* transaction, bool root)
-{
-	// Start a new savepoint. Reuse some priorly allocated one, if exists.
-
-	Savepoint* savepoint = transaction->tra_save_free;
-
-	if (savepoint)
-		transaction->tra_save_free = savepoint->m_next;
-	else
-		savepoint = FB_NEW_POOL(*transaction->tra_pool) Savepoint(transaction);
-
-	savepoint->m_number = ++transaction->tra_save_point_number;
-	savepoint->m_flags = root ? SAV_root : 0;
-
-	savepoint->m_next = transaction->tra_save_point;
-	transaction->tra_save_point = savepoint;
-
-	return savepoint;
-}
-
 VerbAction* Savepoint::createAction(jrd_rel* relation)
 {
 	// Create action for the given relation. If it already exists, just return.
@@ -398,7 +421,7 @@ void Savepoint::cleanupTempData()
 	}
 }
 
-Savepoint* Savepoint::rollback(thread_db* tdbb, Savepoint* prior)
+Savepoint* Savepoint::rollback(thread_db* tdbb, Savepoint* prior, bool preserveLocks)
 {
 	// Undo changes made in this savepoint.
 	// Perform index and BLOB cleanup if needed.
@@ -411,23 +434,31 @@ Savepoint* Savepoint::rollback(thread_db* tdbb, Savepoint* prior)
 		DFW_delete_deferred(m_transaction, m_number);
 		m_flags &= ~SAV_force_dfw;
 
-		tdbb->tdbb_flags |= TDBB_verb_cleanup;
+		AutoSetRestoreFlag<ULONG> verbCleanupFlag(&tdbb->tdbb_flags, TDBB_verb_cleanup, true);
+
 		tdbb->setTransaction(m_transaction);
 
 		while (m_actions)
 		{
-			m_actions->undo(tdbb, m_transaction);
-			releaseAction(m_actions);
+			VerbAction* const action = m_actions;
+			VerbAction* preserveAction = nullptr;
+
+			if (preserveLocks && m_next)
+				preserveAction = m_next->createAction(action->vct_relation);
+
+			action->undo(tdbb, m_transaction, preserveLocks, preserveAction);
+
+			m_actions = action->vct_next;
+			action->vct_next = m_freeActions;
+			m_freeActions = action;
 		}
 
 		tdbb->setTransaction(old_tran);
-		tdbb->tdbb_flags &= ~TDBB_verb_cleanup;
 	}
 	catch (const Exception& ex)
 	{
 		Arg::StatusVector error(ex);
 		tdbb->setTransaction(old_tran);
-		tdbb->tdbb_flags &= ~TDBB_verb_cleanup;
 		m_transaction->tra_flags |= TRA_invalidated;
 		error.prepend(Arg::Gds(isc_savepoint_backout_err));
 		error.raise();
@@ -456,7 +487,6 @@ Savepoint* Savepoint::rollforward(thread_db* tdbb, Savepoint* prior)
 			fb_assert(!m_next->m_next); // check that transaction savepoint is the last in list
 			// get rid of tx-level savepoint
 			m_next->rollforward(tdbb);
-			m_next->release();
 			m_next = NULL;
 		}
 
@@ -477,22 +507,29 @@ Savepoint* Savepoint::rollforward(thread_db* tdbb, Savepoint* prior)
 
 		while (m_actions)
 		{
+			VerbAction* const action = m_actions;
 			VerbAction* nextAction = NULL;
 
 			if (m_next)
 			{
-				nextAction = m_next->getAction(m_actions->vct_relation);
+				nextAction = m_next->getAction(action->vct_relation);
 
 				if (!nextAction) // next savepoint didn't touch this table yet - send whole action
 				{
-					propagateAction(m_actions);
+					m_actions = action->vct_next;
+					action->vct_next = m_next->m_actions;
+					m_next->m_actions = action;
 					continue;
 				}
 			}
 
-			// No luck, merge actions in a slow way
-			m_actions->mergeTo(tdbb, m_transaction, nextAction);
-			releaseAction(m_actions);
+			// No luck, merge action in a slow way
+			action->mergeTo(tdbb, m_transaction, nextAction);
+
+			// and release it afterwards
+			m_actions = action->vct_next;
+			action->vct_next = m_freeActions;
+			m_freeActions = action;
 		}
 
 		tdbb->setTransaction(old_tran);
@@ -514,7 +551,6 @@ Savepoint* Savepoint::rollforward(thread_db* tdbb, Savepoint* prior)
 		fb_assert(!m_next->m_next); // check that transaction savepoint is the last in list
 		// get rid of tx-level savepoint
 		m_next->rollforward(tdbb);
-		m_next->release();
 		m_next = NULL;
 	}
 
@@ -569,10 +605,14 @@ Savepoint* Savepoint::release(Savepoint* prior)
 	Savepoint* const next = m_next;
 
 	if (prior)
+	{
+		fb_assert(prior != next);
 		prior->m_next = next;
+	}
 
 	m_next = m_transaction->tra_save_free;
 	m_transaction->tra_save_free = this;
+	fb_assert(m_next != this);
 
 	return next;
 }
@@ -581,20 +621,42 @@ Savepoint* Savepoint::release(Savepoint* prior)
 // AutoSavePoint implementation
 
 AutoSavePoint::AutoSavePoint(thread_db* tdbb, jrd_tra* trans)
-	: m_tdbb(tdbb), m_transaction(trans), m_released(false)
+	: m_tdbb(tdbb), m_transaction(trans), m_number(0)
 {
-	Savepoint::start(trans);
+	const auto savepoint = trans->startSavepoint();
+	m_number = savepoint->getNumber();
 }
 
 AutoSavePoint::~AutoSavePoint()
 {
-	if (!(m_tdbb->getDatabase()->dbb_flags & DBB_bugcheck))
+	if (m_number && !(m_tdbb->getDatabase()->dbb_flags & DBB_bugcheck))
 	{
-		if (m_released)
-			m_transaction->rollforwardSavepoint(m_tdbb);
-		else
-			m_transaction->rollbackSavepoint(m_tdbb);
+		fb_assert(m_transaction->tra_save_point);
+		fb_assert(m_transaction->tra_save_point->getNumber() == m_number);
+		m_transaction->rollbackSavepoint(m_tdbb);
 	}
+}
+
+void AutoSavePoint::release()
+{
+	if (!m_number)
+		return;
+
+	fb_assert(m_transaction->tra_save_point);
+	fb_assert(m_transaction->tra_save_point->getNumber() == m_number);
+	m_transaction->rollforwardSavepoint(m_tdbb);
+	m_number = 0;
+}
+
+void AutoSavePoint::rollback(bool preserveLocks)
+{
+	if (!m_number)
+		return;
+
+	fb_assert(m_transaction->tra_save_point);
+	fb_assert(m_transaction->tra_save_point->getNumber() == m_number);
+	m_transaction->rollbackSavepoint(m_tdbb, preserveLocks);
+	m_number = 0;
 }
 
 
@@ -612,7 +674,7 @@ StableCursorSavePoint::StableCursorSavePoint(thread_db* tdbb, jrd_tra* trans, bo
 	if (!trans->tra_save_point)
 		return;
 
-	const Savepoint* const savepoint = Savepoint::start(trans);
+	const auto savepoint = trans->startSavepoint();
 	m_number = savepoint->getNumber();
 }
 
@@ -622,8 +684,11 @@ void StableCursorSavePoint::release()
 	if (!m_number)
 		return;
 
-	while (m_transaction->tra_save_point && m_transaction->tra_save_point->getNumber() >= m_number)
+	while (m_transaction->tra_save_point &&
+		m_transaction->tra_save_point->getNumber() >= m_number)
+	{
 		m_transaction->rollforwardSavepoint(m_tdbb);
+	}
 
 	m_number = 0;
 }

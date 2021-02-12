@@ -30,6 +30,7 @@
 #include "../common/isc_proto.h"
 #include "../common/Auth.h"
 #include "../common/classes/GetPlugins.h"
+#include "../common/classes/ParsedList.h"
 
 
 using namespace Jrd;
@@ -72,12 +73,14 @@ public:
 		: login(p_login), password(p_password)
 	{ }
 
-	// Firebird::IClientBlock implementation
-	int release()
+	// Here we are going to place reference counted object on a stack.
+	// Release will never be called, but let's better have safe implementation for it.
+	int release() override
 	{
 		return 1;
 	}
 
+	// Firebird::IClientBlock implementation
 	const char* getLogin()
 	{
 		return login.c_str();
@@ -99,6 +102,11 @@ public:
 	Firebird::ICryptKey* newKey(Firebird::CheckStatusWrapper* status)
 	{
 		return &dummyCryptKey;
+	}
+
+	Firebird::IAuthBlock* getAuthBlock(Firebird::CheckStatusWrapper*)
+	{
+		return nullptr;
 	}
 
 private:
@@ -166,29 +174,30 @@ namespace EDS {
 
 void validatePassword(thread_db* tdbb, const PathName& file, ClumpletWriter& dpb)
 {
-	// Peliminary checks - should we really validate password ourself
+	// Preliminary checks - should we really validate the password ourselves
 	if (!dpb.find(isc_dpb_user_name))		// check for user name presence
 		return;
 	if (ISC_check_if_remote(file, false))	// check for remote connection
 		return;
 	UserId* usr = tdbb->getAttachment()->att_user;
+	if (!usr)
+		return;
 	if (!usr->usr_auth_block.hasData())		// check for embedded attachment
 		return;
 
 	Arg::Gds loginError(isc_login_error);
 
 	// Build list of client/server plugins
-	RefPtr<Config> config;
+	RefPtr<const Config> config;
 	PathName list;
 	expandDatabaseName(file, list /* unused value */, &config);
 	PathName serverList = config->getPlugins(IPluginManager::TYPE_AUTH_SERVER);
 	PathName clientList = config->getPlugins(IPluginManager::TYPE_AUTH_CLIENT);
-	Auth::mergeLists(list, serverList, clientList);
+	ParsedList::mergeLists(list, serverList, clientList);
 
 	if (!list.hasData())
 	{
-		Arg::Gds noPlugins(isc_random);
-		noPlugins << "No matching client/server authentication plugins configured for execute statement in embedded datasource";
+		Arg::Gds noPlugins(isc_vld_plugins);
 		iscLogStatus(NULL, noPlugins.value());
 
 #ifdef DEV_BUILD

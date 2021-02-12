@@ -26,10 +26,10 @@
 #include "../common/StatementMetadata.h"
 #include "memory_routines.h"
 #include "../common/StatusHolder.h"
-#include "../jrd/inf_pub.h"
+#include "firebird/impl/inf_pub.h"
 #include "../yvalve/gds_proto.h"
 #include "../common/utils_proto.h"
-#include "../dsql/sqlda_pub.h"
+#include "firebird/impl/sqlda_pub.h"
 
 namespace Firebird {
 
@@ -52,8 +52,9 @@ static const UCHAR DESCRIBE_VARS[] =
 static const unsigned INFO_BUFFER_SIZE = MemoryPool::MAX_MEDIUM_BLOCK_SIZE;
 
 
-static int getNumericInfo(const UCHAR** ptr);
-static void getStringInfo(const UCHAR** ptr, string* str);
+static USHORT getLen(const UCHAR** ptr, const UCHAR* bufferEnd);
+static int getNumericInfo(const UCHAR** ptr, const UCHAR* bufferEnd);
+static void getStringInfo(const UCHAR** ptr, const UCHAR* bufferEnd, string* str);
 
 
 // Build a list of info codes based on a prepare flags bitmask.
@@ -167,7 +168,7 @@ const char* StatementMetadata::getPlan(bool detailed)
 
 	if (plan->isEmpty())
 	{
-		UCHAR info[] = {detailed ? isc_info_sql_explain_plan : isc_info_sql_get_plan};
+		UCHAR info[] = {UCHAR(detailed ? isc_info_sql_explain_plan : isc_info_sql_get_plan)};
 		UCHAR result[INFO_BUFFER_SIZE];
 
 		getAndParse(sizeof(info), info, sizeof(result), result);
@@ -247,18 +248,18 @@ void StatementMetadata::parse(unsigned bufferLength, const UCHAR* buffer)
 		switch (c)
 		{
 			case isc_info_sql_stmt_type:
-				type = getNumericInfo(&buffer);
+				type = getNumericInfo(&buffer, bufferEnd);
 				break;
 
 			case isc_info_sql_stmt_flags:
-				flags = getNumericInfo(&buffer);
+				flags = getNumericInfo(&buffer, bufferEnd);
 				break;
 
 			case isc_info_sql_get_plan:
 			case isc_info_sql_explain_plan:
 			{
 				string* plan = (c == isc_info_sql_explain_plan ? &detailedPlan : &legacyPlan);
-				getStringInfo(&buffer, plan);
+				getStringInfo(&buffer, bufferEnd, plan);
 				break;
 			}
 
@@ -279,12 +280,10 @@ void StatementMetadata::parse(unsigned bufferLength, const UCHAR* buffer)
 					break;
 				}
 
-				getNumericInfo(&buffer);	// skip the message index
+				getNumericInfo(&buffer, bufferEnd);	// skip the message index
 
 				if (c == isc_info_sql_num_variables)
 					continue;
-
-				parameters->fetched = true;
 
 				Parameters::Item temp(*getDefaultMemoryPool());
 				Parameters::Item* param = &temp;
@@ -293,6 +292,11 @@ void StatementMetadata::parse(unsigned bufferLength, const UCHAR* buffer)
 				// Loop over the variables being described.
 				while (!finishDescribe)
 				{
+					fb_assert(buffer < bufferEnd);
+
+					if (buffer >= bufferEnd)
+						break;
+
 					switch ((c = *buffer++))
 					{
 						case isc_info_sql_describe_end:
@@ -300,94 +304,101 @@ void StatementMetadata::parse(unsigned bufferLength, const UCHAR* buffer)
 							break;
 
 						case isc_info_sql_sqlda_seq:
-						{
-							unsigned num = getNumericInfo(&buffer);
+							if (!parameters->fetched)
+							{
+								unsigned num = getNumericInfo(&buffer, bufferEnd);
 
-							while (parameters->items.getCount() < num)
-								parameters->items.add();
+								while (parameters->items.getCount() < num)
+									parameters->items.add();
 
-							param = &parameters->items[num - 1];
+								param = &parameters->items[num - 1];
+							}
 							break;
-						}
 
 						case isc_info_sql_type:
-							param->type = getNumericInfo(&buffer);
+							param->type = getNumericInfo(&buffer, bufferEnd);
 							param->nullable = (param->type & 1) != 0;
 							param->type &= ~1;
 							break;
 
 						case isc_info_sql_sub_type:
-							param->subType = getNumericInfo(&buffer);
+							param->subType = getNumericInfo(&buffer, bufferEnd);
 							break;
 
 						case isc_info_sql_length:
-							param->length = getNumericInfo(&buffer);
+							param->length = getNumericInfo(&buffer, bufferEnd);
 							break;
 
 						case isc_info_sql_scale:
-							param->scale = getNumericInfo(&buffer);
+							param->scale = getNumericInfo(&buffer, bufferEnd);
 							break;
 
 						case isc_info_sql_field:
-							getStringInfo(&buffer, &param->field);
+							getStringInfo(&buffer, bufferEnd, &param->field);
 							break;
 
 						case isc_info_sql_relation:
-							getStringInfo(&buffer, &param->relation);
+							getStringInfo(&buffer, bufferEnd, &param->relation);
 							break;
 
 						case isc_info_sql_owner:
-							getStringInfo(&buffer, &param->owner);
+							getStringInfo(&buffer, bufferEnd, &param->owner);
 							break;
 
 						case isc_info_sql_alias:
-							getStringInfo(&buffer, &param->alias);
+							getStringInfo(&buffer, bufferEnd, &param->alias);
 							break;
 
 						case isc_info_truncated:
-							parameters->fetched = false;
-							// fall into
+							--buffer;
+							finishDescribe = true;
+							break;
 
 						default:
 							--buffer;
 							finishDescribe = true;
+
+							if (parameters->fetched)
+								break;
+
+							parameters->fetched = true;
+
+							for (unsigned n = 0; n < parameters->items.getCount(); ++n)
+							{
+								Parameters::Item* param = &parameters->items[n];
+
+								if (!param->finished)
+								{
+									parameters->fetched = false;
+									break;
+								}
+							}
+
+							if (parameters->fetched && parameters->makeOffsets() != ~0u)
+								parameters->fetched = false;
+
+							if (parameters->fetched)
+							{
+								for (unsigned n = 0; n < parameters->items.getCount(); ++n)
+								{
+									Parameters::Item* param = &parameters->items[n];
+									switch (param->type)
+									{
+										case SQL_VARYING:
+										case SQL_TEXT:
+											param->charSet = param->subType;
+											param->subType = 0;
+											break;
+										case SQL_BLOB:
+											param->charSet = param->scale;
+											param->scale = 0;
+											break;
+									}
+								}
+							}
+
 							break;
 					}
-				}
-
-				if (parameters->fetched)
-				{
-					unsigned off = 0;
-
-					for (unsigned n = 0; n < parameters->items.getCount(); ++n)
-					{
-						Parameters::Item* param = &parameters->items[n];
-
-						if (!param->finished)
-						{
-							parameters->fetched = false;
-							break;
-						}
-
-						off = fb_utils::sqlTypeToDsc(off, param->type, param->length,
-							NULL /*dtype*/, NULL /*length*/, &param->offset, &param->nullInd);
-
-						switch(param->type)
-						{
-						case SQL_VARYING:
-						case SQL_TEXT:
-							param->charSet = param->subType;
-							param->subType = 0;
-							break;
-						case SQL_BLOB:
-							param->charSet = param->scale;
-							param->scale = 0;
-							break;
-						}
-					}
-
-					if (parameters->fetched)
-						parameters->length = off;
 				}
 
 				break;
@@ -397,28 +408,6 @@ void StatementMetadata::parse(unsigned bufferLength, const UCHAR* buffer)
 				finish = true;
 				break;
 		}
-	}
-
-	// CVC: This routine assumes the input is well formed, hence at least check we didn't read
-	// beyond the buffer's end, although I would prefer to make the previous code more robust.
-	// fb_assert(buffer <= bufferEnd);
-	// ASF: User may pass any (including unknown from new version) info code and we can't
-	// understand them. In this case, we leave these code without parse (when they're in the end)
-	// or we'll need extra info calls (done by methods of this class) to parse only the info we
-	// can understand.
-
-	for (ObjectsArray<Parameters::Item>::iterator i = inputParameters->items.begin();
-		 i != inputParameters->items.end() && inputParameters->fetched;
-		 ++i)
-	{
-		inputParameters->fetched = i->finished;
-	}
-
-	for (ObjectsArray<Parameters::Item>::iterator i = outputParameters->items.begin();
-		 i != outputParameters->items.end() && outputParameters->fetched;
-		 ++i)
-	{
-		outputParameters->fetched = i->finished;
 	}
 }
 
@@ -468,7 +457,7 @@ void StatementMetadata::fetchParameters(UCHAR code, Parameters* parameters)
 {
 	while (!parameters->fetched)
 	{
-		unsigned startIndex = 0;
+		unsigned startIndex = 1;
 
 		for (ObjectsArray<Parameters::Item>::iterator i = parameters->items.begin();
 			 i != parameters->items.end();
@@ -484,13 +473,14 @@ void StatementMetadata::fetchParameters(UCHAR code, Parameters* parameters)
 		{
 			isc_info_sql_sqlda_start,
 			2,
-			(startIndex & 0xFF),
-			((startIndex >> 8) & 0xFF),
+			UCHAR(startIndex & 0xFF),
+			UCHAR((startIndex >> 8) & 0xFF),
 			code
 		};
 		memcpy(items + 5, DESCRIBE_VARS, sizeof(DESCRIBE_VARS));
 
 		UCHAR buffer[INFO_BUFFER_SIZE];
+		memset(buffer, 0, sizeof(buffer));
 		getAndParse(sizeof(items), items, sizeof(buffer), buffer);
 	}
 }
@@ -499,30 +489,38 @@ void StatementMetadata::fetchParameters(UCHAR code, Parameters* parameters)
 //--------------------------------------
 
 
-// Pick up a VAX format numeric info item with a 2 byte length.
-static int getNumericInfo(const UCHAR** ptr)
+static USHORT getLen(const UCHAR** ptr, const UCHAR* bufferEnd)
 {
-	const SSHORT len = static_cast<SSHORT>(gds__vax_integer(*ptr, 2));
+	if (bufferEnd - *ptr < 2)
+		fatal_exception::raise("Invalid info structure - no space for clumplet length");
+
+	const USHORT len = static_cast<USHORT>(gds__vax_integer(*ptr, 2));
 	*ptr += 2;
+
+	fb_assert(bufferEnd - *ptr >= len);
+	if (bufferEnd - *ptr < len)
+		fatal_exception::raiseFmt("Invalid info structure - no space for clumplet data: need %d, actual %d",
+			len, bufferEnd - *ptr);
+
+	return len;
+}
+
+
+// Pick up a VAX format numeric info item with a 2 byte length.
+static int getNumericInfo(const UCHAR** ptr, const UCHAR* bufferEnd)
+{
+	const USHORT len = getLen(ptr, bufferEnd);
 	int item = gds__vax_integer(*ptr, len);
 	*ptr += len;
 	return item;
 }
 
 // Pick up a string valued info item.
-static void getStringInfo(const UCHAR** ptr, string* str)
+static void getStringInfo(const UCHAR** ptr, const UCHAR* bufferEnd, string* str)
 {
-	const UCHAR* p = *ptr;
-	SSHORT len = static_cast<SSHORT>(gds__vax_integer(p, 2));
-
-	// CVC: What else can we do here?
-	if (len < 0)
-		len = 0;
-
-	*ptr += len + 2;
-	p += 2;
-
-	str->assign(p, len);
+	const USHORT len = getLen(ptr, bufferEnd);
+	str->assign(*ptr, len);
+	*ptr += len;
 }
 
 

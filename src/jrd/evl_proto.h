@@ -29,6 +29,7 @@
 
 namespace Jrd
 {
+	class DbKeyRangeNode;
 	class InversionNode;
 	struct Item;
 	class ItemInfo;
@@ -36,6 +37,8 @@ namespace Jrd
 
 dsc*		EVL_assign_to(Jrd::thread_db* tdbb, const Jrd::ValueExprNode*);
 Jrd::RecordBitmap**	EVL_bitmap(Jrd::thread_db* tdbb, const Jrd::InversionNode*, Jrd::RecordBitmap*);
+void		EVL_dbkey_bounds(Jrd::thread_db* tdbb, const Firebird::Array<Jrd::DbKeyRangeNode*>&,
+							 Jrd::jrd_rel*, RecordNumber&, RecordNumber&);
 bool		EVL_field(Jrd::jrd_rel*, Jrd::Record*, USHORT, dsc*);
 void		EVL_make_value(Jrd::thread_db* tdbb, const dsc*, Jrd::impure_value*, MemoryPool* pool = NULL);
 void		EVL_validate(Jrd::thread_db*, const Jrd::Item&, const Jrd::ItemInfo*, dsc*, bool);
@@ -50,8 +53,7 @@ namespace Jrd
 
 		SET_TDBB(tdbb);
 
-		if (--tdbb->tdbb_quantum < 0)
-			JRD_reschedule(tdbb, 0, true);
+		JRD_reschedule(tdbb);
 
 		request->req_flags &= ~req_null;
 

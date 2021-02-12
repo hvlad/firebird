@@ -78,7 +78,7 @@ GlobalRWLock::GlobalRWLock(thread_db* tdbb, MemoryPool& p, lck_t lckType,
 
 	cachedLock = FB_NEW_RPT(getPool(), lockLen)
 		Lock(tdbb, lockLen, lckType, this, lockCaching ? blocking_ast_cached_lock : NULL);
-	memcpy(&cachedLock->lck_key, lockStr, lockLen);
+	memcpy(cachedLock->getKeyPtr(), lockStr, lockLen);
 }
 
 GlobalRWLock::~GlobalRWLock()
@@ -128,6 +128,16 @@ bool GlobalRWLock::lockWrite(thread_db* tdbb, SSHORT wait)
 			this, readers, blocking, pendingWriters, currentWriter, cachedLock->lck_physical));
 
 		fb_assert(!readers && !currentWriter);
+
+		if (cachedLock->lck_physical == LCK_write)
+		{
+			--pendingWriters;
+
+			fb_assert(!currentWriter);
+			currentWriter = true;
+
+			return true;
+		}
 
 		if (cachedLock->lck_physical > LCK_none)
 		{

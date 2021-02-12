@@ -30,7 +30,7 @@
 #include "BlrFromMessage.h"
 #include "../common/StatusHolder.h"
 #include "../jrd/align.h"
-#include "../dsql/sqlda_pub.h"
+#include "firebird/impl/sqlda_pub.h"
 #include "../remote/protocol.h"
 
 using namespace Firebird;
@@ -117,6 +117,22 @@ void BlrFromMessage::buildBlr(IMessageMetadata* metadata)
 				dtype = dtype_text;
 				break;
 
+			case SQL_DEC16:
+				appendUChar(blr_dec64);
+				dtype = dtype_dec64;
+				break;
+
+			case SQL_DEC34:
+				appendUChar(blr_dec128);
+				dtype = dtype_dec128;
+				break;
+
+			case SQL_INT128:
+				appendUChar(blr_int128);
+				appendUChar(scale);
+				dtype = dtype_int128;
+				break;
+
 			case SQL_DOUBLE:
 				appendUChar(blr_double);
 				dtype = dtype_double;
@@ -142,9 +158,29 @@ void BlrFromMessage::buildBlr(IMessageMetadata* metadata)
 				dtype = dtype_sql_time;
 				break;
 
+			case SQL_TIME_TZ:
+				appendUChar(blr_sql_time_tz);
+				dtype = dtype_sql_time_tz;
+				break;
+
+			case SQL_TIME_TZ_EX:
+				appendUChar(blr_ex_time_tz);
+				dtype = dtype_ex_time_tz;
+				break;
+
 			case SQL_TIMESTAMP:
 				appendUChar(blr_timestamp);
 				dtype = dtype_timestamp;
+				break;
+
+			case SQL_TIMESTAMP_TZ:
+				appendUChar(blr_timestamp_tz);
+				dtype = dtype_timestamp_tz;
+				break;
+
+			case SQL_TIMESTAMP_TZ_EX:
+				appendUChar(blr_ex_timestamp_tz);
+				dtype = dtype_ex_timestamp_tz;
 				break;
 
 			case SQL_BLOB:

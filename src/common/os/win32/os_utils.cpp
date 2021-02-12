@@ -30,6 +30,7 @@
 #include "../common/classes/array.h"
 #include "../common/classes/init.h"
 #include "../common/gdsassert.h"
+#include "../common/os/guid.h"
 #include "../common/os/os_utils.h"
 #include "../jrd/constants.h"
 #include "../common/os/path_utils.h"
@@ -49,6 +50,82 @@
 #include <aclapi.h>
 #include <Winsock2.h>
 
+using namespace Firebird;
+
+namespace
+{
+	// The types below are defined in SDK 8 for _WIN32_WINNT_WIN8 (0x0602) and above,
+	// so we need to define them manually when building with older SDK and/or Windows version
+
+#if (_WIN32_WINNT < 0x0602)
+	typedef enum _FILE_INFO_BY_HANDLE_CLASS
+	{
+		FileBasicInfo,
+		FileStandardInfo,
+		FileNameInfo,
+		FileRenameInfo,
+		FileDispositionInfo,
+		FileAllocationInfo,
+		FileEndOfFileInfo,
+		FileStreamInfo,
+		FileCompressionInfo,
+		FileAttributeTagInfo,
+		FileIdBothDirectoryInfo,
+		FileIdBothDirectoryRestartInfo,
+		FileIoPriorityHintInfo,
+		FileRemoteProtocolInfo,
+		FileFullDirectoryInfo,
+		FileFullDirectoryRestartInfo,
+		FileStorageInfo,
+		FileAlignmentInfo,
+		FileIdInfo,
+		FileIdExtdDirectoryInfo,
+		FileIdExtdDirectoryRestartInfo,
+		FileDispositionInfoEx,
+		FileRenameInfoEx,
+		FileCaseSensitiveInfo,
+		FileNormalizedNameInfo,
+		MaximumFileInfoByHandleClass
+	} FILE_INFO_BY_HANDLE_CLASS;
+
+	typedef struct _FILE_ID_128
+	{
+		BYTE Identifier[16];
+	} FILE_ID_128;
+
+	typedef struct _FILE_ID_INFO
+	{
+		ULONGLONG VolumeSerialNumber;
+		FILE_ID_128 FileId;
+	} FILE_ID_INFO;
+#endif
+
+	typedef DWORD (WINAPI *pfnGetFinalPathNameByHandle)
+		(HANDLE, LPSTR, DWORD, DWORD);
+	typedef BOOL (WINAPI *pfnGetFileInformationByHandleEx)
+		(HANDLE, FILE_INFO_BY_HANDLE_CLASS, LPVOID, DWORD);
+
+	pfnGetFinalPathNameByHandle fnGetFinalPathNameByHandle = NULL;
+	pfnGetFileInformationByHandleEx fnGetFileInformationByHandleEx = NULL;
+
+	struct EntryPointLoader
+	{
+		static void init()
+		{
+			const HMODULE hmodKernel32 = GetModuleHandle("kernel32.dll");
+			if (hmodKernel32)
+			{
+				fnGetFinalPathNameByHandle = (pfnGetFinalPathNameByHandle)
+					GetProcAddress(hmodKernel32, "GetFinalPathNameByHandleA");
+				fnGetFileInformationByHandleEx = (pfnGetFileInformationByHandleEx)
+					GetProcAddress(hmodKernel32, "GetFileInformationByHandleEx");
+			}
+		}
+	};
+
+	InitMutex<EntryPointLoader> entryLoader("EntryPointLoader");
+} // anonymous namespace
+
 namespace os_utils
 {
 
@@ -67,7 +144,7 @@ SLONG get_user_id(const TEXT* /*user_name*/)
 
 
 // waits for implementation
-bool get_user_home(int /*user_id*/, Firebird::PathName& /*homeDir*/)
+bool get_user_home(int /*user_id*/, PathName& /*homeDir*/)
 {
 	return false;
 }
@@ -85,8 +162,8 @@ void adjustLockDirectoryAccess(const char* pathname)
 		// We should pass root directory in format "C:\" into GetVolumeInformation().
 		// In case of pathname is not local folder (i.e. \\share\folder) let
 		// GetVolumeInformation() return an error.
-		Firebird::PathName root(pathname);
-		const Firebird::PathName::size_type pos = root.find(':', 0);
+		PathName root(pathname);
+		const PathName::size_type pos = root.find(':', 0);
 		if (pos == 1)
 		{
 			root.erase(pos + 1, root.length());
@@ -95,7 +172,7 @@ void adjustLockDirectoryAccess(const char* pathname)
 
 		DWORD fsflags;
 		if (!GetVolumeInformation(root.c_str(), NULL, 0, NULL, NULL, &fsflags, NULL, 0))
-			Firebird::system_error::raise("GetVolumeInformation");
+			system_error::raise("GetVolumeInformation");
 
 		if (!(fsflags & FS_PERSISTENT_ACLS))
 			return;
@@ -109,20 +186,20 @@ void adjustLockDirectoryAccess(const char* pathname)
 				NULL, NULL, &pOldACL, NULL,
 				&pSecDesc) != ERROR_SUCCESS)
 		{
-			Firebird::system_error::raise("GetNamedSecurityInfo");
+			system_error::raise("GetNamedSecurityInfo");
 		}
 
 		SID_IDENTIFIER_AUTHORITY sidAuth = SECURITY_NT_AUTHORITY;
 		if (!AllocateAndInitializeSid(&sidAuth, 2, SECURITY_BUILTIN_DOMAIN_RID,
 			DOMAIN_ALIAS_RID_USERS, 0, 0, 0, 0, 0, 0, &pSID_Users))
 		{
-			Firebird::system_error::raise("AllocateAndInitializeSid");
+			system_error::raise("AllocateAndInitializeSid");
 		}
 
 		if (!AllocateAndInitializeSid(&sidAuth, 2, SECURITY_BUILTIN_DOMAIN_RID,
 			DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0, &pSID_Administrators))
 		{
-			Firebird::system_error::raise("AllocateAndInitializeSid");
+			system_error::raise("AllocateAndInitializeSid");
 		}
 
 		EXPLICIT_ACCESS eas[2];
@@ -143,18 +220,18 @@ void adjustLockDirectoryAccess(const char* pathname)
 		eas[1].Trustee.ptstrName  = (LPSTR) pSID_Administrators;
 
 		if (SetEntriesInAcl(2, eas, pOldACL, &pNewACL) != ERROR_SUCCESS)
-			Firebird::system_error::raise("SetEntriesInAcl");
+			system_error::raise("SetEntriesInAcl");
 
 		if (SetNamedSecurityInfo((LPSTR) pathname,
 				SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
 				NULL, NULL, pNewACL, NULL) != ERROR_SUCCESS)
 		{
-			Firebird::system_error::raise("SetNamedSecurityInfo");
+			system_error::raise("SetNamedSecurityInfo");
 		}
 	}
-	catch (const Firebird::Exception& ex)
+	catch (const Exception& ex)
 	{
-		Firebird::string str;
+		string str;
 		str.printf("Error adjusting access rights for folder \"%s\" :", pathname);
 
 		iscLogException(str.c_str(), ex);
@@ -202,7 +279,7 @@ void createLockDirectory(const char* pathname)
 		}
 	}
 
-	Firebird::string err;
+	string err;
 	if (attr == INVALID_FILE_ATTRIBUTES)
 	{
 		err.printf("Can't create directory \"%s\". OS errno is %d", pathname, errcode);
@@ -211,7 +288,7 @@ void createLockDirectory(const char* pathname)
 			errorLogged = true;
 			gds__log(err.c_str());
 		}
-		Firebird::fatal_exception::raise(err.c_str());
+		fatal_exception::raise(err.c_str());
 	}
 
 	if (!(attr & FILE_ATTRIBUTE_DIRECTORY))
@@ -222,7 +299,7 @@ void createLockDirectory(const char* pathname)
 			errorLogged = true;
 			gds__log(err.c_str());
 		}
-		Firebird::fatal_exception::raise(err.c_str());
+		fatal_exception::raise(err.c_str());
 	}
 
 	if (attr & FILE_ATTRIBUTE_READONLY)
@@ -233,17 +310,17 @@ void createLockDirectory(const char* pathname)
 			errorLogged = true;
 			gds__log(err.c_str());
 		}
-		Firebird::fatal_exception::raise(err.c_str());
+		fatal_exception::raise(err.c_str());
 	}
 }
 
 // open (or create if missing) and set appropriate access rights
 int openCreateSharedFile(const char* pathname, int flags)
 {
-	int rc = ::open(pathname, flags | O_RDWR | O_CREAT, S_IREAD | S_IWRITE);
+	int rc = open(pathname, flags | O_RDWR | O_CREAT, S_IREAD | S_IWRITE);
 	if (rc < 0)
 	{
-		(Firebird::Arg::Gds(isc_io_error) << "open" << pathname << Firebird::Arg::Gds(isc_io_open_err)
+		(Arg::Gds(isc_io_error) << "open" << pathname << Arg::Gds(isc_io_open_err)
 			<< strerror(errno)).raise();
 	}
 	return rc;
@@ -277,7 +354,7 @@ bool isIPv6supported()
 {
 	INT proto[] = {IPPROTO_TCP, 0};
 
-	Firebird::HalfStaticArray<char, sizeof(WSAPROTOCOL_INFO) * 4> buf;
+	HalfStaticArray<char, sizeof(WSAPROTOCOL_INFO) * 4> buf;
 
 	DWORD len = buf.getCapacity();
 	LPWSAPROTOCOL_INFO pi = (LPWSAPROTOCOL_INFO) buf.getBuffer(len);
@@ -313,26 +390,157 @@ FILE* fopen(const char* pathname, const char* mode)
 	return ::fopen(pathname, mode);
 }
 
-void getUniqueFileId(HANDLE fd, Firebird::UCharBuffer& id)
+void getUniqueFileId(HANDLE fd, UCharBuffer& id)
 {
+	entryLoader.init();
+	id.clear();
+
+	// Let's try getting the file identifier. It's not as easy as it may look.
+	// MSDN says: "After a process opens a file, the identifier is constant until
+	// the file is closed". So far so good, this is perfectly OK for us.
+	// But MSDN also says: "An application can use this identifier and the
+	// volume serial number to determine whether two handles refer to the same file".
+	// And this part is not true, unfortunately. Volume serial number (VSN) is not
+	// guaranteed to be unique. It's generated when then volume is formatted and
+	// it's stored inside the volume's master boot record. But if the volume is cloned
+	// at the physical block level, or if a virtual (preformatted) drive is used,
+	// or if volume snapshot is attached as a different logical volume, then VSN may
+	// duplicate an existing VSN. And we would stay confused thinking that two
+	// different files are actually the same file. To avoid such a disaster we
+	// retrieve the final pathname (with symlinks and mount points expanded)
+	// and extract the volume GUID (for local drives) or its share name
+	// (for remote drives) as unique volume ID.
+
+	if (fnGetFinalPathNameByHandle)
+	{
+		char pathbuf[MAX_PATH + 1];
+		DWORD res = fnGetFinalPathNameByHandle(fd,
+			pathbuf, sizeof(pathbuf), VOLUME_NAME_GUID);
+		if (res && res < sizeof(pathbuf))
+		{
+			string path(pathbuf);
+
+			// Expected format is \\?\Volume{GUID}\pathname,
+			// we extract {GUID} and convert into binary format
+
+			const char* const pattern = "\\\\?\\Volume";
+			const FB_SIZE_T pos1 = (FB_SIZE_T) strlen(pattern);
+
+			if (path.find(pattern) == 0)
+			{
+				const FB_SIZE_T pos2 = path.find_first_of('}');
+
+				if (path.find_first_of('{') == pos1 && pos2 != string::npos)
+				{
+					fb_assert(id.isEmpty());
+					id.resize(sizeof(Guid));
+					UCHAR* ptr = id.begin();
+					bool num_start = true;
+
+					for (FB_SIZE_T n = pos1 + 1; n < pos2 && ptr < id.end(); n++)
+					{
+						const char symbol = path[n];
+
+						if (symbol == '-')
+							continue;
+
+						fb_assert(isalpha(symbol) || isdigit(symbol));
+
+						if (symbol >= '0' && symbol <= '9')
+							*ptr += symbol - '0';
+						else if (symbol >= 'a' && symbol <= 'z')
+							*ptr += symbol - 'a' + 10;
+						else if (symbol >= 'A' && symbol <= 'Z')
+							*ptr += symbol - 'A' + 10;
+
+						if (num_start)
+							*ptr *= 16;
+						else
+							ptr++;
+
+						num_start = !num_start;
+					}
+
+					fb_assert(ptr == id.end());
+				}
+			}
+		}
+
+		if (!res && GetLastError() == ERROR_PATH_NOT_FOUND)
+		{
+			res = fnGetFinalPathNameByHandle(fd,
+				pathbuf, sizeof(pathbuf), VOLUME_NAME_DOS);
+
+			if (res && res < sizeof(pathbuf))
+			{
+				const string path(pathbuf);
+
+				// Expected format is \\?\UNC\server\share\pathname,
+				// we extract <server> and <share> and use them together
+
+				const char* const pattern = "\\\\?\\UNC\\";
+				const FB_SIZE_T pos1 = (FB_SIZE_T) strlen(pattern);
+
+				if (path.find(pattern) == 0)
+				{
+					const FB_SIZE_T pos2 = path.find_first_of('\\', pos1);
+					if (pos2 != string::npos)
+					{
+						// add <server>
+						id.add(reinterpret_cast<const UCHAR*>(path.begin() + pos1),
+							   pos2 - pos1);
+
+						const FB_SIZE_T pos3 = path.find_first_of('\\', pos2 + 1);
+						if (pos3 != string::npos)
+						{
+							// add <share>
+							id.add(reinterpret_cast<const UCHAR*>(path.begin() + pos2 + 1),
+								   pos3 - pos2 - 1);
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if (fnGetFileInformationByHandleEx)
+	{
+		// This function returns the volume serial number and 128-bit file ID.
+		// We use the VSN only if we failed to get the other volume ID above.
+
+		FILE_ID_INFO file_id;
+		if (fnGetFileInformationByHandleEx(fd, FileIdInfo, &file_id, sizeof(file_id)))
+		{
+			if (id.isEmpty())
+			{
+				id.add(reinterpret_cast<UCHAR*>(&file_id.VolumeSerialNumber),
+					   sizeof(file_id.VolumeSerialNumber));
+			}
+
+			id.add(reinterpret_cast<UCHAR*>(&file_id.FileId),
+				   sizeof(file_id.FileId));
+
+			return;
+		}
+	}
+
+	// This function returns the volume serial number and 64-bit file ID.
+	// We use the VSN only if we failed to get the other volume ID above.
+
 	BY_HANDLE_FILE_INFORMATION file_info;
-	GetFileInformationByHandle(fd, &file_info);
+	if (!GetFileInformationByHandle(fd, &file_info))
+		system_call_failed::raise("GetFileInformationByHandle");
 
-	// The identifier is [nFileIndexHigh, nFileIndexLow]
-	// MSDN says: After a process opens a file, the identifier is constant until
-	// the file is closed. An application can use this identifier and the
-	// volume serial number to determine whether two handles refer to the same file.
-	const size_t len1 = sizeof(file_info.dwVolumeSerialNumber);
-	const size_t len2 = sizeof(file_info.nFileIndexHigh);
-	const size_t len3 = sizeof(file_info.nFileIndexLow);
+	if (id.isEmpty())
+	{
+		id.add(reinterpret_cast<UCHAR*>(&file_info.dwVolumeSerialNumber),
+			   sizeof(file_info.dwVolumeSerialNumber));
+	}
 
-	UCHAR* p = id.getBuffer(len1 + len2 + len3);
-
-	memcpy(p, &file_info.dwVolumeSerialNumber, len1);
-	p += len1;
-	memcpy(p, &file_info.nFileIndexHigh, len2);
-	p += len2;
-	memcpy(p, &file_info.nFileIndexLow, len3);
+	id.add(reinterpret_cast<UCHAR*>(&file_info.nFileIndexHigh),
+		   sizeof(file_info.nFileIndexHigh));
+	id.add(reinterpret_cast<UCHAR*>(&file_info.nFileIndexLow),
+		   sizeof(file_info.nFileIndexLow));
 }
 
 

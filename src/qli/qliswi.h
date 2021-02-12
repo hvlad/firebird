@@ -25,7 +25,7 @@
 #ifndef QLI_QLISWI_H
 #define QLI_QLISWI_H
 
-#include "../jrd/ibase.h"
+#include "ibase.h"
 #include "../jrd/constants.h"
 
 enum qli_switches
@@ -54,28 +54,28 @@ enum qli_switches
 
 static const Switches::in_sw_tab_t qli_in_sw_table[] =
 {
-	{IN_SW_QLI_APP_SCRIPT		, 0, "APPSCRIPT"		, 0, 0, 0, false, 0,	1, NULL},
-	{IN_SW_QLI_APP_SCRIPT		, 0, "APP_SCRIPT"		, 0, 0, 0, false, 516,	1, NULL},
-	{IN_SW_QLI_BUFFERS			, 0, "BUFFERS"			, 0, 0, 0, false, 517,	1, NULL},
-	{IN_SW_QLI_EXIT				, 0, "EXIT"				, 0, 0, 0, false, 532,	1, NULL},
-	{IN_SW_QLI_FETCH_PASSWORD	, 0, "FETCH_PASSWORD"	, 0, 0, 0, false, 518,	1, NULL},
-	{IN_SW_QLI_INITIAL_SCRIPT	, 0, "INITSCRIPT"		, 0, 0, 0, false, 0,	1, NULL},
-	{IN_SW_QLI_INITIAL_SCRIPT	, 0, "INIT_SCRIPT"		, 0, 0, 0, false, 519,	1, NULL},
-	{IN_SW_QLI_NODBTRIGGERS		, 0, "NODBTRIGGERS"		, 0, 0, 0, false, 531,	3, NULL},
-	{IN_SW_QLI_NOBANNER			, 0, "NOBANNER"			, 0, 0, 0, false, 0,	1, NULL},
-	{IN_SW_QLI_NOBANNER			, 0, "NO_BANNER"		, 0, 0, 0, false, 520,	1, NULL},
-	{IN_SW_QLI_PASSWORD			, 0, "PASSWORD"			, 0, 0, 0, false, 521,	1, NULL},
-	{IN_SW_QLI_TRACE			, 0, "TRACE"			, 0, 0, 0, false, 522,	3, NULL},
+	{IN_SW_QLI_APP_SCRIPT		, 0, "APPSCRIPT"		, 0, 0, 0, false, false, 0,	1, NULL},
+	{IN_SW_QLI_APP_SCRIPT		, 0, "APP_SCRIPT"		, 0, 0, 0, false, false, 516,	1, NULL},
+	{IN_SW_QLI_BUFFERS			, 0, "BUFFERS"			, 0, 0, 0, false, false, 517,	1, NULL},
+	{IN_SW_QLI_EXIT				, 0, "EXIT"				, 0, 0, 0, false, false, 532,	1, NULL},
+	{IN_SW_QLI_FETCH_PASSWORD	, 0, "FETCH_PASSWORD"	, 0, 0, 0, false, false, 518,	1, NULL},
+	{IN_SW_QLI_INITIAL_SCRIPT	, 0, "INITSCRIPT"		, 0, 0, 0, false, false, 0,	1, NULL},
+	{IN_SW_QLI_INITIAL_SCRIPT	, 0, "INIT_SCRIPT"		, 0, 0, 0, false, false, 519,	1, NULL},
+	{IN_SW_QLI_NODBTRIGGERS		, 0, "NODBTRIGGERS"		, 0, 0, 0, false, false, 531,	3, NULL},
+	{IN_SW_QLI_NOBANNER			, 0, "NOBANNER"			, 0, 0, 0, false, false, 0,	1, NULL},
+	{IN_SW_QLI_NOBANNER			, 0, "NO_BANNER"		, 0, 0, 0, false, false, 520,	1, NULL},
+	{IN_SW_QLI_PASSWORD			, 0, "PASSWORD"			, 0, 0, 0, false, false, 521,	1, NULL},
+	{IN_SW_QLI_TRACE			, 0, "TRACE"			, 0, 0, 0, false, false, 522,	3, NULL},
 #ifdef TRUSTED_AUTH
-	{IN_SW_QLI_TRUSTED_AUTH		, 0, "TRUSTED_AUTH"		, 0, 0, 0, false, 523,	3, NULL},
+	{IN_SW_QLI_TRUSTED_AUTH		, 0, "TRUSTED_AUTH"		, 0, 0, 0, false, false, 523,	3, NULL},
 #endif
-	{IN_SW_QLI_USER				, 0, "USER"				, 0, 0, 0, false, 524,	1, NULL},
-	{IN_SW_QLI_VERIFY			, 0, "VERIFY"			, 0, 0, 0, false, 525,	1, NULL},
-	{IN_SW_QLI_X				, 0, "X"				, 0, 0, 0, false, 0,	1, NULL},
-	{IN_SW_QLI_Y				, 0, "Y"				, 0, 0, 0, false, 0,	1, NULL},
-	{IN_SW_QLI_Z				, 0, "Z"				, 0, 0, 0, false, 526,	1, NULL},
-	{IN_SW_QLI_HELP				, 0, "?"				, 0, 0, 0, false, 0,	1, NULL},
-	{IN_SW_QLI_0				, 0, NULL				, 0, 0, 0, false, 0,	0, NULL}
+	{IN_SW_QLI_USER				, 0, "USER"				, 0, 0, 0, false, false, 524,	1, NULL},
+	{IN_SW_QLI_VERIFY			, 0, "VERIFY"			, 0, 0, 0, false, false, 525,	1, NULL},
+	{IN_SW_QLI_X				, 0, "X"				, 0, 0, 0, false, false, 0,	1, NULL},
+	{IN_SW_QLI_Y				, 0, "Y"				, 0, 0, 0, false, false, 0,	1, NULL},
+	{IN_SW_QLI_Z				, 0, "Z"				, 0, 0, 0, false, false, 526,	1, NULL},
+	{IN_SW_QLI_HELP				, 0, "?"				, 0, 0, 0, false, false, 0,	1, NULL},
+	{IN_SW_QLI_0				, 0, NULL				, 0, 0, 0, false, false, 0,	0, NULL}
 };
 
 #endif // QLI_QLISWI_H

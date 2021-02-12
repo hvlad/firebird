@@ -77,8 +77,7 @@ class InversionNode;
 class PlanNode;
 class SortNode;
 
-double OPT_getRelationCardinality(thread_db*, jrd_rel*, const Format*);
-Firebird::string OPT_make_alias(thread_db*, const CompilerScratch*, const CompilerScratch::csb_repeat*);
+Firebird::string OPT_make_alias(const CompilerScratch*, StreamType stream);
 
 enum segmentScanType {
 	segmentScanNone,
@@ -148,6 +147,7 @@ public:
 	bool			navigated;
 
 	Firebird::Array<BoolExprNode*> matches;
+	Firebird::Array<DbKeyRangeNode*> dbkeyRanges;
 	SortedStreamList dependentFromStreams;
 };
 
@@ -160,6 +160,11 @@ public:
 	OptimizerRetrieval(MemoryPool& p, OptimizerBlk* opt, StreamType streamNumber,
 		bool outer, bool inner, SortNode* sortNode);
 	~OptimizerRetrieval();
+
+	MemoryPool& getPool() const
+	{
+		return pool;
+	}
 
 	InversionCandidate* getInversion()
 	{
@@ -180,7 +185,9 @@ public:
 	IndexTableScan* getNavigation();
 
 protected:
-	void analyzeNavigation();
+	void analyzeNavigation(const InversionCandidateList& inversions);
+	bool betterInversion(const InversionCandidate* inv1, const InversionCandidate* inv2,
+		bool ignoreUnmatched) const;
 	InversionNode* composeInversion(InversionNode* node1, InversionNode* node2,
 		InversionNode::Type node_type) const;
 	const Firebird::string& getAlias();
@@ -222,7 +229,7 @@ public:
 	bool outerFlag;
 	bool createIndexScanNodes;
 	bool setConjunctionsMatched;
-	IndexScratch* navigationCandidate;
+	InversionCandidate* navigationCandidate;
 };
 
 class IndexRelationship
@@ -260,7 +267,7 @@ public:
 
 	bool isFiltered() const
 	{
-		return (baseSelectivity < MAXIMUM_SELECTIVITY);
+		return (baseIndexes || baseSelectivity < MAXIMUM_SELECTIVITY);
 	}
 
 	IndexedRelationships indexedRelationships;

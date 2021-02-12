@@ -39,7 +39,7 @@ public:
 
 	//static const unsigned MAP_LENGTH;		// CVC: Moved to dsql/Nodes.h as STREAM_MAP_LENGTH
 	static const unsigned MAX_CLONES = 1000;
-	static const unsigned MAX_REQUEST_SIZE = 10485760;	// 10 MB - just to be safe
+	static const unsigned MAX_REQUEST_SIZE = 50 * 1048576;	// 50 MB - just to be safe
 
 private:
 	JrdStatement(thread_db* tdbb, MemoryPool* p, CompilerScratch* csb);
@@ -57,11 +57,11 @@ public:
 	void release(thread_db* tdbb);
 
 private:
-	static void verifyTriggerAccess(thread_db* tdbb, jrd_rel* ownerRelation, trig_vec* triggers,
-		jrd_rel* view);
-	static void triggersExternalAccess(thread_db* tdbb, ExternalAccessList& list, trig_vec* tvec);
+	static void verifyTriggerAccess(thread_db* tdbb, jrd_rel* ownerRelation, TrigVector* triggers,
+		MetaName userName);
+	static void triggersExternalAccess(thread_db* tdbb, ExternalAccessList& list, TrigVector* tvec, const MetaName &user);
 
-	void buildExternalAccess(thread_db* tdbb, ExternalAccessList& list);
+	void buildExternalAccess(thread_db* tdbb, ExternalAccessList& list, const MetaName& user);
 
 public:
 	MemoryPool* pool;
@@ -75,7 +75,8 @@ public:
 	ResourceList resources;				// Resources (relations and indices)
 	const jrd_prc* procedure;			// procedure, if any
 	const Function* function;			// function, if any
-	Firebird::MetaName triggerName;		// name of request (trigger), if any
+	MetaName triggerName;		// name of request (trigger), if any
+	Jrd::UserId* triggerInvoker;		// user name if trigger run with SQL SECURITY DEFINER
 	JrdStatement* parentStatement;		// Sub routine's parent statement
 	Firebird::Array<JrdStatement*> subStatements;	// Array of subroutines' statements
 	const StmtNode* topNode;			// top of execution tree

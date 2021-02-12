@@ -47,7 +47,9 @@
 #ifdef LINUX
 // This hack fixes CORE-2896 - embedded connections fail on linux.
 // Looks like a lot of linux kernels are buggy when working with PRIO_INHERIT mutexes.
-//#undef HAVE_PTHREAD_MUTEXATTR_SETPROTOCOL
+// dimitr (10-11-2016): PRIO_INHERIT also causes undesired short-time sleeps (CPU idle 30-35%)
+// during context switches under concurrent load. Proved on linux kernels up to 4.8.
+#undef HAVE_PTHREAD_MUTEXATTR_SETPROTOCOL
 #endif
 
 
@@ -172,7 +174,10 @@ struct event_t
 class MemoryHeader
 {
 public:
-	static const USHORT HEADER_VERSION = 1;
+	static const USHORT HEADER_VERSION = 2;
+
+	// Values for mhb_flags
+	static const USHORT FLAG_DELETED = 1;	// Shared file has been deleted
 
 	void init(USHORT type, USHORT version)
 	{
@@ -180,15 +185,26 @@ public:
 		mhb_header_version = HEADER_VERSION;
 		mhb_version = version;
 		mhb_timestamp = TimeStamp::getCurrentTimeStamp().value();
+		mhb_flags = 0;
 #ifdef HAVE_SHARED_MUTEX_SECTION
 		fb_assert(sizeof(mhb_mutex) <= sizeof(dummy));
 #endif
 	}
 
+	void markAsDeleted()
+	{
+		mhb_flags |= FLAG_DELETED;
+	}
+
+	bool isDeleted() const
+	{
+		return (mhb_flags & FLAG_DELETED);
+	}
+
 	USHORT mhb_type;
 	USHORT mhb_header_version;
 	USHORT mhb_version;
-	USHORT reserve;					// not used
+	USHORT mhb_flags;
 	GDS_TIMESTAMP mhb_timestamp;
 	union
 	{
@@ -258,10 +274,20 @@ public:
 };
 
 
+// NS 2014-08-11: FIXME - this class needs major refactoring:
+// - remove conditional compilation from header file (for example,
+//   you can use virtual interface and factory method to create
+//   implementation-specific instance)
+// - hide implementation details from interface
+// - users of shared mutex implemented by this class shall be using
+//   RAII SharedMutexGuard to improve reliability of code
+// - shared memory initialization shall be separate from construction
+//   so users (event.cpp, tpc.cpp) can avoid storing pointers to a
+//   partially constructed object in code
 class SharedMemoryBase
 {
 public:
-	SharedMemoryBase(const TEXT* fileName, ULONG size, IpcObject* cb);
+	SharedMemoryBase(const TEXT* fileName, ULONG size, IpcObject* cb, bool skipLock);
 	~SharedMemoryBase();
 
 #ifdef HAVE_OBJECT_MAP
@@ -316,15 +342,18 @@ public:
 	ULONG*	sh_mem_hdr_address;
 #endif
 	TEXT	sh_mem_name[MAXPATHLEN];
-	MemoryHeader* volatile sh_mem_header;
-#ifdef USE_SYS5SEMAPHORE
+	MemoryHeader* volatile sh_mem_header; // NS 2014-08-01: FIXME: Why use volatile pointer and not volatile MemoryHeader????
+										  // Also, "volatile" variables should never be used directly, only via atomics API
+										  // because there is no portable barrier semantics for them. Only MS2005+ generate
+										  // barriers, and all other compilers generally do not.
+
 private:
+#ifdef USE_SYS5SEMAPHORE
 	int		fileNum;	// file number in shared table of shared files
 	bool	getSem5(Sys5Semaphore* sem);
 	void	freeSem5(Sys5Semaphore* sem);
 #endif
 
-private:
 	IpcObject* sh_mem_callback;
 #ifdef WIN_NT
 	bool sh_mem_unlink;
@@ -340,6 +369,10 @@ public:
 		SRAM_TRACE_CONFIG = 0xFC,
 		SRAM_TRACE_LOG = 0xFB,
 		SRAM_MAPPING_RESET = 0xFA,
+		SRAM_TPC_HEADER = 0xF9,
+		SRAM_TPC_BLOCK = 0xF8,
+		SRAM_TPC_SNAPSHOTS = 0xF7,
+		SRAM_CHANGELOG_STATE = 0xF6
 	};
 
 protected:
@@ -350,8 +383,8 @@ template <class Header>		// Header must be "public MemoryHeader"
 class SharedMemory : public SharedMemoryBase
 {
 public:
-	SharedMemory(const TEXT* fileName, ULONG size, IpcObject* cb)
-		: SharedMemoryBase(fileName, size, cb)
+	SharedMemory(const TEXT* fileName, ULONG size, IpcObject* cb, bool skipLock = false)
+		: SharedMemoryBase(fileName, size, cb, skipLock)
 	{ }
 
 #ifdef HAVE_OBJECT_MAP
@@ -383,6 +416,52 @@ public:
 	}
 
 };
+
+class SharedMutexGuard
+{
+public:
+	explicit SharedMutexGuard(SharedMemoryBase* shmem, bool init_lock = true)
+		: m_shmem(shmem)
+	{
+		if (init_lock)
+			lock();
+		else
+			m_locked = false;
+	}
+
+	bool tryLock() {
+		m_locked = m_shmem->mutexLockCond();
+		return m_locked;
+	}
+
+	void lock() {
+		m_shmem->mutexLock();
+		m_locked = true;
+	}
+
+	void unlock() {
+		m_shmem->mutexUnlock();
+		m_locked = false;
+	}
+
+	bool isLocked() {
+		return m_locked;
+	}
+
+	~SharedMutexGuard()
+	{
+		if (m_locked)
+			m_shmem->mutexUnlock();
+	}
+
+private:
+	SharedMutexGuard(const SharedMutexGuard&);
+	SharedMutexGuard& operator=(const SharedMutexGuard&);
+
+	SharedMemoryBase* m_shmem;
+	bool m_locked;
+};
+
 
 } // namespace Firebird
 

@@ -10,10 +10,10 @@
  *  See the License for the specific language governing rights
  *  and limitations under the License.
  *
- *  The Original Code was created by Vlad Horsun
+ *  The Original Code was created by Vlad Khorsun
  *  for the Firebird Open Source RDBMS project.
  *
- *  Copyright (c) 2006 Vlad Horsun <hvlad@users.sourceforge.net>
+ *  Copyright (c) 2006 Vlad Khorsun <hvlad@users.sourceforge.net>
  *  and all contributors signed below.
  *
  *  All Rights Reserved.

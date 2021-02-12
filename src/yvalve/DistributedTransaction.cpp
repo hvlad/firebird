@@ -32,7 +32,7 @@
 
 #include "../yvalve/MasterImplementation.h"
 #include "../common/classes/rwlock.h"
-#include "../jrd/inf_pub.h"
+#include "firebird/impl/inf_pub.h"
 #include "../common/isc_proto.h"
 #include "../jrd/acl.h"
 
@@ -49,17 +49,6 @@ public:
 	{ }
 
 	// ITransaction implementation
-	int release()
-	{
-		if (--refCounter == 0)
-		{
-			delete this;
-			return 0;
-		}
-
-		return 1;
-	}
-
 	void getInfo(CheckStatusWrapper* status, unsigned int itemsLength,
 		const unsigned char* items, unsigned int bufferLength, unsigned char* buffer);
 	void prepare(CheckStatusWrapper* status, unsigned int msgLength,

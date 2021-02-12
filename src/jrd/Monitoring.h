@@ -56,6 +56,7 @@ public:
 		VALUE_TABLE_ID,
 		VALUE_INTEGER,
 		VALUE_TIMESTAMP,
+		VALUE_TIMESTAMP_TZ,
 		VALUE_STRING,
 		VALUE_BOOLEAN
 	};
@@ -137,19 +138,18 @@ public:
 				storeField(field_id, VALUE_TIMESTAMP, sizeof(ISC_TIMESTAMP), &value.value());
 		}
 
-		void storeString(int field_id, const Firebird::string& value)
+		void storeTimestamp(int field_id, const ISC_TIMESTAMP& value)
 		{
-			if (value.length())
-				storeField(field_id, VALUE_STRING, value.length(), value.c_str());
+			storeField(field_id, VALUE_TIMESTAMP, sizeof(ISC_TIMESTAMP), &value);
 		}
 
-		void storeString(int field_id, const Firebird::PathName& value)
+		void storeTimestampTz(int field_id, const ISC_TIMESTAMP_TZ& value)
 		{
-			if (value.length())
-				storeField(field_id, VALUE_STRING, value.length(), value.c_str());
+			storeField(field_id, VALUE_TIMESTAMP_TZ, sizeof(ISC_TIMESTAMP_TZ), &value);
 		}
 
-		void storeString(int field_id, const Firebird::MetaName& value)
+		template <class S>
+		void storeString(int field_id, const S& value)
 		{
 			if (value.length())
 				storeField(field_id, VALUE_STRING, value.length(), value.c_str());
@@ -237,14 +237,14 @@ private:
 };
 
 
-class MonitoringHeader : public Firebird::MemoryHeader
+struct MonitoringHeader : public Firebird::MemoryHeader
 {
-public:
 	ULONG used;
 	ULONG allocated;
 };
 
-class MonitoringData FB_FINAL : public Firebird::IpcObject
+
+class MonitoringData FB_FINAL : public Firebird::PermanentStorage, public Firebird::IpcObject
 {
 	static const USHORT MONITOR_VERSION = 5;
 	static const ULONG DEFAULT_SIZE = 1048576;
@@ -316,11 +316,13 @@ public:
 
 	typedef Firebird::HalfStaticArray<AttNumber, 64> SessionList;
 
-	explicit MonitoringData(const Database*);
+	explicit MonitoringData(Database*);
 	~MonitoringData();
 
 	bool initialize(Firebird::SharedMemoryBase*, bool);
 	void mutexBug(int osErrorCode, const char* text);
+
+	void initSharedFile();
 
 	void acquire();
 	void release();
@@ -339,7 +341,9 @@ private:
 
 	void ensureSpace(ULONG);
 
-	Firebird::AutoPtr<Firebird::SharedMemory<MonitoringHeader> > shared_memory;
+	const Firebird::string& m_dbId;
+	Firebird::AutoPtr<Firebird::SharedMemory<MonitoringHeader> > m_sharedMemory;
+	Firebird::Mutex m_localMutex;
 };
 
 
@@ -352,8 +356,9 @@ public:
 	{}
 
 protected:
-	const Format* getFormat(thread_db* tdbb, jrd_rel* relation) const;
-	bool retrieveRecord(thread_db* tdbb, jrd_rel* relation, FB_UINT64 position, Record* record) const;
+	const Format* getFormat(thread_db* tdbb, jrd_rel* relation) const override;
+	bool retrieveRecord(thread_db* tdbb, jrd_rel* relation, FB_UINT64 position,
+		Record* record) const override;
 };
 
 

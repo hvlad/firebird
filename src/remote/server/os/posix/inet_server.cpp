@@ -36,7 +36,7 @@
 #include <errno.h>
 #include "../common/isc_proto.h"
 #include "../common/os/divorce.h"
-#include "../jrd/ibase.h"
+#include "ibase.h"
 #include "../common/classes/init.h"
 #include "../common/config/config.h"
 #include "../common/os/fbsyslog.h"
@@ -75,13 +75,14 @@
 #endif
 
 #include <errno.h>
-#include "../jrd/ibase.h"
+#include "ibase.h"
 
 #include "../remote/remote.h"
 #include "../jrd/license.h"
 #include "../common/file_params.h"
 #include "../remote/inet_proto.h"
 #include "../remote/server/serve_proto.h"
+#include "../remote/server/ReplServer.h"
 #include "../yvalve/gds_proto.h"
 #include "../common/utils_proto.h"
 #include "../common/classes/fb_string.h"
@@ -151,6 +152,11 @@ static int closePort(const int reason, const int, void* arg)
 	return 0;
 }
 
+bool check_fd(int fd)
+{
+    return fcntl(fd, F_GETFL) != -1 || errno != EBADF;
+}
+
 extern "C" {
 
 int CLIB_ROUTINE main( int argc, char** argv)
@@ -179,8 +185,8 @@ int CLIB_ROUTINE main( int argc, char** argv)
 
 		// It's very easy to detect that we are spawned - just check fd 0 to be a socket.
 		const int channel = 0;
-		struct stat stat0;
-		if (fstat(channel, &stat0) == 0 && S_ISSOCK(stat0.st_mode))
+		struct STAT stat0;
+		if (os_utils::fstat(channel, &stat0) == 0 && S_ISSOCK(stat0.st_mode))
 		{
 			// classic server mode
 			classic = true;
@@ -201,7 +207,7 @@ int CLIB_ROUTINE main( int argc, char** argv)
 
 			if (*p++ == '-')
 			{
-				while (c = *p++)
+				while ((c = *p++))
 				{
 					switch (UPPER(c))
 					{
@@ -271,7 +277,7 @@ int CLIB_ROUTINE main( int argc, char** argv)
 			}
 		}
 
-		if (Config::getServerMode() == MODE_CLASSIC)
+		if (Firebird::Config::getServerMode() == Firebird::MODE_CLASSIC)
 		{
 			if (!classic)
 				standaloneClassic = true;
@@ -319,7 +325,7 @@ int CLIB_ROUTINE main( int argc, char** argv)
 #endif
 
 #if !(defined(DEV_BUILD))
-		if (Config::getBugcheckAbort())
+		if (Firebird::Config::getBugcheckAbort())
 #endif
 		{
 			// try to force core files creation
@@ -345,16 +351,58 @@ int CLIB_ROUTINE main( int argc, char** argv)
 
 		if (!(debug || classic))
 		{
+			// Keep stdout and stderr openened always. We decide allow output
+			// from binary or redirect it according to config
 			int mask = 0; // FD_ZERO(&mask);
-			mask |= 1 << 2; // FD_SET(2, &mask);
+			mask |= (1 << 1 | 1 << 2); // FD_SET(1, &mask); FD_SET(2, &mask);
 			divorce_terminal(mask);
 		}
 
 		// check firebird.conf presence - must be for server
-		if (Config::missFirebirdConf())
+		if (Firebird::Config::missFirebirdConf())
 		{
 			Firebird::Syslog::Record(Firebird::Syslog::Error, "Missing master config file firebird.conf");
 			exit(STARTUP_ERROR);
+		}
+
+		if (!debug)
+		{
+			const char* redirection_file = Firebird::Config::getOutputRedirectionFile();
+
+			int stdout_no = fileno(stdout);
+			int stderr_no = fileno(stderr);
+			const char* dev_null_file = "/dev/null";
+			bool keep_as_is = !redirection_file ||
+				(redirection_file && (strcmp(redirection_file, "-") == 0 || strcmp(redirection_file, "") == 0));
+
+			// guard close all fds to properly demonize. Detect this case
+			// and if we spawned from daemon we reopen stdout and stderr
+			// and redirect it to /dev/null if user want us to print to stdout
+			if ((!check_fd(stdout_no) || !check_fd(stderr_no)) && keep_as_is)
+			{
+				redirection_file = dev_null_file;
+				keep_as_is = false;
+			}
+
+			if (!keep_as_is)
+			{
+				int f = open(redirection_file, O_CREAT|O_APPEND|O_WRONLY, 0644);
+
+				if (f >= 0)
+				{
+
+					if (f != stdout_no)
+						dup2(f, stdout_no);
+
+					if (f != stderr_no)
+						dup2(f, stderr_no);
+
+					if (f != stdout_no && f != stderr_no)
+						close(f);
+				}
+				else
+					gds__log("Unable to open file %s for output redirection", redirection_file);
+			}
 		}
 
 		if (super || standaloneClassic)
@@ -399,7 +447,7 @@ int CLIB_ROUTINE main( int argc, char** argv)
 			ISC_STATUS_ARRAY status;
 			isc_db_handle db_handle = 0L;
 
-			const Firebird::RefPtr<Config> defConf(Config::getDefaultConfig());
+			const Firebird::RefPtr<const Firebird::Config> defConf(Firebird::Config::getDefaultConfig());
 			const char* path = defConf->getSecurityDatabase();
 			const char dpb[] = {isc_dpb_version1, isc_dpb_sec_attach, 1, 1, isc_dpb_address_path, 0};
 
@@ -420,21 +468,18 @@ int CLIB_ROUTINE main( int argc, char** argv)
 
 		fb_shutdown_callback(NULL, closePort, fb_shut_exit, port);
 
-		SRVR_multi_thread(port, INET_SERVER_flag);
+		Firebird::LocalStatus localStatus;
+		Firebird::CheckStatusWrapper statusWrapper(&localStatus);
 
-#ifdef DEBUG_GDS_ALLOC
-		// In Debug mode - this will report all server-side memory leaks due to remote access
-
-		Firebird::PathName name = fb_utils::getPrefix(
-			Firebird::IConfigManager::DIR_LOG, "memdebug.log");
-		FILE* file = os_utils::fopen(name.c_str(), "w+t");
-		if (file)
+		if (!REPL_server(&statusWrapper, false, &serverClosing))
 		{
-			fprintf(file, "Global memory pool allocated objects\n");
-			getDefaultMemoryPool()->print_contents(file);
-			fclose(file);
+			const char* errorMsg = "Replication server initialization error";
+			gds__log_status(errorMsg, localStatus.getErrors());
+			Firebird::Syslog::Record(Firebird::Syslog::Error, errorMsg);
+			exit(STARTUP_ERROR);
 		}
-#endif
+
+		SRVR_multi_thread(port, INET_SERVER_flag);
 
 		// perform atexit shutdown here when all globals in embedded library are active
 		// also sync with possibly already running shutdown in dedicated thread
@@ -507,12 +552,12 @@ static void raiseLimit(int resource)
 {
 	struct rlimit lim;
 
-	if (getrlimit(resource, &lim) == 0)
+	if (os_utils::getrlimit(resource, &lim) == 0)
 	{
 		if (lim.rlim_cur != lim.rlim_max)
 		{
 			lim.rlim_cur = lim.rlim_max;
-			if (setrlimit(resource, &lim) != 0)
+			if (os_utils::setrlimit(resource, &lim) != 0)
 			{
 				gds__log("setrlimit() failed, errno=%d", errno);
 			}

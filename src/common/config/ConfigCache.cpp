@@ -27,6 +27,7 @@
 
 #include "../common/config/ConfigCache.h"
 #include "../common/config/config_file.h"
+#include "../common/os/os_utils.h"
 
 #include "gen/iberror.h"
 
@@ -71,9 +72,9 @@ void ConfigCache::checkLoadConfig()
 	loadConfig();
 }
 
-void ConfigCache::addFile(const Firebird::PathName& fName)
+bool ConfigCache::addFile(const Firebird::PathName& fName)
 {
-	files->add(fName);
+	return files->add(fName);
 }
 
 Firebird::PathName ConfigCache::getFileName()
@@ -83,8 +84,9 @@ Firebird::PathName ConfigCache::getFileName()
 
 time_t ConfigCache::File::getTime()
 {
-	struct stat st;
-	if (stat(fileName.c_str(), &st) != 0)
+	struct STAT st;
+
+	if (os_utils::stat(fileName.c_str(), &st) != 0)
 	{
 		if (errno == ENOENT)
 		{
@@ -93,6 +95,7 @@ time_t ConfigCache::File::getTime()
 		}
 		system_call_failed::raise("stat");
 	}
+
 	return st.st_mtime;
 }
 
@@ -124,21 +127,24 @@ bool ConfigCache::File::checkLoadConfig(bool set)
 	return false;
 }
 
-void ConfigCache::File::add(const PathName& fName)
+bool ConfigCache::File::add(const PathName& fName)
 {
 	if (fName == fileName)
 	{
-		return;
+		return false;
 	}
 
 	if (next)
 	{
-		next->add(fName);
+		return next->add(fName);
 	}
 	else
 	{
 		next = FB_NEW_POOL(getPool()) ConfigCache::File(getPool(), fName);
+		next->checkLoadConfig(true); // To set current time and avoid unnecessary invalidation
 	}
+
+	return true;
 }
 
 void ConfigCache::File::trim()

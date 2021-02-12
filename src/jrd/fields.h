@@ -24,7 +24,7 @@
 
 //	type					, name				, dtype			, length					, sub_type					, dflt_blr	, nullable)
 	FIELD(fld_context		, nam_v_context		, dtype_short	, sizeof(SSHORT)			, 0							, NULL		, true)
-	FIELD(fld_ctx_name		, nam_context		, dtype_text	, 255						, dsc_text_type_metadata	, NULL		, true)
+	FIELD(fld_ctx_name		, nam_context		, dtype_text	, 255 * METADATA_BYTES_PER_CHAR, dsc_text_type_metadata	, NULL		, true)
 	FIELD(fld_description	, nam_description	, dtype_blob	, BLOB_SIZE					, isc_blob_text				, NULL		, true)
 	FIELD(fld_edit_string	, nam_edit_string	, dtype_varying	, 127						, 0							, NULL		, true)
 	FIELD(fld_f_id			, nam_f_id			, dtype_short	, sizeof(SSHORT)			, 0							, NULL		, true)
@@ -55,7 +55,7 @@
 	FIELD(fld_class			, nam_class			, dtype_text	, MAX_SQL_IDENTIFIER_LEN	, dsc_text_type_metadata	, NULL		, true)
 	FIELD(fld_acl			, nam_acl			, dtype_blob	, BLOB_SIZE					, isc_blob_acl				, NULL		, true)
 	FIELD(fld_file_name		, nam_file_name		, dtype_varying	, 255						, 0							, NULL		, true)
-	FIELD(fld_file_name2	, nam_file_name2	, dtype_varying	, 255						, dsc_text_type_metadata	, NULL		, true)
+	FIELD(fld_file_name2	, nam_file_name2	, dtype_varying	, 255 * METADATA_BYTES_PER_CHAR, dsc_text_type_metadata	, NULL		, true)
 	FIELD(fld_file_seq		, nam_file_seq		, dtype_short	, sizeof(SSHORT)			, 0							, NULL		, true)
 	FIELD(fld_file_start	, nam_file_start	, dtype_long	, sizeof(SLONG)				, 0							, NULL		, true)
 	FIELD(fld_file_length	, nam_file_length	, dtype_long	, sizeof(SLONG)				, 0							, NULL		, true)
@@ -155,7 +155,7 @@
 	FIELD(fld_src_info		, nam_src_info		, dtype_long	, sizeof(SLONG)				, 0							, NULL		, true)
 
 	FIELD(fld_ctx_var_name	, nam_ctx_var_name	, dtype_varying	, 80						, 0							, NULL		, true)
-	FIELD(fld_ctx_var_value	, nam_ctx_var_value	, dtype_varying	, 255						, 0							, NULL		, true)
+	FIELD(fld_ctx_var_value	, nam_ctx_var_value	, dtype_varying	, MAX_VARY_COLUMN_SIZE		, 0							, NULL		, true)
 
 	FIELD(fld_engine_name	, nam_engine_name	, dtype_text	, MAX_SQL_IDENTIFIER_LEN	, dsc_text_type_metadata	, NULL		, true)
 
@@ -171,12 +171,12 @@
 
 	FIELD(fld_user_name		, nam_user_name		, dtype_varying	, MAX_SQL_IDENTIFIER_LEN	, dsc_text_type_metadata	, NULL		, true)
 	FIELD(fld_attr_key		, nam_sec_attr_key	, dtype_varying	, MAX_SQL_IDENTIFIER_LEN	, dsc_text_type_metadata	, NULL		, true)
-	FIELD(fld_attr_value	, nam_sec_attr_value, dtype_varying	, 255						, dsc_text_type_metadata	, NULL		, true)
-	FIELD(fld_name_part		, nam_name_part		, dtype_varying	, 32						, dsc_text_type_metadata	, NULL		, true)
+	FIELD(fld_attr_value	, nam_sec_attr_value, dtype_varying	, 255 * METADATA_BYTES_PER_CHAR, dsc_text_type_metadata	, NULL		, true)
+	FIELD(fld_name_part		, nam_name_part		, dtype_varying	, 32 * METADATA_BYTES_PER_CHAR, dsc_text_type_metadata	, NULL		, true)
 	FIELD(fld_client_ver	, nam_client_ver	, dtype_varying	, 255						, dsc_text_type_ascii		, NULL		, true)
 	FIELD(fld_remote_ver	, nam_remote_ver	, dtype_varying	, 255						, dsc_text_type_ascii		, NULL		, true)
-	FIELD(fld_host_name		, nam_host_name		, dtype_varying	, 255						, dsc_text_type_metadata	, NULL		, true)
-	FIELD(fld_os_user		, nam_os_user		, dtype_varying	, 255						, dsc_text_type_metadata	, NULL		, true)
+	FIELD(fld_host_name		, nam_host_name		, dtype_varying	, 255 * METADATA_BYTES_PER_CHAR, dsc_text_type_metadata	, NULL		, true)
+	FIELD(fld_os_user		, nam_os_user		, dtype_varying	, 255 * METADATA_BYTES_PER_CHAR, dsc_text_type_metadata	, NULL		, true)
 	FIELD(fld_gen_val		, nam_gen_val		, dtype_int64	, sizeof(SINT64)			, 0							, NULL		, true)
 	FIELD(fld_auth_method	, nam_auth_method	, dtype_varying	, 255						, dsc_text_type_ascii		, NULL		, true)
 
@@ -184,11 +184,39 @@
 	FIELD(fld_sec_db		, nam_mon_secdb		, dtype_text	, 7							, dsc_text_type_ascii		, NULL		, false)
 
 	FIELD(fld_map_name		, nam_map_name		, dtype_text	, MAX_SQL_IDENTIFIER_LEN	, dsc_text_type_metadata	, NULL		, false)
-	FIELD(fld_map_using		, nam_map_using		, dtype_text	, 1							, dsc_text_type_metadata	, NULL		, false)
+	FIELD(fld_map_using		, nam_map_using		, dtype_text	, 1 * METADATA_BYTES_PER_CHAR, dsc_text_type_metadata	, NULL		, false)
 	FIELD(fld_map_db		, nam_map_db		, dtype_text	, MAX_SQL_IDENTIFIER_LEN	, dsc_text_type_metadata	, NULL		, true)
 	FIELD(fld_map_from_type	, nam_map_from_type	, dtype_text	, MAX_SQL_IDENTIFIER_LEN	, dsc_text_type_metadata	, NULL		, false)
-	FIELD(fld_map_from		, nam_map_from		, dtype_text	, 255						, dsc_text_type_metadata	, NULL		, true)
+	FIELD(fld_map_from		, nam_map_from		, dtype_text	, 255 * METADATA_BYTES_PER_CHAR, dsc_text_type_metadata	, NULL		, true)
 	FIELD(fld_map_to		, nam_map_to		, dtype_text	, MAX_SQL_IDENTIFIER_LEN	, dsc_text_type_metadata	, NULL		, true)
 
 	FIELD(fld_gen_increment	, nam_gen_increment	, dtype_long	, sizeof(SLONG)				, 0							, NULL		, false)
 	FIELD(fld_plan			, nam_plan			, dtype_blob	, BLOB_SIZE					, isc_blob_text				, NULL		, true)
+
+	FIELD(fld_system_privileges, nam_system_privileges, dtype_text, 8						, dsc_text_type_fixed		, dflt_no_privs, true)
+	FIELD(fld_b_sql_security, nam_sql_security	, dtype_boolean	, 1							, 0							, NULL		, true)
+
+	FIELD(fld_idle_timeout	, nam_idle_timeout	, dtype_long	, sizeof(SLONG)				, 0							, NULL		, false)
+	FIELD(fld_idle_timer	, nam_idle_timer	, dtype_timestamp_tz, TIMESTAMP_TZ_SIZE		, 0							, NULL		, true)
+	FIELD(fld_stmt_timeout	, nam_stmt_timeout	, dtype_long	, sizeof(SLONG)				, 0							, NULL		, false)
+	FIELD(fld_stmt_timer	, nam_stmt_timer	, dtype_timestamp_tz, TIMESTAMP_TZ_SIZE		, 0							, NULL		, true)
+
+	FIELD(fld_tz_id			, nam_tz_id			, dtype_long	, sizeof(SLONG)				, 0							, NULL		, true)
+	FIELD(fld_tz_name		, nam_tz_name		, dtype_text	, MAX_SQL_IDENTIFIER_LEN	, dsc_text_type_metadata	, NULL		, true)
+	FIELD(fld_tz_offset		, nam_tz_offset		, dtype_short	, sizeof(SSHORT)			, 0							, NULL		, true)
+	FIELD(fld_timestamp_tz	, nam_timestamp_tz	, dtype_timestamp_tz, TIMESTAMP_TZ_SIZE		, 0							, NULL		, true)
+
+	FIELD(fld_tz_db_version	, nam_tz_db_version	, dtype_varying	, 10						, dsc_text_type_ascii		, NULL		, true)
+
+	FIELD(fld_crypt_state	, nam_crypt_state	, dtype_short	, sizeof(SSHORT)			, 0							, NULL		, true)
+	FIELD(fld_remote_crypt	, nam_wire_crypt_plugin, dtype_varying, MAX_SQL_IDENTIFIER_LEN	, dsc_text_type_metadata	, NULL		, true)
+
+	FIELD(fld_pub_name		, nam_pub_name		, dtype_text	, MAX_SQL_IDENTIFIER_LEN	, dsc_text_type_metadata	, NULL		, false)
+	FIELD(fld_file_id		, nam_file_id		, dtype_varying	, 255						, dsc_text_type_ascii		, NULL		, false)
+
+	FIELD(fld_cfg_id		, nam_cfg_id		, dtype_long	, sizeof(SLONG)				, 0							, NULL		, false)
+	FIELD(fld_cfg_name		, nam_cfg_name		, dtype_varying	, MAX_CONFIG_NAME_LEN		, dsc_text_type_ascii		, NULL		, false)
+	FIELD(fld_cfg_value		, nam_cfg_value		, dtype_varying	, 255 * METADATA_BYTES_PER_CHAR, dsc_text_type_metadata	, NULL		, true)
+	FIELD(fld_cfg_is_set	, nam_cfg_is_set	, dtype_boolean	, 1							, 0							, NULL		, false)
+
+	FIELD(fld_repl_mode		, nam_repl_mode		, dtype_short	, sizeof(SSHORT)			, 0							, NULL		, true)

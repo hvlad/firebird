@@ -1,5 +1,5 @@
-Firebird Database Server $MAJOR.$MINOR.$RELEASE (Release Candidate 2)
-========================================================
+Firebird Database Server $MAJOR.$MINOR.$RELEASE
+===============================================
 
 
 This document is a guide to installing this package of
@@ -10,9 +10,9 @@ primarily aimed at users of the binary installer.
 
 It is assumed that readers of this document are already
 familiar with Firebird. If you are evaluating Firebird $MAJOR.$MINOR
-as part of a migration from Firebird 2.5 you are advised to
-review the Firebird $MAJOR.$MINOR documentation to understand
-the changes made between 2.5 and $MAJOR.$MINOR.
+as part of a migration from some older Firebird version you are advised
+to review the Firebird $MAJOR.$MINOR documentation to understand
+the changes made between your version and $MAJOR.$MINOR.
 
 
 Contents
@@ -36,23 +36,6 @@ this package. It is especially important to verify that
 fbclient.dll and gds32.dll are removed from <system32>.
 See the UNINSTALL section below for more info on this.
 
-If you have installed a beta or alpha version of Firebird $MAJOR.$MINOR
-the installer will rename firebird.conf and security3.fdb as
-these files are no longer compatible.
-
-
-Deployment of gds32.dll
------------------------
-
-This compatibility library is no longer deployed into 
-the windows system directory by default. We cannot
-guarantee that the required MSVC runtimes will be 
-available. However it remains an option at install
-time, along with system deployment of fbclient.dll.
-
-Be sure to check that your target system has the 
-appropriate MSVC10 runtimes if you use these options.
-
 
 Installation of the Guardian
 ----------------------------
@@ -64,14 +47,13 @@ chosen. If SuperServer or SuperClassic are chosen
 it is offered but not selected by default.
 
 
-Re-installation of Firebird 3
------------------------------
+Re-installation of Firebird
+---------------------------
 
-The binary installer does its best to detect and 
-preserve a previous install. If the installer detects 
-firebird.conf or security3.fdb it will not offer the 
-option to install legacy_auth. Neither will it offer 
-the option to set the SYSDBA username and password.
+The binary installer does its best to detect and
+preserve a previous install. If the installer detects
+firebird.conf or security4.fdb it will not offer the
+option to set the SYSDBA username and password.
 
 
 Known installation problems
@@ -122,14 +104,15 @@ o If Firebird is running as an application (instead of
   uninstall the uninstall will complete with errors.
   You will have to delete the remnants by hand.
 
-o Uninstallation leaves five files in the install
+o Uninstallation leaves six files in the install
   directory:
 
   - databases.conf
   - firebird.conf
   - fbtrace.conf
+  - replication.conf
   - firebird.log
-  - security3.fdb
+  - security4.fdb
 
   This is intentional. These files are all
   potentially modifiable by users and may be required

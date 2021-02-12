@@ -41,7 +41,7 @@
     function ShowCopyGds32Task: boolean;
     function CopyFbClientLib: boolean;
     function ShowCopyFbClientLibTask: boolean;
-		
+
 	function SummarizeInstalledProducts: String;
 	function AnalysisAssessment: boolean;
 
@@ -106,6 +106,8 @@ Const
   FB25_x64_Install  = 14;
   FB30Install       = 15;
   FB30_x64_Install  = 16;
+  Current32Install  = FB30Install;
+  Current64Install  = FB30_x64_Install;
 
   MaxProdInstalled = FB30_x64_Install;
 
@@ -127,6 +129,8 @@ Const
   FB21_x64  = $04000;
   FB25_x64  = $08000;
   FB30_x64  = $10000;
+  CurFB32   = FB30;
+  CurFB64   = FB30_x64;
 
   //  Likely gds32 version strings for installed versions of Firebird or InterBase are:
   //  [6,0,n,n]     InterBase 6.0
@@ -383,12 +387,11 @@ var
   product: Integer;
   gds32VersionString: String;
   VerInt: Array of Integer;
-  BoolOne, BoolTwo, BoolEval: Boolean;
-  EvalOne, EvalTwo: Integer;
-
+//  BoolOne, BoolTwo, BoolEval: Boolean;
+//  EvalOne, EvalTwo: Integer;
   dbg_ProductPath, dbg_BinPath, dbg_ClientVersion, dbg_GBAKVersion, dbg_Server: String;
   dbg_InstallType : Integer;
-  eval_bool: boolean;
+//  eval_bool: boolean;
 
 
 begin
@@ -719,7 +722,7 @@ Var
 
 function ClassicInstallChosen: Boolean;
 begin
-	result := IsTaskSelected('UseClassicServerTask');
+	result := WizardIsTaskSelected('UseClassicServerTask');
 end;
 
 
@@ -749,7 +752,7 @@ procedure SetupSharedFilesArray;
 // - Libraries
 // - License files
 begin
-SetArrayLength(SharedFileArray,36);
+SetArrayLength(SharedFileArray,37);
 
 SharedFileArray[0].Filename := ExpandConstant('{app}')+'IPLicense.txt';
 SharedFileArray[1].Filename := ExpandConstant('{app}')+'IDPLicense.txt';
@@ -798,6 +801,7 @@ SharedFileArray[32].Filename := ExpandConstant('{app}')+'fbsvcmgr.exe';
 SharedFileArray[33].Filename := ExpandConstant('{app}')+'fbrmclib.dll';
 SharedFileArray[34].Filename := ExpandConstant('{app}')+'fbtracemgr.exe';
 SharedFileArray[35].Filename := ExpandConstant('{app}')+'zlib1.dll';
+SharedFileArray[36].Filename := ExpandConstant('{app}')+'replication.conf';
 
 // FIXME 
 // Add in WOW64 here.
@@ -992,8 +996,8 @@ end;
 
 function ShowInstallCPLAppletTask: boolean;
 begin
-  //If NOCPL is on the command line then don't offer the task in UI mode.
-  result := ((not NoCPL) and ConfigureFirebird);
+//  result := ((not NoCPL) and ConfigureFirebird);
+  result := false;
 end;
 
 
@@ -1001,37 +1005,29 @@ function InstallGuardian: boolean;
 begin
   result := False;
   if (ConfigureFirebird) then
-     result := IsTaskSelected('UseSuperServerTask\UseGuardianTask') 
-			or IsTaskSelected('UseSuperClassicTask\UseGuardianTask');
+     result := WizardIsTaskSelected('UseSuperServerTask\UseGuardianTask')
+			or WizardIsTaskSelected('UseSuperClassicTask\UseGuardianTask');
 end;
 
 
 function CopyGds32: boolean;
 begin
-  //Note that we invert the value of NOGDSCLIENT so we provide the
-  //correct answer to the question 'Do we copy GDS32 to <sys>' which is
-  //the default behaviour.
   result := False;
   if ConfigureFirebird then begin
-    //If one of these is false then either the commandline switch was passed
-    //or the user unchecked the Copy client as GDS32 box
-    result := ( (not NoGdsClient) AND (IsTaskSelected('CopyFbClientAsGds32Task') ));
+     result := ( WizardIsTaskSelected( 'CopyFbClientAsGds32Task' ) );
   end;
 end;
 
 
 function ShowCopyGds32Task: boolean;
 begin
-  //If NOGDS32 is on the command line then don't offer the task in UI mode.
-  result := ((not NoGdsClient) and ConfigureFirebird);
+  result := ( ConfigureFirebird );
 end;
 
 
 function CopyFbClientLib: boolean;
 begin
-//Note that the default for this is the opposite to CopyGds32.
-  //result := ( (CopyFbClient) OR (ShouldProcessEntry('ClientComponent', 'CopyFbClientToSysTask')= srYes) );
-    result := ( (not CopyFbClient) AND (IsTaskSelected('CopyFbClientToSysTask') ));
+    result := ( WizardIsTaskSelected( 'CopyFbClientToSysTask' ) );
 end;
 
 
@@ -1040,7 +1036,7 @@ function ShowCopyFbClientLibTask: boolean;
 begin
   result := False;
   if ConfigureFirebird then
-    result := ((not CopyFbClient) and ConfigureFirebird);
+    result := ( ConfigureFirebird );
 end;
 
 
@@ -1051,7 +1047,7 @@ var
   i: Integer;
   StatusDescription: String;
   InstallSummary: String;
-  prodstr: String;
+//  prodstr: String;
 begin
 
 //do nothing gracefully if we are called by accident.
@@ -1091,12 +1087,12 @@ end;
 for i:=0 to ProductsInstalledCount-1 do
   InstallSummary := InstallSummary + InstallSummaryArray[i] + #13;
 
-// If FB21 is installed and installed platform does not match current platform
+// If older firebird is installed and installed platform does not match product we are installing
 // then notify user.
 #if PlatformTarget == "x64"
-If ((ProductsInstalled AND FB21_x64 ) = FB21_x64 ) then
+if ((ProductsInstalled AND CurFB64 ) = CurFB64 ) then
 #else
-If ((ProductsInstalled AND FB21 ) = FB21 ) then
+if ((ProductsInstalled AND CurFB32 ) = CurFB32 ) then
 #endif
       InstallSummary := InstallSummary
       +#13 + ExpandConstant('{cm:InstallSummarySuffix1}')
@@ -1125,7 +1121,7 @@ function AnalysisAssessment: boolean;
 var
   MsgText: String;
   MsgResult: Integer;
-  VerString: String;
+//  VerString: String;
 begin
   result := false;
 
@@ -1167,7 +1163,7 @@ begin
 end;
 
 
-procedure RenamePreFB3RC1Files;
+{ procedure RenamePreFB3RC1Files;
 //The method of specifying the architecture used changed after Beta 2
 //Detect this old config and rename it.
 var
@@ -1178,10 +1174,10 @@ begin
     if  pos('SharedDatabase', FirebirdConfStr) > 0 then begin
       RenameFile(GetAppPath+'\firebird.conf', GetAppPath+'\firebird.conf.preRC1');
       RenameFile(GetAppPath+'\security4.fdb', GetAppPath+'\security4.fdb.preRC1');
-		end
+    end
   end
 end;
-
+}
 
 function ConfigureAuthentication: boolean;
 begin

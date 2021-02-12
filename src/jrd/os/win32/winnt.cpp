@@ -54,10 +54,6 @@
 
 #include <windows.h>
 
-#ifdef WIN9X_SUPPORT
-#include "win9x_nt.h"
-#endif
-
 namespace Jrd {
 
 class FileExtendLockGuard
@@ -110,7 +106,7 @@ using namespace Firebird;
 #define TEXT		SCHAR
 
 static bool	maybeCloseFile(HANDLE&);
-static jrd_file* seek_file(jrd_file*, BufferDesc*, FbStatusVector*, OVERLAPPED*);
+static jrd_file* seek_file(jrd_file*, BufferDesc*, OVERLAPPED*);
 static jrd_file* setup_file(Database*, const Firebird::PathName&, HANDLE, bool, bool);
 static bool nt_error(const TEXT*, const jrd_file*, ISC_STATUS, FbStatusVector* const);
 static void adjustFileSystemCacheSize();
@@ -178,9 +174,7 @@ void PIO_close(jrd_file* main_file)
  **************************************/
 	for (jrd_file* file = main_file; file; file = file->fil_next)
 	{
-		if (maybeCloseFile(file->fil_desc))
-		{
-		}
+		maybeCloseFile(file->fil_desc);
 	}
 }
 
@@ -381,6 +375,7 @@ void PIO_force_write(jrd_file* file, const bool forceWrite, const bool notUseFSC
 		}
 
 		file->fil_flags &= ~FIL_aio_init;
+//		SetFileCompletionNotificationModes(hFile, FILE_SKIP_SET_EVENT_ON_HANDLE);
 	}
 }
 
@@ -460,7 +455,7 @@ USHORT PIO_init_data(thread_db* tdbb, jrd_file* main_file, FbStatusVector* statu
 	bdb.bdb_page = PageNumber(0, startPage);
 
 	OVERLAPPED overlapped;
-	jrd_file* file = seek_file(main_file, &bdb, status_vector, &overlapped);
+	jrd_file* file = seek_file(main_file, &bdb, &overlapped);
 
 	if (!file)
 		return 0;
@@ -482,7 +477,7 @@ USHORT PIO_init_data(thread_db* tdbb, jrd_file* main_file, FbStatusVector* statu
 		if (write_pages > leftPages)
 			write_pages = leftPages;
 
-		jrd_file* file1 = seek_file(main_file, &bdb, status_vector, &overlapped);
+		jrd_file* file1 = seek_file(main_file, &bdb, &overlapped);
 		fb_assert(file1 == file);
 
 		overlapped.hEvent = (HANDLE) ((UINT_PTR) thread->getIOEvent() | 1);
@@ -572,6 +567,8 @@ jrd_file* PIO_open(thread_db* tdbb,
 		}
 	}
 
+//	SetFileCompletionNotificationModes(desc, FILE_SKIP_SET_EVENT_ON_HANDLE);
+
 	return setup_file(dbb, string, desc, readOnly, shareMode);
 }
 
@@ -596,7 +593,7 @@ bool PIO_read(thread_db* tdbb, jrd_file* file, BufferDesc* bdb, Ods::pag* page, 
 	FileExtendLockGuard extLock(file->fil_ext_lock, false);
 
 	OVERLAPPED overlapped;
-	if (!(file = seek_file(file, bdb, status_vector, &overlapped)))
+	if (!(file = seek_file(file, bdb, &overlapped)))
 		return false;
 
 	HANDLE desc = file->fil_desc;
@@ -665,7 +662,7 @@ bool PIORequest::postRead(Database* dbb)
 	ULONG lastPageNo = firstPageNo;
 	ULONG prevPageNo = firstPageNo - 1;
 
-	jrd_file* file = seek_file(m_file, m_pages[i], NULL, &m_osData);
+	jrd_file* file = seek_file(m_file, m_pages[i], &m_osData);
 	dbb->dbb_page_manager.pioPort.addFile(file);
 
 	if (file->fil_flags & FIL_no_fs_cache)
@@ -801,7 +798,6 @@ bool PIO_write(thread_db* tdbb, jrd_file* file, BufferDesc* bdb, Ods::pag* page,
  *	Write a data page.
  *
  **************************************/
-	OVERLAPPED overlapped;
 
 	Database* const dbb = tdbb->getDatabase();
 
@@ -810,7 +806,8 @@ bool PIO_write(thread_db* tdbb, jrd_file* file, BufferDesc* bdb, Ods::pag* page,
 	EngineCheckout cout(tdbb, FB_FUNCTION, true);
 	FileExtendLockGuard extLock(file->fil_ext_lock, false);
 
-	file = seek_file(file, bdb, status_vector, &overlapped);
+	OVERLAPPED overlapped;
+	file = seek_file(file, bdb, &overlapped);
 	if (!file)
 		return false;
 
@@ -864,7 +861,6 @@ ULONG PIO_get_number_of_pages(const jrd_file* file, const USHORT pagesize)
 
 static jrd_file* seek_file(jrd_file*	file,
 					 	   BufferDesc*	bdb,
-					 	   FbStatusVector*	/*status_vector*/,
 					 	   OVERLAPPED*	overlapped)
 {
 /**************************************
@@ -900,7 +896,9 @@ static jrd_file* seek_file(jrd_file*	file,
 	overlapped->OffsetHigh = liOffset.HighPart;
 	overlapped->Internal = 0;
 	overlapped->InternalHigh = 0;
-	overlapped->hEvent = (HANDLE) 0;
+
+	ThreadSync* thd = ThreadSync::getThread(FB_FUNCTION);
+	overlapped->hEvent = thd->getIOEvent();
 
 	return file;
 }
@@ -942,13 +940,7 @@ static jrd_file* setup_file(Database* dbb,
 		if (pageSpace && pageSpace->file)
 			return file;
 
-#ifdef WIN9X_SUPPORT
-		// Disable sophisticated file extension when running on 9X
-		if (ISC_is_WinNT())
-#endif
-		{
-			file->fil_ext_lock = FB_NEW_POOL(*dbb->dbb_permanent) Firebird::RWLock();
-		}
+		file->fil_ext_lock = FB_NEW_POOL(*dbb->dbb_permanent) Firebird::RWLock();
 	}
 	catch (const Firebird::Exception&)
 	{

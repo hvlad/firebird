@@ -84,13 +84,13 @@ const char* TraceConnectionImpl::getDatabaseName()
 const char* TraceConnectionImpl::getUserName()
 {
 	const UserId* user = m_att->att_user;
-	return user ? user->usr_user_name.c_str() : NULL;
+	return user ? user->getUserName().c_str() : NULL;
 }
 
 const char* TraceConnectionImpl::getRoleName()
 {
 	const UserId* user = m_att->att_user;
-	return user ? user->usr_sql_role_name.c_str() : NULL;
+	return user ? user->getSqlRole().c_str() : NULL;
 }
 
 const char* TraceConnectionImpl::getCharSet()
@@ -139,7 +139,7 @@ int TraceTransactionImpl::getWait()
 
 unsigned TraceTransactionImpl::getIsolation()
 {
-	switch (m_tran->tra_flags & (TRA_read_committed | TRA_rec_version | TRA_degree3))
+	switch (m_tran->tra_flags & (TRA_read_committed | TRA_rec_version | TRA_degree3 | TRA_read_consistency))
 	{
 	case TRA_degree3:
 		return ISOLATION_CONSISTENCY;
@@ -150,6 +150,9 @@ unsigned TraceTransactionImpl::getIsolation()
 	case TRA_read_committed | TRA_rec_version:
 		return ISOLATION_READ_COMMITTED_RECVER;
 
+	case TRA_read_committed | TRA_rec_version | TRA_read_consistency:
+		return ISOLATION_READ_COMMITTED_READ_CONSISTENCY;
+
 	case 0:
 		return ISOLATION_CONCURRENCY;
 
@@ -159,13 +162,17 @@ unsigned TraceTransactionImpl::getIsolation()
 	}
 }
 
+ISC_INT64 TraceTransactionImpl::getInitialID()
+{
+	return m_tran->tra_initial_number;
+}
 
 /// TraceSQLStatementImpl
 
 ISC_INT64 TraceSQLStatementImpl::getStmtID()
 {
 	if (m_stmt->req_request)
-		return m_stmt->req_request->req_id;
+		return m_stmt->req_request->getRequestId();
 
 	return 0;
 }
@@ -182,7 +189,7 @@ const char* TraceSQLStatementImpl::getTextUTF8()
 
 	if (m_textUTF8.isEmpty() && stmtText && !stmtText->isEmpty())
 	{
-		if (!DataTypeUtil::convertToUTF8(*stmtText, m_textUTF8))
+		if (!DataTypeUtil::convertToUTF8(*stmtText, m_textUTF8, CS_dynamic, status_exception::raise))
 			return stmtText->c_str();
 	}
 
@@ -206,7 +213,8 @@ void TraceSQLStatementImpl::fillPlan(bool explained)
 	if (m_plan.isEmpty() || m_planExplained != explained)
 	{
 		m_planExplained = explained;
-		m_plan = OPT_get_plan(JRD_get_thread_data(), m_stmt->req_request, m_planExplained);
+		if (m_stmt->req_request)
+			m_plan = OPT_get_plan(JRD_get_thread_data(), m_stmt->req_request, m_planExplained);
 	}
 }
 
@@ -280,6 +288,43 @@ const dsc* TraceSQLStatementImpl::DSQLParamsImpl::getParam(FB_SIZE_T idx)
 	return NULL;
 }
 
+const char* TraceSQLStatementImpl::DSQLParamsImpl::getTextUTF8(CheckStatusWrapper* status, FB_SIZE_T idx)
+{
+	const dsc* param = getParam(idx);
+	UCHAR* address;
+	USHORT length;
+
+	switch (param->dsc_dtype)
+	{
+	case dtype_text:
+		address = param->dsc_address;
+		length = param->dsc_length;
+		break;
+
+	case dtype_varying:
+		address = param->dsc_address + sizeof(USHORT);
+		length = *(USHORT*) param->dsc_address;
+		break;
+
+	default:
+		return NULL;
+	}
+
+	string src(address, length);
+
+	try
+	{
+		if (!DataTypeUtil::convertToUTF8(src, temp_utf8_text, param->dsc_sub_type, status_exception::raise))
+			temp_utf8_text = src;
+	}
+	catch (const Firebird::Exception&)
+	{
+		temp_utf8_text = src;
+	}
+
+	return temp_utf8_text.c_str();
+}
+
 
 /// TraceFailedSQLStatement
 
@@ -287,7 +332,7 @@ const char* TraceFailedSQLStatement::getTextUTF8()
 {
 	if (m_textUTF8.isEmpty() && !m_text.isEmpty())
 	{
-		if (!DataTypeUtil::convertToUTF8(m_text, m_textUTF8))
+		if (!DataTypeUtil::convertToUTF8(m_text, m_textUTF8, CS_dynamic, status_exception::raise))
 			return m_text.c_str();
 	}
 
@@ -305,6 +350,43 @@ FB_SIZE_T TraceParamsImpl::getCount()
 const dsc* TraceParamsImpl::getParam(FB_SIZE_T idx)
 {
 	return m_descs->getParam(idx);
+}
+
+const char* TraceParamsImpl::getTextUTF8(CheckStatusWrapper* status, FB_SIZE_T idx)
+{
+	const dsc* param = getParam(idx);
+	UCHAR* address;
+	USHORT length;
+
+	switch (param->dsc_dtype)
+	{
+	case dtype_text:
+		address = param->dsc_address;
+		length = param->dsc_length;
+		break;
+
+	case dtype_varying:
+		address = param->dsc_address + sizeof(USHORT);
+		length = *(USHORT*) param->dsc_address;
+		break;
+
+	default:
+		return NULL;
+	}
+
+	string src(address, length);
+
+	try
+	{
+		if (!DataTypeUtil::convertToUTF8(src, temp_utf8_text, param->dsc_sub_type, status_exception::raise))
+			temp_utf8_text = src;
+	}
+	catch (const Firebird::Exception&)
+	{
+		temp_utf8_text = src;
+	}
+
+	return temp_utf8_text.c_str();
 }
 
 
@@ -330,7 +412,7 @@ void TraceDscFromValues::fillParams()
 		const VariableNode* var;
 		const LiteralNode* literal;
 
-		if ((param = prm->as<ParameterNode>()))
+		if ((param = nodeAs<ParameterNode>(prm)))
 		{
 			//const impure_value* impure = m_request->getImpure<impure_value>(param->impureOffset)
 			const MessageNode* message = param->message;
@@ -346,18 +428,18 @@ void TraceDscFromValues::fillParams()
 			if (param->argFlag)
 			{
 				const dsc* flag = EVL_expr(tdbb, m_request, param->argFlag);
-				if (MOV_get_long(flag, 0))
+				if (MOV_get_long(tdbb, flag, 0))
 					desc.dsc_flags |= DSC_null;
 			}
 		}
-		else if ((var = prm->as<VariableNode>()))
+		else if ((var = nodeAs<VariableNode>(prm)))
 		{
 			impure_value* impure = m_request->getImpure<impure_value>(var->impureOffset);
 			from_desc = &impure->vlu_desc;
 		}
-		else if ((literal = prm->as<LiteralNode>()))
+		else if ((literal = nodeAs<LiteralNode>(prm)))
 			from_desc = &literal->litDesc;
-		else if (prm->is<NullNode>())
+		else if (nodeIs<NullNode>(prm))
 		{
 			desc.clear();
 			desc.setNull();
@@ -424,62 +506,60 @@ public:
 		m_log(getPool(), session.ses_logfile, false),
 		m_sesId(session.ses_id)
 	{
-		m_maxSize = Config::getMaxUserTraceLogSize();
+		string s;
+		s.printf("\n--- Session %d is suspended as its log is full ---\n", session.ses_id);
+		m_log.setFullMsg(s.c_str());
 	}
 
 	// TraceLogWriter implementation
 	FB_SIZE_T write(const void* buf, FB_SIZE_T size);
-
-	int release()
-	{
-		if (--refCounter == 0)
-		{
-			delete this;
-			return 0;
-		}
-		return 1;
-	}
+	FB_SIZE_T write_s(CheckStatusWrapper* status, const void* buf, FB_SIZE_T size);
 
 private:
 	TraceLog m_log;
 	ULONG m_sesId;
-
-	// Use the same size data type as used in configuration file
-	// to avoid truncation during assignment
-	FB_UINT64 m_maxSize;
 };
 
 FB_SIZE_T TraceLogWriterImpl::write(const void* buf, FB_SIZE_T size)
 {
-	// comparison is in MB
-	if (m_log.getApproxLogSize() <= m_maxSize)
-		return m_log.write(buf, size);
+	const FB_SIZE_T written = m_log.write(buf, size);
+	if (written == size)
+		return size;
+
+	if (!m_log.isFull())
+		return written;
 
 	ConfigStorage* storage = TraceManager::getStorage();
 	StorageGuard guard(storage);
 
 	TraceSession session(*getDefaultMemoryPool());
-	storage->restart();
-	while (storage->getNextSession(session))
+	session.ses_id = m_sesId;
+	if (storage->getSession(session, ConfigStorage::FLAGS))
 	{
-		if (session.ses_id == m_sesId)
-		{
 			if (!(session.ses_flags & trs_log_full))
 			{
 				// suspend session
 				session.ses_flags |= trs_log_full;
-				storage->updateSession(session);
-
-				string s;
-				s.printf("\n--- Session %d is suspended as its log is full ---\n", m_sesId);
-				m_log.write(s.c_str(), s.length());
+			storage->updateFlags(session);
 			}
-			break;
 		}
-	}
 
 	// report successful write
 	return size;
+}
+
+FB_SIZE_T TraceLogWriterImpl::write_s(CheckStatusWrapper* status, const void* buf, FB_SIZE_T size)
+{
+	try
+	{
+		return write(buf, size);
+	}
+	catch (Exception &ex)
+	{
+		ex.stuffException(status);
+	}
+
+	return 0;
 }
 
 
@@ -538,7 +618,7 @@ const char* TraceServiceImpl::getUserName()
 
 const char* TraceServiceImpl::getRoleName()
 {
-	return NULL;
+	return m_svc->getRoleName().c_str();
 }
 
 const char* TraceServiceImpl::getCharSet()
@@ -575,7 +655,7 @@ TraceRuntimeStats::TraceRuntimeStats(Attachment* att, RuntimeStatistics* baselin
 	m_info.pin_time = clock * 1000 / fb_utils::query_performance_frequency();
 	m_info.pin_records_fetched = records_fetched;
 
-	if (baseline)
+	if (baseline && stats)
 		baseline->computeDifference(att, *stats, m_info, m_counts);
 	else
 	{
