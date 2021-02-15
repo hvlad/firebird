@@ -148,6 +148,7 @@ static bool write_page(thread_db*, BufferDesc*, FbStatusVector* const, const boo
 static bool set_diff_page(thread_db*, BufferDesc*);
 static void clear_dirty_flag_and_nbak_state(thread_db*, BufferDesc*);
 
+static BufferDesc* get_dirty_buffer(thread_db*);
 
 
 static inline void insertDirty(BufferControl* bcb, BufferDesc* bdb)
@@ -196,9 +197,6 @@ const ULONG MIN_BUFFER_SEGMENT = 65536;
 // Given pointer a field in the block, find the block
 
 #define BLOCK(fld_ptr, type, fld) (type*)((SCHAR*) fld_ptr - offsetof(type, fld))
-
-
-const PageNumber FREE_PAGE(DB_PAGE_SPACE, -1);
 
 const int PRE_SEARCH_LIMIT	= 256;
 const int PRE_EXISTS		= -1;
@@ -1250,8 +1248,7 @@ bool CCH_free_page(thread_db* tdbb)
 
 	BufferDesc* bdb;
 
-	if ((bcb->bcb_flags & BCB_free_pending) &&
-		(bdb = get_buffer(tdbb, FREE_PAGE, SYNC_NONE, 1)))
+	if ((bcb->bcb_flags & BCB_free_pending) && (bdb = get_dirty_buffer(tdbb)))
 	{
 		if (write_buffer(tdbb, bdb, bdb->bdb_page, true, tdbb->tdbb_status_vector, true))
 			return true;
@@ -2906,8 +2903,7 @@ void BufferControl::cache_reader(BufferControl* bcb)
 		BufferDesc* bdb;
 		if (found)
 			JRD_reschedule(tdbb, true);
-		else if (bcb->bcb_flags & BCB_free_pending &&
-			(bdb = get_buffer(tdbb, FREE_PAGE, LATCH_none, 1)))
+		else if (bcb->bcb_flags & BCB_free_pending && (bdb = get_dirty_buffer(tdbb)))
 		{
 			// In our spare time, help writer clean the cache.
 
@@ -3010,7 +3006,7 @@ void BufferControl::cache_writer(BufferControl* bcb)
 
 				if (bcb->bcb_flags & BCB_free_pending)
 				{
-					BufferDesc* const bdb = get_buffer(tdbb, FREE_PAGE, SYNC_NONE, 1);
+					BufferDesc* const bdb = get_dirty_buffer(tdbb);
 					if (bdb)
 						write_buffer(tdbb, bdb, bdb->bdb_page, true, &status_vector, true);
 				}
@@ -3715,7 +3711,7 @@ static BufferDesc* get_buffer(thread_db* tdbb, const PageNumber page, SyncType s
 	BufferControl* bcb = dbb->dbb_bcb;
 
 	Sync bcbSync(&bcb->bcb_syncObject, "get_buffer");
-	if (page != FREE_PAGE)
+
 	{
 		bcbSync.lock(SYNC_SHARED);
 		BufferDesc* bdb = find_buffer(bcb, page, true);
@@ -3743,7 +3739,6 @@ static BufferDesc* get_buffer(thread_db* tdbb, const PageNumber page, SyncType s
 	int walk = bcb->bcb_free_minimum;
 	while (true)
 	{
-		if (page != FREE_PAGE)
 		{
 			// Check to see if buffer has already been assigned to page
 			BufferDesc* bdb = find_buffer(bcb, page, true);
@@ -3763,41 +3758,6 @@ static BufferDesc* get_buffer(thread_db* tdbb, const PageNumber page, SyncType s
 				bdb = find_buffer(bcb, page, true);
 			}
 		}
-		else // page == FREE_PAGE
-		{
-			// This code is only used by the background I/O threads:
-			// cache writer, cache reader and garbage collector.
-
-			//Database::Checkout dcoHolder(dbb);
-
-			Sync lruSync(&bcb->bcb_syncLRU, "get_buffer");
-			lruSync.lock(SYNC_EXCLUSIVE);
-
-			for (que_inst = bcb->bcb_in_use.que_backward;
-				 que_inst != &bcb->bcb_in_use; que_inst = que_inst->que_backward)
-			{
-				BufferDesc* bdb = BLOCK(que_inst, BufferDesc, bdb_in_use);
-
-				if (bdb->bdb_use_count || (bdb->bdb_flags & BDB_free_pending))
-					continue;
-
-				if (bdb->bdb_flags & BDB_db_dirty)
-				{
-					//tdbb->bumpStats(RuntimeStatistics::PAGE_FETCHES); shouldn't it be here?
-					return bdb;
-				}
-
-				if (!--walk)
-				{
-					bcb->bcb_flags &= ~BCB_free_pending;
-					break;
-				}
-			}
-
-			// hvlad: removed in Vulcan
-			bcb->bcb_flags &= ~BCB_free_pending;
-			return NULL;
-		}
 
 		// If there is an empty buffer sitting around, allocate it
 
@@ -3810,25 +3770,22 @@ static BufferDesc* get_buffer(thread_db* tdbb, const PageNumber page, SyncType s
 			bcb->bcb_inuse++;
 			bdb->addRef(tdbb, SYNC_EXCLUSIVE);
 
-			if (page != FREE_PAGE)
-			{
-				QUE mod_que = &bcb->bcb_rpt[page.getPageNum() % bcb->bcb_count].bcb_page_mod;
-				QUE_INSERT(*mod_que, *que_inst);
+			QUE mod_que = &bcb->bcb_rpt[page.getPageNum() % bcb->bcb_count].bcb_page_mod;
+			QUE_INSERT(*mod_que, *que_inst);
 #ifdef SUPERSERVER_V2
-				// Reserve a buffer for header page with deferred header
-				// page write mechanism. Otherwise, a deadlock will occur
-				// if all dirty pages in the cache must force header page
-				// to disk before they can be written but there is no free
-				// buffer to read the header page into.
+			// Reserve a buffer for header page with deferred header
+			// page write mechanism. Otherwise, a deadlock will occur
+			// if all dirty pages in the cache must force header page
+			// to disk before they can be written but there is no free
+			// buffer to read the header page into.
 
-				if (page != HEADER_PAGE_NUMBER)
+			if (page != HEADER_PAGE_NUMBER)
 #endif
-				{
-					Sync lruSync(&bcb->bcb_syncLRU, "get_buffer");
-					lruSync.lock(SYNC_EXCLUSIVE);
+			{
+				Sync lruSync(&bcb->bcb_syncLRU, "get_buffer");
+				lruSync.lock(SYNC_EXCLUSIVE);
 
-					QUE_INSERT(bcb->bcb_in_use, bdb->bdb_in_use);
-				}
+				QUE_INSERT(bcb->bcb_in_use, bdb->bdb_in_use);
 			}
 
 			// This correction for bdb_use_count below is needed to
@@ -3843,13 +3800,8 @@ static BufferDesc* get_buffer(thread_db* tdbb, const PageNumber page, SyncType s
 			bdb->bdb_flags = BDB_read_pending;	// we have buffer exclusively, this is safe
 			bdb->bdb_scan_count = 0;
 
-			if (page != FREE_PAGE)
-			{
-				CCH_TRACE(("bdb->bdb_lock->lck_logical = LCK_none; page=%i", bdb->bdb_page.getPageNum()));
-				bdb->bdb_lock->lck_logical = LCK_none;
-			}
-			else
-				PAGE_LOCK_RELEASE(tdbb, bcb, bdb->bdb_lock);
+			CCH_TRACE(("bdb->bdb_lock->lck_logical = LCK_none; page=%i", bdb->bdb_page.getPageNum()));
+			bdb->bdb_lock->lck_logical = LCK_none;
 
 			tdbb->bumpStats(RuntimeStatistics::PAGE_FETCHES);
 			return bdb;
@@ -4009,10 +3961,7 @@ static BufferDesc* get_buffer(thread_db* tdbb, const PageNumber page, SyncType s
 
 			bcbSync.unlock();
 
-			if (page != FREE_PAGE)
-				bdb->bdb_lock->lck_logical = LCK_none;
-			else
-				PAGE_LOCK_RELEASE(tdbb, bcb, bdb->bdb_lock);
+			bdb->bdb_lock->lck_logical = LCK_none;
 
 			tdbb->bumpStats(RuntimeStatistics::PAGE_FETCHES);
 			return bdb;
@@ -4023,6 +3972,41 @@ static BufferDesc* get_buffer(thread_db* tdbb, const PageNumber page, SyncType s
 	}
 }
 
+
+static BufferDesc* get_dirty_buffer(thread_db* tdbb)
+{
+	// This code is only used by the background I/O threads:
+	// cache writer, cache reader and garbage collector.
+
+	SET_TDBB(tdbb);
+	Database* dbb = tdbb->getDatabase();
+	BufferControl* bcb = dbb->dbb_bcb;
+	int walk = bcb->bcb_free_minimum;
+
+	Sync lruSync(&bcb->bcb_syncLRU, "get_buffer");
+	lruSync.lock(SYNC_EXCLUSIVE);
+
+	for (QUE que_inst = bcb->bcb_in_use.que_backward;
+		 que_inst != &bcb->bcb_in_use; que_inst = que_inst->que_backward)
+	{
+		BufferDesc* bdb = BLOCK(que_inst, BufferDesc, bdb_in_use);
+
+		if (bdb->bdb_use_count || (bdb->bdb_flags & BDB_free_pending))
+			continue;
+
+		if (bdb->bdb_flags & BDB_db_dirty)
+		{
+			//tdbb->bumpStats(RuntimeStatistics::PAGE_FETCHES); shouldn't it be here?
+			return bdb;
+		}
+
+		if (!--walk)
+			break;
+	}
+
+	bcb->bcb_flags &= ~BCB_free_pending;
+	return NULL;
+}
 
 static ULONG get_prec_walk_mark(BufferControl* bcb)
 {
