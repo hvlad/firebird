@@ -142,6 +142,7 @@ public:
 
 	Firebird::SyncObject	bcb_syncObject;
 	Firebird::SyncObject	bcb_syncDirtyBdbs;
+	Firebird::SyncObject	bcb_syncEmpty;
 	Firebird::SyncObject	bcb_syncPrecedence;
 	Firebird::SyncObject	bcb_syncLRU;
 	//Firebird::SyncObject	bcb_syncPageWrite;
