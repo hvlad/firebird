@@ -651,6 +651,8 @@ pag* CCH_fake(thread_db* tdbb, WIN* window, int wait)
 	if (!bdb)
 		return NULL;			// latch timeout occurred
 
+	fb_assert(bdb->bdb_page == window->win_page);
+
 	// If a dirty orphaned page is being reused - better write it first
 	// to clear current precedences and checkpoint state. This would also
 	// update the bcb_free_pages field appropriately.
@@ -681,6 +683,7 @@ pag* CCH_fake(thread_db* tdbb, WIN* window, int wait)
 
 	// Here the page must not be dirty and have no backup lock owner
 	fb_assert((bdb->bdb_flags & (BDB_dirty | BDB_db_dirty)) == 0);
+	fb_assert(bdb->bdb_page == window->win_page);
 
 	bdb->bdb_flags &= BDB_lru_chained;	// yes, clear all except BDB_lru_chained
 	bdb->bdb_flags |= (BDB_writer | BDB_faked);
@@ -690,6 +693,7 @@ pag* CCH_fake(thread_db* tdbb, WIN* window, int wait)
 		lock_buffer(tdbb, bdb, LCK_WAIT, pag_undefined);
 
 	MOVE_CLEAR(bdb->bdb_buffer, (SLONG) dbb->dbb_page_size);
+	bdb->bdb_buffer->pag_pageno = window->win_page.getPageNum();
 	window->win_buffer = bdb->bdb_buffer;
 	window->win_bdb = bdb;
 	window->win_flags = 0;
@@ -802,6 +806,12 @@ LockState CCH_fetch_lock(thread_db* tdbb, WIN* window, int lock_type, int wait, 
 
 	if (wait != 1 && bdb == 0)
 		return lsLatchTimeout; // latch timeout
+
+	fb_assert(bdb->bdb_page == window->win_page);
+	if (!(bdb->bdb_flags & BDB_read_pending))
+		fb_assert(bdb->bdb_buffer->pag_pageno == window->win_page.getPageNum());
+	else
+		fb_assert(bdb->ourExclusiveLock());
 
 	if (lock_type >= LCK_write)
 		bdb->bdb_flags |= BDB_writer;
@@ -931,6 +941,8 @@ void CCH_fetch_page(thread_db* tdbb, WIN* window, const bool read_shadow)
 	// then we maintain actual page in difference file. Always read it from there.
 	if (isTempPage || bak_state == Ods::hdr_nbak_normal || !diff_page)
 	{
+		fb_assert(bdb->bdb_page == window->win_page);
+
 		NBAK_TRACE(("Reading page %d:%06d, state=%d, diff page=%d from DISK",
 			bdb->bdb_page.getPageSpaceID(), bdb->bdb_page.getPageNum(), bak_state, diff_page));
 
@@ -944,6 +956,8 @@ void CCH_fetch_page(thread_db* tdbb, WIN* window, const bool read_shadow)
 				CCH_unwind(tdbb, true);
 			}
 		}
+		fb_assert(bdb->bdb_page == window->win_page);
+		fb_assert(bdb->bdb_buffer->pag_pageno == window->win_page.getPageNum());
 	}
 	else
 	{
@@ -3623,356 +3637,6 @@ static BufferDesc* find_buffer(BufferControl* bcb, const PageNumber page, bool f
 }
 
 
-static LatchState latch_buffer(thread_db* tdbb, Sync &bcbSync, BufferDesc *bdb,
-							   const PageNumber page, SyncType syncType, int wait)
-{
-	//++bdb->bdb_use_count;
-
-	if (!(bdb->bdb_flags & BDB_free_pending)
-#ifdef SUPERSERVER_V2
-		&& (page != HEADER_PAGE_NUMBER)
-#endif
-		)
-	{
-		recentlyUsed(bdb);
-	}
-
-	// If buffer is currently replacing by another page but still writting
-	// to disk we should wait until this write finished, else we could
-	// allocate another buffer and read old page image (or even zero's)
-	// from disk into new buffer
-
-	const bool waitPending = ((bdb->bdb_flags & BDB_free_pending) && bdb->bdb_page == page);
-
-	bcbSync.unlock();
-
-	if (waitPending)
-	{
-		//--bdb->bdb_use_count;
-		if (wait == 0)
-			return lsTimeout;  // go out
-
-		Thread::yield();
-	}
-	else
-	{
-		const bool latchOk = bdb->addRef(tdbb, syncType, wait);
-
-		//--bdb->bdb_use_count;
-
-		if (!latchOk)
-			return lsTimeout; // go out
-
-		if (bdb->bdb_page == page)
-		{
-			//bdb->bdb_flags &= ~(BDB_faked | BDB_prefetch);
-			return lsOk;
-		}
-
-		bdb->release(tdbb, true);
-	}
-	return lsPageChanged; // try again
-}
-
-
-static BufferDesc* get_buffer_old(thread_db* tdbb, const PageNumber page, SyncType syncType, int wait)
-{
-/**************************************
- *
- *	g e t _ b u f f e r
- *
- **************************************
- *
- * Functional description
- *	Get a buffer.  If possible, get a buffer already assigned
- *	to the page.  Otherwise get one from the free list or pick
- *	the least recently used buffer to be reused.
- *	Note the following special page numbers:
- *	     -1 indicates that a buffer is required for journaling => obsolete
- *	     -2 indicates a special scratch buffer for shadowing
- *
- * input
- *	page:		page to get
- *	syncType:	type of lock to acquire on the page.
- *	wait:	1 => Wait as long as necessary to get the lock.
- *				This can cause deadlocks of course.
- *			0 => If the lock can't be acquired immediately,
- *				give up and return 0;
- *	      		<negative number> => Latch timeout interval in seconds.
- *
- * return
- *	BufferDesc pointer if successful.
- *	NULL pointer if timeout occurred (only possible is wait <> 1).
- *		     if cache manager doesn't have any pages to write anymore.
- *
- **************************************/
-	SET_TDBB(tdbb);
-	Database* dbb = tdbb->getDatabase();
-	BufferControl* bcb = dbb->dbb_bcb;
-
-	Sync bcbSync(&bcb->bcb_syncObject, "get_buffer");
-
-	{
-		bcbSync.lock(SYNC_SHARED);
-		BufferDesc* bdb = find_buffer(bcb, page, true);
-		while (bdb)
-		{
-			const LatchState ret = latch_buffer(tdbb, bcbSync, bdb, page, syncType, wait);
-			if (ret == lsOk)
-			{
-				tdbb->bumpStats(RuntimeStatistics::PAGE_FETCHES);
-				return bdb;
-			}
-
-			if (ret == lsTimeout)
-				return NULL;
-
-			bcbSync.lock(SYNC_SHARED);
-			bdb = find_buffer(bcb, page, true);
-		}
-		bcbSync.unlock();
-	}
-
-	bcbSync.lock(SYNC_EXCLUSIVE);
-
-	QUE que_inst;
-	int walk = bcb->bcb_free_minimum;
-	while (true)
-	{
-		{
-			// Check to see if buffer has already been assigned to page
-			BufferDesc* bdb = find_buffer(bcb, page, true);
-			while (bdb)
-			{
-				const LatchState ret = latch_buffer(tdbb, bcbSync, bdb, page, syncType, wait);
-				if (ret == lsOk)
-				{
-					tdbb->bumpStats(RuntimeStatistics::PAGE_FETCHES);
-					return bdb;
-				}
-
-				if (ret == lsTimeout)
-					return NULL;
-
-				bcbSync.lock(SYNC_EXCLUSIVE);
-				bdb = find_buffer(bcb, page, true);
-			}
-		}
-
-		// If there is an empty buffer sitting around, allocate it
-
-		if (QUE_NOT_EMPTY(bcb->bcb_empty))
-		{
-			que_inst = bcb->bcb_empty.que_forward;
-			QUE_DELETE(*que_inst);
-			BufferDesc* bdb = BLOCK(que_inst, BufferDesc, bdb_que);
-
-			bcb->bcb_inuse++;
-			bdb->addRef(tdbb, SYNC_EXCLUSIVE);
-
-			QUE mod_que = &bcb->bcb_rpt[page.getPageNum() % bcb->bcb_count].bcb_page_mod;
-			QUE_INSERT(*mod_que, *que_inst);
-#ifdef SUPERSERVER_V2
-			// Reserve a buffer for header page with deferred header
-			// page write mechanism. Otherwise, a deadlock will occur
-			// if all dirty pages in the cache must force header page
-			// to disk before they can be written but there is no free
-			// buffer to read the header page into.
-
-			if (page != HEADER_PAGE_NUMBER)
-#endif
-			{
-				Sync lruSync(&bcb->bcb_syncLRU, "get_buffer");
-				lruSync.lock(SYNC_EXCLUSIVE);
-
-				QUE_INSERT(bcb->bcb_in_use, bdb->bdb_in_use);
-			}
-
-			// This correction for bdb_use_count below is needed to
-			// avoid a deadlock situation in latching code.  It's not
-			// clear though how the bdb_use_count can get < 0 for a bdb
-			// in bcb_empty queue
-
-			if (bdb->bdb_use_count < 0)
-				BUGCHECK(301);	// msg 301 Non-zero use_count of a buffer in the empty que_inst
-
-			bdb->bdb_page = page;
-			bdb->bdb_flags = BDB_read_pending;	// we have buffer exclusively, this is safe
-			bdb->bdb_scan_count = 0;
-
-			CCH_TRACE(("bdb->bdb_lock->lck_logical = LCK_none; page=%i", bdb->bdb_page.getPageNum()));
-			bdb->bdb_lock->lck_logical = LCK_none;
-
-			tdbb->bumpStats(RuntimeStatistics::PAGE_FETCHES);
-			return bdb;
-		}
-
-		Sync lruSync(&bcb->bcb_syncLRU, "get_buffer");
-		lruSync.lock(SYNC_EXCLUSIVE);
-
-		if (bcb->bcb_lru_chain.load() != NULL)
-			requeueRecentlyUsed(bcb);
-
-		for (que_inst = bcb->bcb_in_use.que_backward;
-			 que_inst != &bcb->bcb_in_use;
-			 que_inst = que_inst->que_backward)
-		{
-			// get the oldest buffer as the least recently used -- note
-			// that since there are no empty buffers this queue cannot be empty
-
-			if (bcb->bcb_in_use.que_forward == &bcb->bcb_in_use)
-				BUGCHECK(213);	// msg 213 insufficient cache size
-
-			BufferDesc* oldest = BLOCK(que_inst, BufferDesc, bdb_in_use);
-
-			if (oldest->bdb_flags & BDB_lru_chained)
-				continue;
-
-			if (oldest->bdb_use_count || !oldest->addRefConditional(tdbb, SYNC_EXCLUSIVE))
-				continue;
-
-			if ((oldest->bdb_flags & BDB_free_pending) || !writeable(oldest))
-			{
-				oldest->release(tdbb, true);
-				continue;
-			}
-
-#ifdef SUPERSERVER_V2
-			// If page has been prefetched but not yet fetched, let
-			// it cycle once more thru LRU queue before re-using it.
-
-			if (oldest->bdb_flags & BDB_prefetch)
-			{
-				oldest->bdb_flags &= ~BDB_prefetch;
-				que_inst = que_inst->que_forward;
-				QUE_MOST_RECENTLY_USED(oldest->bdb_in_use);
-				//LATCH_MUTEX_RELEASE;
-				continue;
-			}
-#endif
-
-			if ((bcb->bcb_flags & BCB_cache_writer) &&
-				(oldest->bdb_flags & (BDB_dirty | BDB_db_dirty)) )
-			{
-				bcb->bcb_flags |= BCB_free_pending;
-
-				if (!(bcb->bcb_flags & BCB_writer_active))
-					bcb->bcb_writer_sem.release();
-
-				if (walk)
-				{
-					oldest->release(tdbb, true);
-					if (!--walk)
-						break;
-
-					continue;
-				}
-			}
-
-			BufferDesc* bdb = oldest;
-
-			// hvlad: we already have bcb_lruSync here
-			//recentlyUsed(bdb);
-			fb_assert(!(bdb->bdb_flags & BDB_lru_chained));
-			QUE_DELETE(bdb->bdb_in_use);
-			QUE_INSERT(bcb->bcb_in_use, bdb->bdb_in_use);
-
-			lruSync.unlock();
-
-			bdb->bdb_flags |= BDB_free_pending;
-			bdb->bdb_pending_page = page;
-
-			QUE_DELETE(bdb->bdb_que);
-			QUE_INSERT(bcb->bcb_pending, bdb->bdb_que);
-
-			const bool needCleanup = (bdb->bdb_flags & (BDB_dirty | BDB_db_dirty)) ||
-				QUE_NOT_EMPTY(bdb->bdb_higher) || QUE_NOT_EMPTY(bdb->bdb_lower);
-
-			if (needCleanup)
-			{
-				bcbSync.unlock();
-
-				// If the buffer selected is dirty, arrange to have it written.
-
-				if (bdb->bdb_flags & (BDB_dirty | BDB_db_dirty))
-				{
-					const bool write_thru = (bcb->bcb_flags & BCB_exclusive);
-					if (!write_buffer(tdbb, bdb, bdb->bdb_page, write_thru, tdbb->tdbb_status_vector, true))
-					{
-						bcbSync.lock(SYNC_EXCLUSIVE);
-						bdb->bdb_flags &= ~BDB_free_pending;
-						QUE_DELETE(bdb->bdb_in_use);
-						QUE_APPEND(bcb->bcb_in_use, bdb->bdb_in_use);
-						bcbSync.unlock();
-
-						bdb->release(tdbb, true);
-						CCH_unwind(tdbb, true);
-					}
-				}
-
-				// If the buffer is still in the dirty tree, remove it.
-				// In any case, release any lock it may have.
-
-				removeDirty(bcb, bdb);
-
-				// Cleanup any residual precedence blocks.  Unless something is
-				// screwed up, the only precedence blocks that can still be hanging
-				// around are ones cleared at AST level.
-
-				if (QUE_NOT_EMPTY(bdb->bdb_higher) || QUE_NOT_EMPTY(bdb->bdb_lower))
-				{
-					Sync precSync(&bcb->bcb_syncPrecedence, "get_buffer");
-					precSync.lock(SYNC_EXCLUSIVE);
-
-					while (QUE_NOT_EMPTY(bdb->bdb_higher))
-					{
-						QUE que2 = bdb->bdb_higher.que_forward;
-						Precedence* precedence = BLOCK(que2, Precedence, pre_higher);
-						QUE_DELETE(precedence->pre_higher);
-						QUE_DELETE(precedence->pre_lower);
-						precedence->pre_hi = (BufferDesc*) bcb->bcb_free;
-						bcb->bcb_free = precedence;
-					}
-
-					clear_precedence(tdbb, bdb);
-				}
-
-				bcbSync.lock(SYNC_EXCLUSIVE);
-			}
-
-			QUE_DELETE(bdb->bdb_que);	// bcb_pending
-
-			QUE mod_que = &bcb->bcb_rpt[page.getPageNum() % bcb->bcb_count].bcb_page_mod;
-			QUE_INSERT((*mod_que), bdb->bdb_que);
-			bdb->bdb_flags &= ~BDB_free_pending;
-
-			// This correction for bdb_use_count below is needed to
-			// avoid a deadlock situation in latching code.  It's not
-			// clear though how the bdb_use_count can get < 0 for a bdb
-			// in bcb_empty queue
-
-			if (bdb->bdb_use_count < 0)
-				BUGCHECK(301);	/* msg 301 Non-zero use_count of a buffer in the empty Que */
-
-			bdb->bdb_page = page;
-			bdb->bdb_flags &= BDB_lru_chained; // yes, clear all except BDB_lru_chained
-			bdb->bdb_flags |= BDB_read_pending;
-			bdb->bdb_scan_count = 0;
-
-			bcbSync.unlock();
-
-			bdb->bdb_lock->lck_logical = LCK_none;
-
-			tdbb->bumpStats(RuntimeStatistics::PAGE_FETCHES);
-			return bdb;
-		}
-
-		if (que_inst == &bcb->bcb_in_use)
-			expand_buffers(tdbb, bcb->bcb_count + 75);
-	}
-}
-
-
 static BufferDesc* get_dirty_buffer(thread_db* tdbb)
 {
 	// This code is only used by the background I/O threads:
@@ -3982,14 +3646,22 @@ static BufferDesc* get_dirty_buffer(thread_db* tdbb)
 	Database* dbb = tdbb->getDatabase();
 	BufferControl* bcb = dbb->dbb_bcb;
 	int walk = bcb->bcb_free_minimum;
+	int chained = walk;
 
 	Sync lruSync(&bcb->bcb_syncLRU, FB_FUNCTION);
-	lruSync.lock(SYNC_EXCLUSIVE);
+	lruSync.lock(SYNC_SHARED);
 
 	for (QUE que_inst = bcb->bcb_in_use.que_backward;
 		 que_inst != &bcb->bcb_in_use; que_inst = que_inst->que_backward)
 	{
 		BufferDesc* bdb = BLOCK(que_inst, BufferDesc, bdb_in_use);
+
+		if (bdb->bdb_flags & BDB_lru_chained)
+		{
+			if (!--chained)
+				break;
+			continue;
+		}
 
 		if (bdb->bdb_use_count || (bdb->bdb_flags & BDB_free_pending))
 			continue;
@@ -4004,7 +3676,15 @@ static BufferDesc* get_dirty_buffer(thread_db* tdbb)
 			break;
 	}
 
-	bcb->bcb_flags &= ~BCB_free_pending;
+	if (!chained)
+	{
+		lruSync.unlock();
+		lruSync.lock(SYNC_EXCLUSIVE);
+		requeueRecentlyUsed(bcb);
+	}
+	else
+		bcb->bcb_flags &= ~BCB_free_pending;
+
 	return NULL;
 }
 
@@ -4020,7 +3700,7 @@ static BufferDesc* get_oldest_buffer(thread_db* tdbb, BufferControl* bcb)
 	{
 		lruSync.lock(SYNC_EXCLUSIVE);
 		requeueRecentlyUsed(bcb);
-		//lruSync.downgrade(SYNC_SHARED);
+		lruSync.downgrade(SYNC_SHARED);
 	}
 	else
 		lruSync.lock(SYNC_SHARED);
@@ -4044,6 +3724,12 @@ static BufferDesc* get_oldest_buffer(thread_db* tdbb, BufferControl* bcb)
 
 		if (oldest->bdb_use_count || !oldest->addRefConditional(tdbb, SYNC_EXCLUSIVE))
 			continue;
+
+		/*if (!writeable(oldest))
+		{
+			oldest->release(tdbb, true);
+			continue;
+		}*/
 
 		bdb = oldest;
 		if (!(bdb->bdb_flags & (BDB_dirty | BDB_db_dirty)))
@@ -4156,14 +3842,18 @@ static BufferDesc* get_buffer(thread_db* tdbb, const PageNumber page, SyncType s
 	Database* dbb = tdbb->getDatabase();
 	BufferControl* bcb = dbb->dbb_bcb;
 
+	bcb_repeat* new_slot = &bcb->bcb_rpt[page.getPageNum() % bcb->bcb_count];
+
 	BufferDesc* bdb = nullptr;
 	bool is_empty = false;
 	while (!bdb)
 	{
 		// try to get already existing buffer
 		{
-			SyncLockGuard bcbSync(&bcb->bcb_syncObject, SYNC_SHARED, FB_FUNCTION);
+			//SyncLockGuard bcbSync(&bcb->bcb_syncObject, SYNC_SHARED, FB_FUNCTION);
+			AcquireSRWLockShared(&new_slot->bcb_chainLock);
 			bdb = find_buffer(bcb, page);
+			ReleaseSRWLockShared(&new_slot->bcb_chainLock);
 		}
 		if (bdb)
 		{
@@ -4179,6 +3869,9 @@ static BufferDesc* get_buffer(thread_db* tdbb, const PageNumber page, SyncType s
 				tdbb->bumpStats(RuntimeStatistics::PAGE_FETCHES);
 				return bdb;
 			}
+
+			bdb->release(tdbb, true);
+			bdb = nullptr;
 			continue;
 		}
 
@@ -4203,23 +3896,44 @@ static BufferDesc* get_buffer(thread_db* tdbb, const PageNumber page, SyncType s
 			bdb = get_oldest_buffer(tdbb, bcb);
 	}
 
+	fb_assert(bdb->ourExclusiveLock());
+
 	// we have either empty buffer or candidate for preemption
 	// try to put it into target hash chain
 	while (true)
 	{
 		BufferDesc* bdb2 = nullptr;
 		{
-			SyncLockGuard bcbSync(&bcb->bcb_syncObject, SYNC_EXCLUSIVE, FB_FUNCTION);
+			bcb_repeat* old_slot = nullptr;
+			if (!is_empty)
+			{
+				old_slot = &bcb->bcb_rpt[bdb->bdb_page.getPageNum() % bcb->bcb_count];
+
+				if (old_slot < new_slot)
+				{
+					AcquireSRWLockExclusive(&old_slot->bcb_chainLock);
+					AcquireSRWLockExclusive(&new_slot->bcb_chainLock);
+				}
+				else if (old_slot > new_slot)
+				{
+					AcquireSRWLockExclusive(&new_slot->bcb_chainLock);
+					AcquireSRWLockExclusive(&old_slot->bcb_chainLock);
+				}
+				else //	(old_slot == new_slot)
+					old_slot = nullptr;
+			}
+
+			if (!old_slot)
+				AcquireSRWLockExclusive(&new_slot->bcb_chainLock);
+
+			//SyncLockGuard bcbSync(&bcb->bcb_syncObject, SYNC_EXCLUSIVE, FB_FUNCTION);
 			bdb2 = find_buffer(bcb, page);
 			if (!bdb2)
 			{
-				// setup bdb
+				fb_assert(bdb->ourExclusiveLock());
+
 				if (!is_empty)
-				{
-					fb_assert(bdb == find_buffer(bcb, bdb->bdb_page));
 					QUE_DELETE(bdb->bdb_que);
-					fb_assert(nullptr == find_buffer(bcb, bdb->bdb_page));
-				}
 
 				QUE mod_que = &bcb->bcb_rpt[page.getPageNum() % bcb->bcb_count].bcb_page_mod;
 				QUE_INSERT((*mod_que), bdb->bdb_que);
@@ -4230,17 +3944,29 @@ static BufferDesc* get_buffer(thread_db* tdbb, const PageNumber page, SyncType s
 				bdb->bdb_scan_count = 0;
 				bdb->bdb_lock->lck_logical = LCK_none;
 
-				bcbSync.unlock();
+				//bcbSync.unlock();
+				if (old_slot)
+					ReleaseSRWLockExclusive(&old_slot->bcb_chainLock);
+				ReleaseSRWLockExclusive(&new_slot->bcb_chainLock);
 
 				if (!(bdb->bdb_flags & BDB_lru_chained))
 				{
-					SyncLockGuard syncLRU(&bcb->bcb_syncLRU, SYNC_EXCLUSIVE, FB_FUNCTION);
-					QUE_DELETE(bdb->bdb_in_use);
-					QUE_INSERT(bcb->bcb_in_use, bdb->bdb_in_use);
+					Sync syncLRU(&bcb->bcb_syncLRU, FB_FUNCTION);
+					if (syncLRU.lockConditional(SYNC_EXCLUSIVE))
+					{
+						QUE_DELETE(bdb->bdb_in_use);
+						QUE_INSERT(bcb->bcb_in_use, bdb->bdb_in_use);
+					}
+					else
+						recentlyUsed(bdb);
 				}
 				tdbb->bumpStats(RuntimeStatistics::PAGE_FETCHES);
 				return bdb;
 			}
+
+			if (old_slot)
+				ReleaseSRWLockExclusive(&old_slot->bcb_chainLock);
+			ReleaseSRWLockExclusive(&new_slot->bcb_chainLock);
 		}
 
 		if (!bdb2->addRef(tdbb, syncType, wait))
@@ -4565,6 +4291,7 @@ static ULONG memory_init(thread_db* tdbb, BufferControl* bcb, SLONG number)
 		}
 
 		QUE_INIT(tail->bcb_page_mod);
+		tail->bcb_chainLock = SRWLOCK_INIT;
 
 		try
 		{

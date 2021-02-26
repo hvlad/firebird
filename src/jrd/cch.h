@@ -79,6 +79,7 @@ struct bcb_repeat
 {
 	BufferDesc*	bcb_bdb;		// Buffer descriptor block
 	que			bcb_page_mod;	// Que of buffers with page mod n
+	SRWLOCK		bcb_chainLock;
 };
 
 class BufferControl : public pool_alloc<type_bcb>
