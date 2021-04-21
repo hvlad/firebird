@@ -72,6 +72,8 @@ const ULONG MAX_PAGE_BUFFERS = 131072;
 const ULONG MAX_PAGE_BUFFERS = MAX_SLONG - 1;
 #endif
 
+#define HASH_USE_BCB_SYNC
+//#define HASH_USE_SRW_LOCK
 
 // BufferControl -- Buffer control block -- one per system
 
@@ -79,7 +81,9 @@ struct bcb_repeat
 {
 	BufferDesc*	bcb_bdb;		// Buffer descriptor block
 	que			bcb_page_mod;	// Que of buffers with page mod n
+#ifdef HASH_USE_SRW_LOCK
 	SRWLOCK		bcb_chainLock;
+#endif
 };
 
 class BufferControl : public pool_alloc<type_bcb>

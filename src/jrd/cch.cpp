@@ -134,7 +134,6 @@ static BufferDesc* find_buffer(BufferControl* bcb, const PageNumber page, bool f
 static BufferDesc* get_buffer(thread_db*, const PageNumber, SyncType, int);
 static int get_related(BufferDesc*, PagesArray&, int, const ULONG);
 static ULONG get_prec_walk_mark(BufferControl*);
-static LatchState latch_buffer(thread_db*, Sync&, BufferDesc*, const PageNumber, SyncType, int);
 static LockState lock_buffer(thread_db*, BufferDesc*, const SSHORT, const SCHAR);
 static ULONG memory_init(thread_db*, BufferControl*, SLONG);
 static void page_validation_error(thread_db*, win*, SSHORT);
@@ -3850,11 +3849,17 @@ static BufferDesc* get_buffer(thread_db* tdbb, const PageNumber page, SyncType s
 	{
 		// try to get already existing buffer
 		{
-			//SyncLockGuard bcbSync(&bcb->bcb_syncObject, SYNC_SHARED, FB_FUNCTION);
+#if defined HASH_USE_BCB_SYNC
+			SyncLockGuard bcbSync(&bcb->bcb_syncObject, SYNC_SHARED, FB_FUNCTION);
+#elif defined HASH_USE_SRW_LOCK
 			AcquireSRWLockShared(&new_slot->bcb_chainLock);
+#endif
 			bdb = find_buffer(bcb, page);
+#if defined HASH_USE_SRW_LOCK
 			ReleaseSRWLockShared(&new_slot->bcb_chainLock);
+#endif
 		}
+
 		if (bdb)
 		{
 			if (!bdb->addRef(tdbb, syncType, wait))
@@ -3904,6 +3909,9 @@ static BufferDesc* get_buffer(thread_db* tdbb, const PageNumber page, SyncType s
 	{
 		BufferDesc* bdb2 = nullptr;
 		{
+#if defined HASH_USE_BCB_SYNC
+			SyncLockGuard bcbSync(&bcb->bcb_syncObject, SYNC_EXCLUSIVE, FB_FUNCTION);
+#elif defined HASH_USE_SRW_LOCK
 			bcb_repeat* old_slot = nullptr;
 			if (!is_empty)
 			{
@@ -3926,7 +3934,7 @@ static BufferDesc* get_buffer(thread_db* tdbb, const PageNumber page, SyncType s
 			if (!old_slot)
 				AcquireSRWLockExclusive(&new_slot->bcb_chainLock);
 
-			//SyncLockGuard bcbSync(&bcb->bcb_syncObject, SYNC_EXCLUSIVE, FB_FUNCTION);
+#endif
 			bdb2 = find_buffer(bcb, page);
 			if (!bdb2)
 			{
@@ -3944,10 +3952,13 @@ static BufferDesc* get_buffer(thread_db* tdbb, const PageNumber page, SyncType s
 				bdb->bdb_scan_count = 0;
 				bdb->bdb_lock->lck_logical = LCK_none;
 
-				//bcbSync.unlock();
+#if defined HASH_USE_BCB_SYNC
+				bcbSync.unlock();
+#elif defined HASH_USE_SRW_LOCK
 				if (old_slot)
 					ReleaseSRWLockExclusive(&old_slot->bcb_chainLock);
 				ReleaseSRWLockExclusive(&new_slot->bcb_chainLock);
+#endif
 
 				if (!(bdb->bdb_flags & BDB_lru_chained))
 				{
@@ -3964,9 +3975,11 @@ static BufferDesc* get_buffer(thread_db* tdbb, const PageNumber page, SyncType s
 				return bdb;
 			}
 
+#if defined HASH_USE_SRW_LOCK
 			if (old_slot)
 				ReleaseSRWLockExclusive(&old_slot->bcb_chainLock);
 			ReleaseSRWLockExclusive(&new_slot->bcb_chainLock);
+#endif
 		}
 
 		if (!bdb2->addRef(tdbb, syncType, wait))
@@ -4291,7 +4304,9 @@ static ULONG memory_init(thread_db* tdbb, BufferControl* bcb, SLONG number)
 		}
 
 		QUE_INIT(tail->bcb_page_mod);
+#if defined HASH_USE_SRW_LOCK
 		tail->bcb_chainLock = SRWLOCK_INIT;
+#endif
 
 		try
 		{
