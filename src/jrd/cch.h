@@ -50,6 +50,15 @@ DEFINE_TRACE_ROUTINE(cch_trace);
 #define CCH_TRACEE_AST(message) // nothing
 #endif
 
+//#define HASH_USE_BCB_SYNC
+//#define HASH_USE_SRW_LOCK
+#define HASH_USE_CDS_LIST
+
+#ifdef HASH_USE_CDS_LIST
+//#include <cds/container/michael_list_hp.h>
+#include <cds/container/michael_kvlist_dhp.h>
+#endif
+
 namespace Ods {
 	struct pag;
 }
@@ -72,17 +81,32 @@ const ULONG MAX_PAGE_BUFFERS = 131072;
 const ULONG MAX_PAGE_BUFFERS = MAX_SLONG - 1;
 #endif
 
-#define HASH_USE_BCB_SYNC
-//#define HASH_USE_SRW_LOCK
-
 // BufferControl -- Buffer control block -- one per system
+
+#ifdef HASH_USE_CDS_LIST
+
+struct BdbTraits : public cds::container::michael_list::traits
+{
+	//typedef ... allocator;
+	//typedef ... compare;
+};
+
+typedef cds::container::MichaelKVList<cds::gc::DHP, ULONG, BufferDesc*, BdbTraits> BdbList;
+
+#endif // HASH_USE_CDS_LIST
 
 struct bcb_repeat
 {
 	BufferDesc*	bcb_bdb;		// Buffer descriptor block
+
+#ifndef HASH_USE_CDS_LIST
 	que			bcb_page_mod;	// Que of buffers with page mod n
 #ifdef HASH_USE_SRW_LOCK
 	SRWLOCK		bcb_chainLock;
+#endif
+
+#else // HASH_USE_CDS_LIST
+	BdbList		bcb_hash_chain;
 #endif
 };
 

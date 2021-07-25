@@ -130,7 +130,7 @@ static void clear_precedence(thread_db*, BufferDesc*);
 static BufferDesc* dealloc_bdb(BufferDesc*);
 static void down_grade(thread_db*, BufferDesc*, int high = 0);
 static bool expand_buffers(thread_db*, ULONG);
-static BufferDesc* find_buffer(BufferControl* bcb, const PageNumber page, bool findPending);
+static BufferDesc* find_buffer(BufferControl* bcb, const PageNumber& page);
 static BufferDesc* get_buffer(thread_db*, const PageNumber, SyncType, int);
 static int get_related(BufferDesc*, PagesArray&, int, const ULONG);
 static ULONG get_prec_walk_mark(BufferControl*);
@@ -228,7 +228,7 @@ void CCH_clean_page(thread_db* tdbb, PageNumber page)
 		Sync bcbSync(&bcb->bcb_syncObject, "CCH_clean_page");
 		bcbSync.lock(SYNC_SHARED);
 
-		bdb = find_buffer(bcb, page, false);
+		bdb = find_buffer(bcb, page);
 		if (!bdb)
 			return;
 
@@ -1029,7 +1029,7 @@ void CCH_forget_page(thread_db* tdbb, WIN* window)
 	removeDirty(bcb, bdb);
 
 	QUE_DELETE(bdb->bdb_in_use);
-	QUE_DELETE(bdb->bdb_que);
+	QUE_DELETE(bdb->bdb_que);					// TODO: fixme, bcb_hash_chain
 	QUE_INSERT(bcb->bcb_empty, bdb->bdb_que);
 
 	if (tdbb->tdbb_flags & TDBB_no_cache_unwind)
@@ -1310,7 +1310,7 @@ void CCH_get_related(thread_db* tdbb, PageNumber page, PagesArray &lowPages)
 	Sync bcbSync(&bcb->bcb_syncObject, "CCH_get_related");
 	bcbSync.lock(SYNC_SHARED);
 
-	BufferDesc* bdb = find_buffer(bcb, page, false);
+	BufferDesc* bdb = find_buffer(bcb, page);
 	bcbSync.unlock();
 
 	if (bdb)
@@ -3149,7 +3149,7 @@ static void check_precedence(thread_db* tdbb, WIN* window, PageNumber page)
 	Sync bcbSync(&bcb->bcb_syncObject, "check_precedence");
 	bcbSync.lock(SYNC_SHARED);
 
-	BufferDesc* high = find_buffer(bcb, page, false);
+	BufferDesc* high = find_buffer(bcb, page);
 	bcbSync.unlock();
 
 	if (!high)
@@ -3294,7 +3294,7 @@ static BufferDesc* dealloc_bdb(BufferDesc* bdb)
 	if (bdb)
 	{
 		delete bdb->bdb_lock;
-		QUE_DELETE(bdb->bdb_que);
+		QUE_DELETE(bdb->bdb_que);		// // TODO: fixme, bcb_hash_chain ?
 
 		delete bdb;
 	}
@@ -3560,7 +3560,11 @@ static bool expand_buffers(thread_db* tdbb, ULONG number)
 	// Initialize tail of new buffer control block
 	bcb_repeat* new_tail;
 	for (new_tail = bcb->bcb_rpt; new_tail < new_end; new_tail++)
+#ifndef HASH_USE_CDS_LIST
 		QUE_INIT(new_tail->bcb_page_mod);
+#else
+		;
+#endif
 
 	// Move any active buffers from old block to new
 
@@ -3569,6 +3573,7 @@ static bool expand_buffers(thread_db* tdbb, ULONG number)
 	for (bcb_repeat* old_tail = old_rpt; old_tail < old_end; old_tail++, new_tail++)
 	{
 		new_tail->bcb_bdb = old_tail->bcb_bdb;
+#ifndef HASH_USE_CDS_LIST
 		while (QUE_NOT_EMPTY(old_tail->bcb_page_mod))
 		{
 			QUE que_inst = old_tail->bcb_page_mod.que_forward;
@@ -3577,6 +3582,16 @@ static bool expand_buffers(thread_db* tdbb, ULONG number)
 			QUE mod_que = &bcb->bcb_rpt[bdb->bdb_page.getPageNum() % bcb->bcb_count].bcb_page_mod;
 			QUE_INSERT(*mod_que, *que_inst);
 		}
+#else
+		auto& old_chain = old_tail->bcb_hash_chain;
+		auto& new_chain = new_tail->bcb_hash_chain;
+		while (!old_chain.empty())
+		{
+			auto n = old_chain.begin();
+			old_chain.erase(n->first);				// bdb_page
+			new_chain.insert(n->first, n->second);	// bdb
+		}
+#endif
 	}
 
 	// Allocate new buffer descriptor blocks
@@ -3608,31 +3623,6 @@ static bool expand_buffers(thread_db* tdbb, ULONG number)
 	delete[] old_rpt;
 
 	return true;
-}
-
-static BufferDesc* find_buffer(BufferControl* bcb, const PageNumber page, bool findPending)
-{
-	QUE mod_que = &bcb->bcb_rpt[page.getPageNum() % bcb->bcb_count].bcb_page_mod;
-	QUE que_inst = mod_que->que_forward;
-	for (; que_inst != mod_que; que_inst = que_inst->que_forward)
-	{
-		BufferDesc* bdb = BLOCK(que_inst, BufferDesc, bdb_que);
-		if (bdb->bdb_page == page)
-			return bdb;
-	}
-
-	if (findPending)
-	{
-		que_inst = bcb->bcb_pending.que_forward;
-		for (; que_inst != &bcb->bcb_pending; que_inst = que_inst->que_forward)
-		{
-			BufferDesc* bdb = BLOCK(que_inst, BufferDesc, bdb_que);
-			if (bdb->bdb_page == page || bdb->bdb_pending_page == page)
-				return bdb;
-		}
-	}
-
-	return NULL;
 }
 
 
@@ -3798,6 +3788,7 @@ static BufferDesc* get_oldest_buffer(thread_db* tdbb, BufferControl* bcb)
 
 static inline BufferDesc* find_buffer(BufferControl* bcb, const PageNumber& page)
 {
+#ifndef HASH_USE_CDS_LIST
 	QUE mod_que = &bcb->bcb_rpt[page.getPageNum() % bcb->bcb_count].bcb_page_mod;
 	QUE que_inst = mod_que->que_forward;
 	for (; que_inst != mod_que; que_inst = que_inst->que_forward)
@@ -3806,6 +3797,20 @@ static inline BufferDesc* find_buffer(BufferControl* bcb, const PageNumber& page
 		if (bdb->bdb_page == page)
 			return bdb;
 	}
+#else // HASH_USE_CDS_LIST
+	auto& list = bcb->bcb_rpt[page.getPageNum() % bcb->bcb_count].bcb_hash_chain;
+
+	auto ptr = list.get(page.getPageNum());
+	if (!ptr.empty())
+	{
+		while (ptr->second == nullptr)
+			cds::backoff::pause();
+
+		if (ptr->second->bdb_page == page)
+			return ptr->second;
+	}
+#endif
+
 	return nullptr;
 }
 
@@ -3908,6 +3913,8 @@ static BufferDesc* get_buffer(thread_db* tdbb, const PageNumber page, SyncType s
 	while (true)
 	{
 		BufferDesc* bdb2 = nullptr;
+
+#ifndef HASH_USE_CDS_LIST
 		{
 #if defined HASH_USE_BCB_SYNC
 			SyncLockGuard bcbSync(&bcb->bcb_syncObject, SYNC_EXCLUSIVE, FB_FUNCTION);
@@ -3982,17 +3989,88 @@ static BufferDesc* get_buffer(thread_db* tdbb, const PageNumber page, SyncType s
 #endif
 		}
 
-		if (!bdb2->addRef(tdbb, syncType, wait))
-		{
-			bdb->release(tdbb, true);
-			return nullptr;
-		}
+#else // HASH_USE_CDS_LIST
 
-		if (bdb2->bdb_page != page)
+		BdbList& list = bcb->bcb_rpt[page.getPageNum() % bcb->bcb_count].bcb_hash_chain;
+
+		auto ret = list.update(page.getPageNum(), 
+								[bdb, &bdb2](bool bNew, BdbList::value_type& val) 
+								{
+									if (bNew)
+										val.second = bdb;
+									else
+										while (!(bdb2 = val.second))
+											cds::backoff::pause();
+								},
+								true);
+		fb_assert(ret.first);
+
+		if (bdb2 == nullptr)
 		{
-			bdb2->release(tdbb, true);
-			continue;
+			fb_assert(ret.second);
+#ifdef DEV_BUILD
+			auto p1 = list.get(page.getPageNum());
+			fb_assert(!p1.empty() && p1->first == page.getPageNum() && p1->second == bdb);
+#endif
+
+			if (!is_empty)
+			{
+				const ULONG oldPage = bdb->bdb_page.getPageNum();
+				BdbList& oldList = bcb->bcb_rpt[oldPage % bcb->bcb_count].bcb_hash_chain;
+
+#ifdef DEV_BUILD
+				p1 = oldList.get(oldPage);
+				fb_assert(!p1.empty() && p1->first == oldPage && p1->second == bdb);
+#endif
+
+				bool ok = oldList.erase(oldPage);
+				fb_assert(ok);
+
+#ifdef DEV_BUILD
+				p1 = oldList.get(oldPage);
+				fb_assert(p1.empty() || p1->second != bdb);
+#endif
+			}
+
+#ifdef DEV_BUILD
+			p1 = list.get(page.getPageNum());
+			fb_assert(!p1.empty() && p1->first == page.getPageNum() && p1->second == bdb);
+#endif
+
+			bdb->bdb_page = page;
+			bdb->bdb_flags &= BDB_lru_chained; // yes, clear all except BDB_lru_chained
+			bdb->bdb_flags |= BDB_read_pending;
+			bdb->bdb_scan_count = 0;
+			bdb->bdb_lock->lck_logical = LCK_none;
+
+			if (!(bdb->bdb_flags & BDB_lru_chained))
+			{
+				Sync syncLRU(&bcb->bcb_syncLRU, FB_FUNCTION);
+				if (syncLRU.lockConditional(SYNC_EXCLUSIVE))
+				{
+					QUE_DELETE(bdb->bdb_in_use);
+					QUE_INSERT(bcb->bcb_in_use, bdb->bdb_in_use);
+				}
+				else
+					recentlyUsed(bdb);
+			}
+			tdbb->bumpStats(RuntimeStatistics::PAGE_FETCHES);
+			return bdb;
 		}
+#endif
+
+		if (bdb2->addRef(tdbb, syncType, wait))
+		{
+			if (bdb2->bdb_page != page)
+			{
+				bdb2->release(tdbb, true);
+				continue;
+			}
+			recentlyUsed(bdb2);
+			tdbb->bumpStats(RuntimeStatistics::PAGE_FETCHES);
+		}
+		else
+			bdb2 = nullptr;
 
 		bdb->release(tdbb, true);
 		if (is_empty)
@@ -4002,8 +4080,6 @@ static BufferDesc* get_buffer(thread_db* tdbb, const PageNumber page, SyncType s
 			bcb->bcb_inuse--;
 		}
 		
-		recentlyUsed(bdb2);
-		tdbb->bumpStats(RuntimeStatistics::PAGE_FETCHES);
 		return bdb2;
 	}
 }
@@ -4303,9 +4379,11 @@ static ULONG memory_init(thread_db* tdbb, BufferControl* bcb, SLONG number)
 			old_buffers = buffers;
 		}
 
+#ifndef HASH_USE_CDS_LIST
 		QUE_INIT(tail->bcb_page_mod);
 #if defined HASH_USE_SRW_LOCK
 		tail->bcb_chainLock = SRWLOCK_INIT;
+#endif
 #endif
 
 		try

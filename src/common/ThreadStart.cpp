@@ -54,6 +54,8 @@
 #include "../common/classes/Synchronize.h"
 
 
+#include <cds/threading/model.h>	// cds::threading::Manager
+
 namespace
 {
 
@@ -88,10 +90,14 @@ THREAD_ENTRY_DECLARE threadStart(THREAD_ENTRY_PARAM arg)
 	fb_assert(arg);
 	Firebird::ThreadSync* thread = FB_NEW Firebird::ThreadSync("threadStart");
 
+	cds::threading::Manager::attachThread();
+
 	MemoryPool::setContextPool(getDefaultMemoryPool());
 	ThreadArgs localArgs(*static_cast<ThreadArgs*>(arg));
 	delete static_cast<ThreadArgs*>(arg);
 	localArgs.run();
+
+	cds::threading::Manager::detachThread();
 
 	// Check if ThreadSync still exists before deleting
 	thread = Firebird::ThreadSync::findThread();
