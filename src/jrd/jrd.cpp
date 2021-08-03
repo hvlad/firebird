@@ -144,6 +144,9 @@
 #include "../common/dllinst.h"
 #endif
 
+#include <cds/init.h>		//cds::Initialize, cds::Terminate
+#include <cds/gc/dhp.h>		//cds::gc::DHP (Hazard Pointer)
+
 using namespace Jrd;
 using namespace Firebird;
 
@@ -156,6 +159,24 @@ const SSHORT WAIT_PERIOD	= -1;
 
 namespace Jrd
 {
+
+struct InitCDS
+{
+	InitCDS(MemoryPool&)
+	{
+		cds::Initialize();
+		cds::gc::dhp::smr::Construct(16);
+	}
+
+	~InitCDS()
+	{
+		cds::gc::dhp::smr::Destruct(true);
+		cds::Terminate();
+	}
+};
+
+static GlobalPtr<InitCDS, InstanceControl::PRIORITY_TLS_KEY> initCDS;
+
 
 int JBlob::release()
 {
@@ -382,6 +403,9 @@ static void threadDetach()
 {
 	ThreadSync* thd = ThreadSync::findThread();
 	delete thd;
+
+	if (cds::threading::Manager::isThreadAttached())
+		cds::threading::Manager::detachThread();
 }
 
 static void shutdownBeforeUnload()

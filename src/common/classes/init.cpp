@@ -38,11 +38,6 @@
 #include <dlfcn.h>
 #endif // HAVE_DLADDR
 
-#include <cds/init.h>		//cds::Initialize, cds::Terminate
-//#include <cds/gc/hp.h>		//cds::gc::HP (Hazard Pointer)
-#include <cds/gc/dhp.h>		//cds::gc::DHP (Hazard Pointer)
-
-
 // Setting this define helps (with AV at exit time) detect globals
 // with destructors, declared not using InstanceControl.
 // The reason for AV is that process memory pool (from where globals should allocate memory)
@@ -139,8 +134,6 @@ namespace
 		if (dontCleanup)
 			return;
 
-		cds::Terminate();
-
 		try
 		{
 			Firebird::StaticMutex::release();
@@ -213,11 +206,6 @@ namespace
 #endif
 
 		Firebird::MemoryPool::contextPoolInit();
-
-		cds::Initialize();
-		//cds::gc::HP* hpGC = new cds::gc::HP(16, 512);
-		cds::gc::DHP* hpGC = new cds::gc::DHP(16);
-		cds::threading::Manager::attachThread();
 	}
 
 	Firebird::InstanceControl::InstanceList* instanceList = 0;
