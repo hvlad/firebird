@@ -225,8 +225,10 @@ void CCH_clean_page(thread_db* tdbb, PageNumber page)
 	BufferControl* bcb = dbb->dbb_bcb;
 	BufferDesc* bdb = NULL;
 	{
+#ifndef HASH_USE_CDS_LIST
 		Sync bcbSync(&bcb->bcb_syncObject, "CCH_clean_page");
 		bcbSync.lock(SYNC_SHARED);
+#endif
 
 		bdb = find_buffer(bcb, page);
 		if (!bdb)
@@ -1307,11 +1309,15 @@ void CCH_get_related(thread_db* tdbb, PageNumber page, PagesArray &lowPages)
 	Database* dbb = tdbb->getDatabase();
 	BufferControl* bcb = dbb->dbb_bcb;
 
+#ifndef HASH_USE_CDS_LIST
 	Sync bcbSync(&bcb->bcb_syncObject, "CCH_get_related");
 	bcbSync.lock(SYNC_SHARED);
+#endif
 
 	BufferDesc* bdb = find_buffer(bcb, page);
+#ifndef HASH_USE_CDS_LIST
 	bcbSync.unlock();
+#endif
 
 	if (bdb)
 	{
@@ -3146,11 +3152,15 @@ static void check_precedence(thread_db* tdbb, WIN* window, PageNumber page)
 
 	// Start by finding the buffer containing the high priority page
 
+#ifndef HASH_USE_CDS_LIST
 	Sync bcbSync(&bcb->bcb_syncObject, "check_precedence");
 	bcbSync.lock(SYNC_SHARED);
+#endif
 
 	BufferDesc* high = find_buffer(bcb, page);
+#ifndef HASH_USE_CDS_LIST
 	bcbSync.unlock();
+#endif
 
 	if (!high)
 		return;
@@ -3721,7 +3731,7 @@ static BufferDesc* get_oldest_buffer(thread_db* tdbb, BufferControl* bcb)
 		}*/
 
 		bdb = oldest;
-		if (!(bdb->bdb_flags & (BDB_dirty | BDB_db_dirty)))
+		if (!(bdb->bdb_flags & (BDB_dirty | BDB_db_dirty)) || !walk)
 			break;
 
 		if (!(bcb->bcb_flags & BCB_cache_writer))
@@ -3734,8 +3744,10 @@ static BufferDesc* get_oldest_buffer(thread_db* tdbb, BufferControl* bcb)
 		if (walk)
 		{
 			bdb->release(tdbb, true);
-			if (!--walk)
-				return nullptr;
+//			if (!--walk)
+//				return nullptr;
+			bdb = nullptr;
+			--walk;
 		}
 	}
 
@@ -3803,9 +3815,11 @@ static inline BufferDesc* find_buffer(BufferControl* bcb, const PageNumber& page
 	auto ptr = list.get(page.getPageNum());
 	if (!ptr.empty())
 	{
+		fb_assert(ptr->second != nullptr);
+#ifdef DEV_BUILD
 		while (ptr->second == nullptr)
 			cds::backoff::pause();
-
+#endif
 		if (ptr->second->bdb_page == page)
 			return ptr->second;
 	}
@@ -3903,7 +3917,11 @@ static BufferDesc* get_buffer(thread_db* tdbb, const PageNumber page, SyncType s
 		if (bdb)
 			bdb->addRef(tdbb, SYNC_EXCLUSIVE);
 		else
+		{
 			bdb = get_oldest_buffer(tdbb, bcb);
+			if (!bdb)
+				Thread::yield();
+		}
 	}
 
 	fb_assert(bdb->ourExclusiveLock());
@@ -3992,7 +4010,7 @@ static BufferDesc* get_buffer(thread_db* tdbb, const PageNumber page, SyncType s
 #else // HASH_USE_CDS_LIST
 
 		BdbList& list = bcb->bcb_rpt[page.getPageNum() % bcb->bcb_count].bcb_hash_chain;
-
+/*
 		auto ret = list.update(page.getPageNum(), 
 								[bdb, &bdb2](bool bNew, BdbList::value_type& val) 
 								{
@@ -4002,6 +4020,28 @@ static BufferDesc* get_buffer(thread_db* tdbb, const PageNumber page, SyncType s
 										while (!(bdb2 = val.second))
 											cds::backoff::pause();
 								},
+								true);
+*/
+		auto ret = list.update(page.getPageNum(), bdb,
+#ifdef DEV_BUILD
+								[bdb, &bdb2](bool bNew, BdbList::value_type& val)
+								{
+									fb_assert(val.second != nullptr);
+									if (bNew)
+										fb_assert(val.second == bdb);
+									else
+									{
+										while (!(bdb2 = val.second))
+											cds::backoff::pause();
+									}
+								},
+#else
+								[&bdb2](bool bNew, BdbList::value_type& val)
+								{
+									if (!bNew)
+										bdb2 = val.second;
+								},
+#endif
 								true);
 		fb_assert(ret.first);
 
