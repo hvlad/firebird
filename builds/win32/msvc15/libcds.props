@@ -11,8 +11,8 @@
       <PreprocessorDefinitions>CDS_BUILD_STATIC_LIB;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <Link>
-      <AdditionalLibraryDirectories>$(LIBCDS_ROOT)\bin\vc.$(PlatformToolset)\$(PlatformTargetAsMSBuildArchitecture)-$(Configuration)-static;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>libcds-$(PlatformTargetAsMSBuildArchitecture).lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(LIBCDS_ROOT)\bin\vc.v141\$(Platform)-$(Configuration)-static;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>libcds-$(PlatformTarget).lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
