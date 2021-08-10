@@ -4,12 +4,14 @@ set FB_CONFIG=release
 set FB_CLEAN=
 set FB_ICU=
 set FB_VC_CRT_ARCH=%FB_PROCESSOR_ARCHITECTURE%
+set FB_LIBCDS=
 
 for %%v in ( %* )  do (
   ( if /I "%%v"=="DEBUG" ( (set FB_DBG=TRUE) && (set FB_CONFIG=debug) ) )
   ( if /I "%%v"=="CLEAN" (set FB_CLEAN=:rebuild) )
   ( if /I "%%v"=="ICU" ( (set FB_ICU=1) && (set FB_DBG=) ) )
   ( if /I "%%v"=="RELEASE" ( (set FB_DBG=) && (set FB_CONFIG=release) ) )
+  ( if /I "%%v"=="LIBCDS" ( (set FB_LIBCDS=1) ) )
 )
 
 if %FB_VC_CRT_ARCH% == AMD64 ( set FB_VC_CRT_ARCH=x64)

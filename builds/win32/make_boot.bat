@@ -33,6 +33,9 @@ if "%ERRLEV%"=="1" goto :END
 call :btyacc
 if "%ERRLEV%"=="1" goto :END
 
+call :libcds
+if "%ERRLEV%"=="1" goto :END
+
 call :LibTom
 if "%ERRLEV%"=="1" goto :END
 
@@ -164,6 +167,19 @@ if errorlevel 1 call :boot2 decNumber_%FB_OBJ_DIR%
 goto :EOF
 
 ::===================
+:: Build libcds
+:libcds
+@echo.
+@call set_build_target.bat %* RELEASE LIBCDS
+@echo Building libcds (%FB_OBJ_DIR%)...
+@call compile.bat extern\libcds\projects\Win\vc141\cds libcds_%FB_CONFIG%_%FB_TARGET_PLATFORM%.log cds
+if errorlevel 1 call :boot2 libcds%FB_OBJ_DIR%
+@call set_build_target.bat %* DEBUG LIBCDS
+@echo Building libcds (%FB_OBJ_DIR%)...
+@call compile.bat extern\libcds\projects\Win\vc141\cds libcds_%FB_CONFIG%_%FB_TARGET_PLATFORM%.log cds
+if errorlevel 1 call :boot2 libcds%FB_OBJ_DIR%
+
+::===================
 :: BUILD ttmath
 :ttmath
 @echo.
@@ -192,7 +208,6 @@ if errorlevel 1 call :boot2 re2
 @cmake --build %FB_ROOT_PATH%\extern\re2\builds\%FB_TARGET_PLATFORM% --target ALL_BUILD --config Release > re2_Release_%FB_TARGET_PLATFORM%.log
 @cmake --build %FB_ROOT_PATH%\extern\re2\builds\%FB_TARGET_PLATFORM% --target ALL_BUILD --config Debug > re2_Debug_%FB_TARGET_PLATFORM%.log
 @popd
-goto :EOF
 
 ::===================
 :: Build CLOOP and generate interface headers
