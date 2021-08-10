@@ -135,6 +135,7 @@ CAS_OPTIONS=@CAS_OPTIONS@
 MATHLIB=@MATHLIB@
 DECLIB=-ldecFloat$(CROSS)
 RE2LIB=-lre2
+LIBCDSLIB=-lcds
 
 # crypt library
 CRYPTLIB=@CRYPTLIB@
@@ -190,8 +191,8 @@ endif
 STATICLIB_LINK = $(AR) crus
 STATICEXE_LINK = $(CXX) $(GLOB_OPTIONS) $(CXXFLAGS) -static-libstdc++
 
-LINK_LIBS = @LIBS@ $(DECLIB) $(RE2LIB)
-SO_LINK_LIBS = @LIBS@ $(DECLIB) $(RE2LIB)
+LINK_LIBS = @LIBS@ $(DECLIB) $(RE2LIB) $(LIBCDSLIB)
+SO_LINK_LIBS = @LIBS@ $(DECLIB) $(RE2LIB) $(LIBCDSLIB)
 
 # Default extensions
 
@@ -278,6 +279,11 @@ TOMCRYPT=$(ROOT)/extern/libtomcrypt
 TOMCRYPT_INC=$(TOMCRYPT)/src/headers
 TOMCRYPT_SO=$(TOMCRYPT)/.libs/libtomcrypt.so
 TOMCRYPT_VER=1
+
+# Own libcds support
+LIBCDS=$(ROOT)/extern/libcds
+LIBCDS_INC=$(LIBCDS)
+LIBCDS_DEF=CDS_BUILD_STATIC_LIB
 
 # LINKER OPTIONS
 #
