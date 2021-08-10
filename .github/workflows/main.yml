@@ -30,7 +30,7 @@ jobs:
     - name: Prepare (Linux)
       if: matrix.os == 'ubuntu-20.04' && matrix.container != 'alpine'
       run: |
-        sudo apt-get install libtool-bin libtomcrypt1 libtomcrypt-dev libtommath1 libtommath-dev libicu-dev zlib1g-dev
+        sudo apt-get install libtool-bin libtomcrypt1 libtomcrypt-dev libtommath1 libtommath-dev libicu-dev zlib1g-dev cmake
 
     - name: Build (Linux)
       if: matrix.os == 'ubuntu-20.04' && matrix.container != 'alpine'
@@ -43,7 +43,7 @@ jobs:
 
     - name: Prepare (Linux, Alpine)
       if: matrix.os == 'ubuntu-18.04' && matrix.container == 'alpine'
-      run: apk update && apk --no-cache --update add build-base libtool git autoconf automake zlib-dev icu-dev ncurses-dev libedit-dev linux-headers tar
+      run: apk update && apk --no-cache --update add build-base libtool git autoconf automake cmake zlib-dev icu-dev ncurses-dev libedit-dev linux-headers tar
 
     - name: Build (Linux, Alpine)
       if: matrix.os == 'ubuntu-18.04' && matrix.container == 'alpine'
@@ -56,7 +56,7 @@ jobs:
     - name: Prepare (MacOS)
       if: matrix.os == 'macOS-latest'
       run: |
-        brew install automake libtool
+        brew install automake libtool cmake
         export LIBTOOLIZE=glibtoolize
         export LIBTOOL=glibtool
 
