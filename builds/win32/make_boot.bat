@@ -178,6 +178,7 @@ if errorlevel 1 call :boot2 libcds%FB_OBJ_DIR%
 @echo Building libcds (%FB_OBJ_DIR%)...
 @call compile.bat extern\libcds\projects\Win\vc141\cds libcds_%FB_CONFIG%_%FB_TARGET_PLATFORM%.log cds
 if errorlevel 1 call :boot2 libcds%FB_OBJ_DIR%
+goto :EOF
 
 ::===================
 :: BUILD ttmath
@@ -208,6 +209,7 @@ if errorlevel 1 call :boot2 re2
 @cmake --build %FB_ROOT_PATH%\extern\re2\builds\%FB_TARGET_PLATFORM% --target ALL_BUILD --config Release > re2_Release_%FB_TARGET_PLATFORM%.log
 @cmake --build %FB_ROOT_PATH%\extern\re2\builds\%FB_TARGET_PLATFORM% --target ALL_BUILD --config Debug > re2_Debug_%FB_TARGET_PLATFORM%.log
 @popd
+goto :EOF
 
 ::===================
 :: Build CLOOP and generate interface headers
