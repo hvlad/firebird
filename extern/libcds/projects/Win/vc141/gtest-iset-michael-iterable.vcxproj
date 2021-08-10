@@ -89,7 +89,7 @@
     <ProjectGuid>{2A3D25FA-16AB-4105-9585-EF5266979989}</ProjectGuid>
     <Keyword>Win32Proj</Keyword>
     <RootNamespace>intrusive_set</RootNamespace>
-    <WindowsTargetPlatformVersion>10.0.14393.0</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformVersion>10.0.17763.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
