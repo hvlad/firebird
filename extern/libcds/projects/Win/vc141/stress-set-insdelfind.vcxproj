@@ -148,7 +148,7 @@
     <ProjectGuid>{133D1AEE-3BAF-42D1-B1AB-93D5239F4926}</ProjectGuid>
     <Keyword>Win32Proj</Keyword>
     <RootNamespace>stress_set_insdelfind</RootNamespace>
-    <WindowsTargetPlatformVersion>10.0.14393.0</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformVersion>10.0.17763.0</WindowsTargetPlatformVersion>
     <ProjectName>stress-set-insdelfind</ProjectName>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />

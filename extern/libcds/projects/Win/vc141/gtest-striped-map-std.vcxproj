@@ -89,7 +89,7 @@
     <ProjectGuid>{7D43117B-CB6A-44D2-A79B-6E035CD8FA04}</ProjectGuid>
     <Keyword>Win32Proj</Keyword>
     <RootNamespace>striped-map</RootNamespace>
-    <WindowsTargetPlatformVersion>10.0.14393.0</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformVersion>10.0.17763.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">

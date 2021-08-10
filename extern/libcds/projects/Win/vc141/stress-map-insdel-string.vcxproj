@@ -154,7 +154,7 @@
     <ProjectGuid>{2D0E651D-058D-4D69-9A44-12149E6CA5BE}</ProjectGuid>
     <Keyword>Win32Proj</Keyword>
     <RootNamespace>stress_map_insdel_string</RootNamespace>
-    <WindowsTargetPlatformVersion>10.0.14393.0</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformVersion>10.0.17763.0</WindowsTargetPlatformVersion>
     <ProjectName>stress-map-insdel-string</ProjectName>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />

@@ -91,7 +91,7 @@
     <ProjectGuid>{A717715D-CA08-4111-8A0E-B69A6DE3FF38}</ProjectGuid>
     <Keyword>Win32Proj</Keyword>
     <RootNamespace>stress_set_iter_erase</RootNamespace>
-    <WindowsTargetPlatformVersion>10.0.14393.0</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformVersion>10.0.17763.0</WindowsTargetPlatformVersion>
     <ProjectName>stress-set-iter-erase</ProjectName>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />

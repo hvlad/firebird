@@ -108,7 +108,7 @@
     <ProjectGuid>{EACBF8EC-C58F-4CC8-9435-21BE9812287A}</ProjectGuid>
     <Keyword>Win32Proj</Keyword>
     <RootNamespace>stress_queue_pushpop</RootNamespace>
-    <WindowsTargetPlatformVersion>10.0.14393.0</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformVersion>10.0.17763.0</WindowsTargetPlatformVersion>
     <ProjectName>stress-queue-pushpop</ProjectName>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />

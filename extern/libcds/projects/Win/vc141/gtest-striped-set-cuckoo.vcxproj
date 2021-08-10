@@ -145,7 +145,7 @@
     <ProjectGuid>{E6C84E07-A02C-4F91-B759-6CA4730F4534}</ProjectGuid>
     <Keyword>Win32Proj</Keyword>
     <RootNamespace>striped-set</RootNamespace>
-    <WindowsTargetPlatformVersion>10.0.14393.0</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformVersion>10.0.17763.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
