@@ -54,7 +54,7 @@
     <ProjectGuid>{408FE9BC-44F0-4E6A-89FA-D6F952584239}</ProjectGuid>
     <RootNamespace>cds</RootNamespace>
     <Keyword>Win32Proj</Keyword>
-    <WindowsTargetPlatformVersion>10.0.14393.0</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformVersion>10.0.17763.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
@@ -336,7 +336,7 @@
     <CodeAnalysisRuleAssemblies Condition="'$(Configuration)|$(Platform)'=='Release-c++17|x64'" />
     <CodeAnalysisRuleAssemblies Condition="'$(Configuration)|$(Platform)'=='vc14-Release|x64'" />
     <TargetName Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">libcds-$(PlatformTarget)-dbg</TargetName>
-    <TargetName Condition="'$(Configuration)|$(Platform)'=='Debug-static|Win32'">libcds-$(PlatformTarget)-dbg</TargetName>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='Debug-static|Win32'">libcds-$(PlatformTarget)</TargetName>
     <TargetName Condition="'$(Configuration)|$(Platform)'=='Debug-c++17|Win32'">libcds-$(PlatformTarget)-dbg</TargetName>
     <TargetName Condition="'$(Configuration)|$(Platform)'=='vc14-Debug|Win32'">libcds-x86-dbg</TargetName>
     <TargetName Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">libcds-$(PlatformTarget)</TargetName>
@@ -344,7 +344,7 @@
     <TargetName Condition="'$(Configuration)|$(Platform)'=='Release-c++17|Win32'">libcds-$(PlatformTarget)</TargetName>
     <TargetName Condition="'$(Configuration)|$(Platform)'=='vc14-Release|Win32'">libcds-x86</TargetName>
     <TargetName Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">libcds-$(PlatformTarget)-dbg</TargetName>
-    <TargetName Condition="'$(Configuration)|$(Platform)'=='Debug-static|x64'">libcds-$(PlatformTarget)-dbg</TargetName>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='Debug-static|x64'">libcds-$(PlatformTarget)</TargetName>
     <TargetName Condition="'$(Configuration)|$(Platform)'=='Debug-c++17|x64'">libcds-$(PlatformTarget)-dbg</TargetName>
     <TargetName Condition="'$(Configuration)|$(Platform)'=='vc14-Debug|x64'">libcds-amd64-dbg</TargetName>
     <TargetName Condition="'$(Configuration)|$(Platform)'=='Release|x64'">libcds-$(PlatformTarget)</TargetName>
