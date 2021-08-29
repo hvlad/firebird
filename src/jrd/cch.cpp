@@ -3920,7 +3920,16 @@ static BufferDesc* get_buffer(thread_db* tdbb, const PageNumber page, SyncType s
 		{
 			bdb = get_oldest_buffer(tdbb, bcb);
 			if (!bdb)
+			{
 				Thread::yield();
+			}
+			else if (bdb->bdb_page == page)
+			{
+				bdb->downgrade(syncType);
+				recentlyUsed(bdb);
+				tdbb->bumpStats(RuntimeStatistics::PAGE_FETCHES);
+				return bdb;
+			}
 		}
 	}
 
