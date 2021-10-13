@@ -85,9 +85,26 @@ const ULONG MAX_PAGE_BUFFERS = MAX_SLONG - 1;
 
 #ifdef HASH_USE_CDS_LIST
 
+template <typename T>
+class FBAllocator
+{
+public:
+	typedef T value_type;
+
+	FBAllocator() {};
+
+	template <class U> 
+	constexpr FBAllocator(const FBAllocator<U>&) noexcept {}
+
+	T* allocate(std::size_t n);
+	void deallocate(T* p, std::size_t n);
+
+private:
+};
+
 struct BdbTraits : public cds::container::michael_list::traits
 {
-	//typedef ... allocator;
+	typedef FBAllocator<int> allocator;
 	//typedef ... compare;
 };
 

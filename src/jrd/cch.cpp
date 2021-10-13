@@ -62,6 +62,7 @@
 #include "../common/classes/MsgPrint.h"
 #include "../jrd/CryptoManager.h"
 #include "../common/utils_proto.h"
+#include "../common/classes/fb_tls.h"
 
 using namespace Jrd;
 using namespace Ods;
@@ -5409,3 +5410,57 @@ void BufferDesc::unLockIO(thread_db* tdbb)
 
 	bdb_syncIO.unlock(NULL, SYNC_EXCLUSIVE);
 }
+
+
+#ifdef HASH_USE_CDS_LIST
+
+///	 class FBAllocator<T>
+
+class PerThreadPool
+{
+public:
+	static MemoryPool* getThreadPool();
+
+private:
+	PerThreadPool(MemoryPool* aPool) :
+		pool(aPool)
+	{
+		pool->setStatsGroup(stats);
+	}
+
+	MemoryPool* pool;
+	MemoryStats stats;
+};
+
+
+TLS_DECLARE(PerThreadPool*, threadPool);
+
+// TODO: release pool on thread exit
+
+MemoryPool* PerThreadPool::getThreadPool()
+{
+	PerThreadPool* thdPool = TLS_GET(threadPool);
+	if (!thdPool)
+	{
+		MemoryPool* pool = getDefaultMemoryPool()->createPool();
+		thdPool = FB_NEW_POOL(*pool) PerThreadPool(pool);
+		TLS_SET(threadPool, thdPool);
+	}
+	return thdPool->pool;
+}
+
+template <typename T>
+T* FBAllocator<T>::allocate(std::size_t n)
+{
+	MemoryPool* pool = PerThreadPool::getThreadPool();
+	return static_cast<T*>(pool->allocate(n * sizeof(T) ALLOC_ARGS));
+}
+
+template <typename T>
+void FBAllocator<T>::deallocate(T* p, std::size_t n)
+{
+	MemoryPool* pool = PerThreadPool::getThreadPool();
+	pool->deallocate(p);
+}
+
+#endif // HASH_USE_CDS_LIST
