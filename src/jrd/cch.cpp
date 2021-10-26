@@ -3813,7 +3813,7 @@ static inline BufferDesc* find_buffer(BufferControl* bcb, const PageNumber& page
 #else // HASH_USE_CDS_LIST
 	auto& list = bcb->bcb_rpt[page.getPageNum() % bcb->bcb_count].bcb_hash_chain;
 
-	auto ptr = list.get(page.getPageNum());
+	auto ptr = list.get(page);
 	if (!ptr.empty())
 	{
 		fb_assert(ptr->second != nullptr);
@@ -4021,7 +4021,7 @@ static BufferDesc* get_buffer(thread_db* tdbb, const PageNumber page, SyncType s
 
 		BdbList& list = bcb->bcb_rpt[page.getPageNum() % bcb->bcb_count].bcb_hash_chain;
 /*
-		auto ret = list.update(page.getPageNum(), 
+		auto ret = list.update(page, 
 								[bdb, &bdb2](bool bNew, BdbList::value_type& val) 
 								{
 									if (bNew)
@@ -4032,7 +4032,7 @@ static BufferDesc* get_buffer(thread_db* tdbb, const PageNumber page, SyncType s
 								},
 								true);
 */
-		auto ret = list.update(page.getPageNum(), bdb,
+		auto ret = list.update(page, bdb,
 #ifdef DEV_BUILD
 								[bdb, &bdb2](bool bNew, BdbList::value_type& val)
 								{
@@ -4059,14 +4059,14 @@ static BufferDesc* get_buffer(thread_db* tdbb, const PageNumber page, SyncType s
 		{
 			fb_assert(ret.second);
 #ifdef DEV_BUILD
-			auto p1 = list.get(page.getPageNum());
-			fb_assert(!p1.empty() && p1->first == page.getPageNum() && p1->second == bdb);
+			auto p1 = list.get(page);
+			fb_assert(!p1.empty() && p1->first == page && p1->second == bdb);
 #endif
 
 			if (!is_empty)
 			{
-				const ULONG oldPage = bdb->bdb_page.getPageNum();
-				BdbList& oldList = bcb->bcb_rpt[oldPage % bcb->bcb_count].bcb_hash_chain;
+				const PageNumber oldPage = bdb->bdb_page;
+				BdbList& oldList = bcb->bcb_rpt[oldPage.getPageNum() % bcb->bcb_count].bcb_hash_chain;
 
 #ifdef DEV_BUILD
 				p1 = oldList.get(oldPage);
@@ -4083,8 +4083,8 @@ static BufferDesc* get_buffer(thread_db* tdbb, const PageNumber page, SyncType s
 			}
 
 #ifdef DEV_BUILD
-			p1 = list.get(page.getPageNum());
-			fb_assert(!p1.empty() && p1->first == page.getPageNum() && p1->second == bdb);
+			p1 = list.get(page);
+			fb_assert(!p1.empty() && p1->first == page && p1->second == bdb);
 #endif
 
 			bdb->bdb_page = page;

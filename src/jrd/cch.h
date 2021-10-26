@@ -105,10 +105,10 @@ private:
 struct BdbTraits : public cds::container::michael_list::traits
 {
 	typedef FBAllocator<int> allocator;
-	//typedef ... compare;
+	//typedef std::less<PageNumber> compare;
 };
 
-typedef cds::container::MichaelKVList<cds::gc::DHP, ULONG, BufferDesc*, BdbTraits> BdbList;
+typedef cds::container::MichaelKVList<cds::gc::DHP, PageNumber, BufferDesc*, BdbTraits> BdbList;
 
 #endif // HASH_USE_CDS_LIST
 
