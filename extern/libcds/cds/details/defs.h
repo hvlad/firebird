@@ -349,6 +349,9 @@ namespace cds {}
     }
 #endif
 
+// hvlad:
+//#define	CDS_ENABLE_HPSTAT
+
 // Compiler-specific defines
 #include <cds/compiler/defs.h>
 
