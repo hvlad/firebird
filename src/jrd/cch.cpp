@@ -1068,6 +1068,9 @@ void CCH_fini(thread_db* tdbb)
 		{
 			delete tail->bcb_bdb;
 			tail->bcb_bdb = NULL;
+#ifdef HASH_USE_CDS_LIST
+			tail->bcb_hash_chain.clear();
+#endif
 		}
 	}
 
@@ -5416,10 +5419,17 @@ void BufferDesc::unLockIO(thread_db* tdbb)
 
 ///	 class FBAllocator<T>
 
+// Uncomment define below to use per-thread memory pools for Michael List nodes.
+// Else single common pool will be used.
+//#define LIST_PER_THREAD_POOL
+
+#ifdef LIST_PER_THREAD_POOL
+
 class PerThreadPool
 {
 public:
 	static MemoryPool* getThreadPool();
+	void freeThreadPool();
 
 private:
 	PerThreadPool(MemoryPool* aPool) :
@@ -5430,16 +5440,29 @@ private:
 
 	MemoryPool* pool;
 	MemoryStats stats;
+	std::atomic<PerThreadPool*> next;	// detached pools list
+
+	static std::atomic<PerThreadPool*> list;
 };
 
 
+std::atomic<PerThreadPool*> PerThreadPool::list = nullptr;
 TLS_DECLARE(PerThreadPool*, threadPool);
 
-// TODO: release pool on thread exit
 
 MemoryPool* PerThreadPool::getThreadPool()
 {
 	PerThreadPool* thdPool = TLS_GET(threadPool);
+	if (!thdPool)
+	{
+		thdPool = list.load(std::memory_order_acquire);
+		while (thdPool)
+			if (list.compare_exchange_strong(thdPool, thdPool->next))
+			{
+				TLS_SET(threadPool, thdPool);
+				break;
+			}
+	}
 	if (!thdPool)
 	{
 		MemoryPool* pool = getDefaultMemoryPool()->createPool();
@@ -5447,6 +5470,27 @@ MemoryPool* PerThreadPool::getThreadPool()
 		TLS_SET(threadPool, thdPool);
 	}
 	return thdPool->pool;
+}
+
+void PerThreadPool::freeThreadPool()
+{
+	PerThreadPool* head = list.load();
+	do 
+	{
+		this->next = head;
+	} 
+	while (!list.compare_exchange_strong(head, this));
+}
+
+
+void CCH_thread_detach()
+{
+	PerThreadPool* thdPool = TLS_GET(threadPool);
+	if (thdPool)
+	{
+		thdPool->freeThreadPool();
+		TLS_SET(threadPool, nullptr);
+	}
 }
 
 template <typename T>
@@ -5457,10 +5501,77 @@ T* FBAllocator<T>::allocate(std::size_t n)
 }
 
 template <typename T>
-void FBAllocator<T>::deallocate(T* p, std::size_t n)
+void FBAllocator<T>::deallocate(T* p, std::size_t /* n */)
 {
-	MemoryPool* pool = PerThreadPool::getThreadPool();
-	pool->deallocate(p);
+	MemoryPool::globalFree(p);
 }
+
+#else
+
+class InitPool
+{
+public:
+	explicit InitPool(MemoryPool&)
+	{
+		m_pool = MemoryPool::createPool(nullptr, m_stats);
+	}
+
+	~InitPool()
+	{
+		MemoryPool::deletePool(m_pool);
+#ifdef DEV_BUILD
+		char str[256];
+		sprintf(str, "CCH list's common pool stats:\n"
+			"  usage         = %llu\n"
+			"  mapping       = %llu\n"
+			"  max usage     = %llu\n"
+			"  max mapping   = %llu\n"
+			"\n",
+			m_stats.getCurrentUsage(),
+			m_stats.getCurrentMapping(),
+			m_stats.getMaximumUsage(),
+			m_stats.getMaximumMapping()
+		);
+		gds__log(str);
+#endif
+	}
+
+	static void* alloc(size_t size)
+	{
+		return m_pool->allocate(size ALLOC_ARGS);
+	}
+
+	static void free(void* p)
+	{
+		m_pool->deallocate(p);
+	}
+
+private:
+	static MemoryPool* m_pool;
+	static MemoryStats m_stats;
+};
+
+GlobalPtr<InitPool> initPool;
+MemoryPool* InitPool::m_pool = nullptr;
+MemoryStats InitPool::m_stats;
+
+
+template <typename T>
+T* FBAllocator<T>::allocate(std::size_t n)
+{
+	return static_cast<T*>(InitPool::alloc(n * sizeof(T)));
+}
+
+template <typename T>
+void FBAllocator<T>::deallocate(T* p, std::size_t /* n */)
+{
+	InitPool::free(p);
+}
+
+void CCH_thread_detach()
+{
+}
+
+#endif // LIST_PER_THREAD_POOL
 
 #endif // HASH_USE_CDS_LIST
