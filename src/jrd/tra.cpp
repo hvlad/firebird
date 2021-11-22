@@ -1115,7 +1115,9 @@ void TRA_prepare(thread_db* tdbb, jrd_tra* transaction, USHORT length, const UCH
 	// Set the state on the inventory page to be limbo
 
 	transaction->tra_flags |= TRA_prepared;
-	TRA_set_state(tdbb, transaction, transaction->tra_number, tra_limbo);
+
+	if (!(tdbb->tdbb_flags & TDBB_replicator))
+		TRA_set_state(tdbb, transaction, transaction->tra_number, tra_limbo);
 }
 
 
@@ -2100,7 +2102,17 @@ static header_page* bump_transaction_id(thread_db* tdbb, WIN* window, bool dontW
 	const bool new_tip = ((number % dbb->dbb_page_manager.transPerTIP) == 0);
 
 	if (new_tip)
-		TRA_extend_tip(tdbb, (number / dbb->dbb_page_manager.transPerTIP)); //, window);
+	{
+		try
+		{
+			TRA_extend_tip(tdbb, (number / dbb->dbb_page_manager.transPerTIP)); //, window);
+		}
+		catch (Exception&)
+		{
+			CCH_RELEASE(tdbb, window);
+			throw;
+		}
+	}
 
 	// Extend, if necessary, has apparently succeeded.  Next, update header page
 
@@ -4131,7 +4143,7 @@ TraceSweepEvent::TraceSweepEvent(thread_db* tdbb)
 	gds__log("Sweep is started by %s\n"
 		"\tDatabase \"%s\" \n"
 		"\tOIT %" SQUADFORMAT", OAT %" SQUADFORMAT", OST %" SQUADFORMAT", Next %" SQUADFORMAT,
-		att->att_user ? att->att_user->getUserName().c_str() : "<Unknown user>",
+		att->getUserName("<Unknown user>").c_str(),
 		att->att_filename.c_str(),
 		m_sweep_info.getOIT(),
 		m_sweep_info.getOAT(),

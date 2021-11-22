@@ -562,7 +562,10 @@ Source: {#FilesDir}\examples\*.*; DestDir: {app}\examples; Components: DevAdminC
 #ifdef ship_pdb
 Source: {#FilesDir}\fbclient.pdb; DestDir: {app}; Components: ClientComponent;
 Source: {#FilesDir}\firebird.pdb; DestDir: {app}; Components: ServerComponent;
-;Source: {#FilesDir}\fbembed.pdb; DestDir: {app}; Components: ClientComponent;
+Source: {#FilesDir}\gbak.pdb; DestDir: {app}; Components: DevAdminComponent;
+Source: {#FilesDir}\gfix.pdb; DestDir: {app}; Components: DevAdminComponent;
+Source: {#FilesDir}\isql.pdb; DestDir: {app}; Components: ClientComponent;
+Source: {#FilesDir}\plugins\*.pdb; DestDir: {app}\plugins; Components: ServerComponent;
 #if PlatformTarget == "x64"
 Source: {#WOW64Dir}\fbclient.pdb; DestDir: {app}\WOW64; Components: ClientComponent;
 #endif

@@ -41,6 +41,7 @@ class StableAttachmentPart;
 class Attachment;
 class Service;
 class UserId;
+class Applier;
 
 // forward declarations
 class JStatement;
@@ -62,6 +63,8 @@ public:
 	void cancel(Firebird::CheckStatusWrapper* status) override;
 	void close(Firebird::CheckStatusWrapper* status) override;
 	int seek(Firebird::CheckStatusWrapper* status, int mode, int offset) override;			// returns position
+	void deprecatedCancel(Firebird::CheckStatusWrapper* status) override;
+	void deprecatedClose(Firebird::CheckStatusWrapper* status) override;
 
 public:
 	JBlob(blb* handle, StableAttachmentPart* sa);
@@ -86,6 +89,7 @@ private:
 	Firebird::RefPtr<StableAttachmentPart> sAtt;
 
 	void freeEngineData(Firebird::CheckStatusWrapper* status);
+	void internalClose(Firebird::CheckStatusWrapper* status);
 };
 
 class JTransaction FB_FINAL :
@@ -107,6 +111,9 @@ public:
 	Firebird::ITransaction* join(Firebird::CheckStatusWrapper* status, Firebird::ITransaction* transaction) override;
 	JTransaction* validate(Firebird::CheckStatusWrapper* status, Firebird::IAttachment* testAtt) override;
 	JTransaction* enterDtc(Firebird::CheckStatusWrapper* status) override;
+	void deprecatedCommit(Firebird::CheckStatusWrapper* status) override;
+	void deprecatedRollback(Firebird::CheckStatusWrapper* status) override;
+	void deprecatedDisconnect(Firebird::CheckStatusWrapper* status) override;
 
 public:
 	JTransaction(jrd_tra* handle, StableAttachmentPart* sa);
@@ -139,6 +146,9 @@ private:
 	JTransaction(JTransaction* from);
 
 	void freeEngineData(Firebird::CheckStatusWrapper* status);
+	void internalCommit(Firebird::CheckStatusWrapper* status);
+	void internalRollback(Firebird::CheckStatusWrapper* status);
+	void internalDisconnect(Firebird::CheckStatusWrapper* status);
 };
 
 class JResultSet FB_FINAL :
@@ -157,6 +167,7 @@ public:
 	FB_BOOLEAN isBof(Firebird::CheckStatusWrapper* status) override;
 	Firebird::IMessageMetadata* getMetadata(Firebird::CheckStatusWrapper* status) override;
 	void close(Firebird::CheckStatusWrapper* status) override;
+	void deprecatedClose(Firebird::CheckStatusWrapper* status) override;
 	void setDelayedOutputFormat(Firebird::CheckStatusWrapper* status, Firebird::IMessageMetadata* format) override;
 
 public:
@@ -200,6 +211,10 @@ public:
 	unsigned getBlobAlignment(Firebird::CheckStatusWrapper* status) override;
 	Firebird::IMessageMetadata* getMetadata(Firebird::CheckStatusWrapper* status) override;
 	void setDefaultBpb(Firebird::CheckStatusWrapper* status, unsigned parLength, const unsigned char* par) override;
+	void close(Firebird::CheckStatusWrapper* status) override;
+	void deprecatedClose(Firebird::CheckStatusWrapper* status) override;
+	void getInfo(Firebird::CheckStatusWrapper* status, unsigned int itemsLength, const unsigned char* items,
+		unsigned int bufferLength, unsigned char* buffer) override;
 
 public:
 	JBatch(DsqlBatch* handle, JStatement* aStatement, Firebird::IMessageMetadata* aMetadata);
@@ -232,21 +247,28 @@ public:
 	int release() override;
 	void process(Firebird::CheckStatusWrapper* status, unsigned length, const unsigned char* data) override;
 	void close(Firebird::CheckStatusWrapper* status) override;
+	void deprecatedClose(Firebird::CheckStatusWrapper* status) override;
 
 public:
-	JReplicator(StableAttachmentPart* sa);
+	JReplicator(Applier* appl, StableAttachmentPart* sa);
 
 	StableAttachmentPart* getAttachment()
 	{
 		return sAtt;
 	}
 
-	JReplicator* getHandle() throw()
+	Applier* getHandle() throw()
 	{
-		return this;
+		return applier;
+	}
+
+	void resetHandle()
+	{
+		applier = NULL;
 	}
 
 private:
+	Applier* applier;
 	Firebird::RefPtr<StableAttachmentPart> sAtt;
 
 	void freeEngineData(Firebird::CheckStatusWrapper* status);
@@ -262,6 +284,7 @@ public:
 		unsigned int itemsLength, const unsigned char* items,
 		unsigned int bufferLength, unsigned char* buffer) override;
 	void free(Firebird::CheckStatusWrapper* status) override;
+	void deprecatedFree(Firebird::CheckStatusWrapper* status) override;
 	ISC_UINT64 getAffectedRecords(Firebird::CheckStatusWrapper* userStatus) override;
 	Firebird::IMessageMetadata* getOutputMetadata(Firebird::CheckStatusWrapper* userStatus) override;
 	Firebird::IMessageMetadata* getInputMetadata(Firebird::CheckStatusWrapper* userStatus) override;
@@ -320,6 +343,7 @@ public:
 		unsigned int msg_type, unsigned int length, const void* message) override;
 	void unwind(Firebird::CheckStatusWrapper* status, int level) override;
 	void free(Firebird::CheckStatusWrapper* status) override;
+	void deprecatedFree(Firebird::CheckStatusWrapper* status) override;
 
 public:
 	JRequest(JrdStatement* handle, StableAttachmentPart* sa);
@@ -347,6 +371,7 @@ public:
 	// IEvents implementation
 	int release() override;
 	void cancel(Firebird::CheckStatusWrapper* status) override;
+	void deprecatedCancel(Firebird::CheckStatusWrapper* status) override;
 
 public:
 	JEvents(int aId, StableAttachmentPart* sa, Firebird::IEventCallback* aCallback);
@@ -420,6 +445,8 @@ public:
 	void ping(Firebird::CheckStatusWrapper* status) override;
 	void detach(Firebird::CheckStatusWrapper* status) override;
 	void dropDatabase(Firebird::CheckStatusWrapper* status) override;
+	void deprecatedDetach(Firebird::CheckStatusWrapper* status) override;
+	void deprecatedDropDatabase(Firebird::CheckStatusWrapper* status) override;
 
 	unsigned int getIdleTimeout(Firebird::CheckStatusWrapper* status) override;
 	void setIdleTimeout(Firebird::CheckStatusWrapper* status, unsigned int timeOut) override;
@@ -460,6 +487,9 @@ private:
 	{
 		att = NULL;
 	}
+
+	void internalDetach(Firebird::CheckStatusWrapper* status);
+	void internalDropDatabase(Firebird::CheckStatusWrapper* status);
 };
 
 class JService FB_FINAL :
@@ -469,6 +499,7 @@ public:
 	// IService implementation
 	int release() override;
 	void detach(Firebird::CheckStatusWrapper* status) override;
+	void deprecatedDetach(Firebird::CheckStatusWrapper* status) override;
 	void query(Firebird::CheckStatusWrapper* status,
 		unsigned int sendLength, const unsigned char* sendItems,
 		unsigned int receiveLength, const unsigned char* receiveItems,

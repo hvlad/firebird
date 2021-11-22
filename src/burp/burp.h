@@ -1149,6 +1149,7 @@ public:
 
 	bool			hdr_forced_writes;
 	TEXT			database_security_class[GDS_NAME_LEN]; // To save database security class for deferred update
+	unsigned		batchInlineBlobLimit;
 
 	static inline BurpGlobals* getSpecific()
 	{

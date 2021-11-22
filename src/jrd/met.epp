@@ -2777,6 +2777,7 @@ jrd_prc* MET_lookup_procedure(thread_db* tdbb, const QualifiedName& name, bool n
 		jrd_prc* procedure = *iter;
 
 		if (procedure && !(procedure->flags & Routine::FLAG_OBSOLETE) &&
+			!(procedure->flags & Routine::FLAG_CLEARED) &&
 			((procedure->flags & Routine::FLAG_SCANNED) || noscan) &&
 			!(procedure->flags & Routine::FLAG_BEING_SCANNED) &&
 			!(procedure->flags & Routine::FLAG_BEING_ALTERED))
@@ -2845,6 +2846,7 @@ jrd_prc* MET_lookup_procedure_id(thread_db* tdbb, USHORT id,
 
 	if (id < (USHORT) attachment->att_procedures.getCount() && (procedure = attachment->att_procedures[id]) &&
 		procedure->getId() == id &&
+		!(procedure->flags & Routine::FLAG_CLEARED) &&
 		!(procedure->flags & Routine::FLAG_BEING_SCANNED) &&
 		((procedure->flags & Routine::FLAG_SCANNED) || noscan) &&
 		!(procedure->flags & Routine::FLAG_BEING_ALTERED) &&
@@ -3336,7 +3338,7 @@ jrd_prc* MET_procedure(thread_db* tdbb, USHORT id, bool noscan, USHORT flags)
 	try {
 
 	procedure->flags |= (Routine::FLAG_BEING_SCANNED | flags);
-	procedure->flags &= ~Routine::FLAG_OBSOLETE;
+	procedure->flags &= ~(Routine::FLAG_OBSOLETE | Routine::FLAG_CLEARED);
 
 	procedure->setId(id);
 	attachment->att_procedures[id] = procedure;
@@ -3529,7 +3531,7 @@ jrd_prc* MET_procedure(thread_db* tdbb, USHORT id, bool noscan, USHORT flags)
 					{
 						try
 						{
-							procedure->parseBlr(tdbb, csb, &P.RDB$PROCEDURE_BLR, 
+							procedure->parseBlr(tdbb, csb, &P.RDB$PROCEDURE_BLR,
 								P.RDB$DEBUG_INFO.NULL ? NULL : &P.RDB$DEBUG_INFO);
 						}
 						catch (const Exception& ex)

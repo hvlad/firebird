@@ -921,8 +921,11 @@ void Service::detach()
 	// save it cause after call to finish() we can't access class members any more
 	const bool localDoShutdown = svc_do_shutdown;
 
-	TraceServiceImpl service(this);
-	svc_trace_manager->event_service_detach(&service, ITracePlugin::RESULT_SUCCESS);
+	if (svc_trace_manager->needs(ITraceFactory::TRACE_EVENT_SERVICE_DETACH))
+	{
+		TraceServiceImpl service(this);
+		svc_trace_manager->event_service_detach(&service, ITracePlugin::RESULT_SUCCESS);
+	}
 
 	// Mark service as detached.
 	finish(SVC_detached);
@@ -1140,7 +1143,7 @@ ISC_STATUS Service::query2(thread_db* /*tdbb*/,
 		start_info = NULL;
 	}
 
-	while (items < end_items2 && *items != isc_info_end)
+	while (items < end_items2 && *items != isc_info_end && info < end)
 	{
 		// if we attached to the "anonymous" service we allow only following queries:
 
@@ -2882,6 +2885,30 @@ bool Service::process_switches(ClumpletReader& spb, string& switches)
 				{
 					string s;
 					spb.getString(s);
+
+					bool inStr = false;
+					for (FB_SIZE_T i = 0; i < s.length(); ++i)
+					{
+						if (s[i] == SVC_TRMNTR)
+						{
+							s.erase(i, 1);
+							if (inStr)
+							{
+								if (i < s.length() && s[i] != SVC_TRMNTR)
+								{
+									inStr = false;
+									continue;
+								}
+							}
+							else
+							{
+								inStr = true;
+								continue;
+							}
+						}
+						++i;
+					}
+
 					switches += s;
 					switches += ' ';
 				}

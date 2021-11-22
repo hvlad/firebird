@@ -75,7 +75,12 @@ ifndef GCC
 endif
 
 ifeq ($(TOMMATH_BUILD_FLG),Y)
-TOM2TOM_FLAGS=-I../libtommath
+TOM2TOM_CFLAGS=-I../libtommath
+ifeq ($(PLATFORM),DARWIN)
+LTC_LDFLAGS='-L$(LIB) $(call LINK_DARWIN_RPATH,..)'
+else
+LTC_LDFLAGS='-L$(LIB) $(subst $,$$$$,$(call LIB_LINK_RPATH,lib))'
+endif
 endif
 
 .PHONY:	master_process cross_process firebird Debug Release external
@@ -170,6 +175,11 @@ external:
 	$(MAKE) -C $(ROOT)/extern/decNumber
 	ln -sf $(ROOT)/extern/decNumber/libdecFloat.a $(LIB)
 
+ifeq ($(ABSEIL_BUILD_FLG),Y)
+	$(MAKE) -C $(ROOT)/extern/int128/absl/numeric
+	ln -sf $(ROOT)/extern/int128/absl/numeric/libi128.a $(LIB)
+endif
+
 	CXXFLAGS="-O3 -g -fPIC" $(MAKE) -C $(ROOT)/extern/re2
 	ln -sf $(ROOT)/extern/re2/obj/libre2.a $(LIB)
 
@@ -186,7 +196,7 @@ endif
 endif
 
 ifeq ($(TOMCRYPT_BUILD_FLG),Y)
-	CFLAGS="$(CFLAGS) $(TOM2TOM_FLAGS)" $(MAKE) -C $(ROOT)/extern/libtomcrypt -f makefile.shared GCC=$(GCC)
+	CFLAGS="$(CFLAGS) $(TOM2TOM_CFLAGS)" $(MAKE) -C $(ROOT)/extern/libtomcrypt -f makefile.shared GCC=$(GCC) LTC_LDFLAGS=$(LTC_LDFLAGS)
 
 ifeq ($(PLATFORM),DARWIN)
 	install_name_tool -id "@rpath/lib/libtomcrypt.dylib" $(TOMCRYPT)/.libs/libtomcrypt.1.dylib
@@ -328,6 +338,8 @@ cross2:
 	$(MAKE) re2
 	$(MAKE) -C $(ROOT)/extern/decNumber
 	ln -sf $(ROOT)/extern/decNumber/libdecFloat$(CROSS).a $(LIB)
+	$(MAKE) -C $(ROOT)/extern/int128/absl/numeric
+	ln -sf $(ROOT)/extern/int128/absl/numeric/libi128$(CROSS).a $(LIB)
 	$(MAKE) yvalve
 	$(MAKE) engine
 	$(MAKE) fbintl
@@ -664,10 +676,9 @@ $(FIREBIRD_MSG):	$(BUILD_FILE) msg.timestamp
 
 tzdata: $(FIREBIRD)/tzdata
 
-# FIXME: For big-endian, be.zip must be used.
-$(FIREBIRD)/tzdata: $(ROOT)/extern/icu/tzdata/le.zip
+$(FIREBIRD)/tzdata: $(ROOT)/extern/icu/tzdata/$(TZDATA_ZIP)
 	mkdir -p $(FIREBIRD)/tzdata
-	unzip -o $(ROOT)/extern/icu/tzdata/le.zip -d $(FIREBIRD)/tzdata
+	unzip -o $(ROOT)/extern/icu/tzdata/$(TZDATA_ZIP) -d $(FIREBIRD)/tzdata
 
 $(BUILD_FILE):	$(BUILD_Objects) $(COMMON_LIB)
 	$(EXE_LINK) $(EXE_LINK_OPTIONS) $(LSB_UNDEF) $^ -o $@ $(FIREBIRD_LIBRARY_LINK) $(LINK_LIBS) $(call LINK_DARWIN_RPATH,..)
@@ -738,12 +749,12 @@ install install-embedded silent_install package packages dist:
 #
 .PHONY: clean clean_objects clean_dependancies clean_extern_objects clean_build \
 		clean_gpre_gen clean_icu clean_dbs clean_examples clean_makefiles \
-		clean_editline clean_all clean_decfloat clean_vers clean_misc
+		clean_editline clean_all clean_decfloat clean_int128 clean_vers clean_misc
 
 
 clean: clean_objects clean_dependancies clean_extern_objects clean_build \
 		clean_yacc_gen clean_gpre_gen clean_dbs clean_examples clean_tommath \
-		clean_tomcrypt clean_decfloat clean_vers clean_misc
+		clean_tomcrypt clean_decfloat clean_int128 clean_vers clean_misc
 
 clean_vers:
 	$(RM) *.vers
@@ -796,6 +807,9 @@ clean_tomcrypt:
 
 clean_decfloat:
 	-$(MAKE) -C $(ROOT)/extern/decNumber clean
+
+clean_int128:
+	-$(MAKE) -C $(ROOT)/extern/int128/absl/numeric clean
 
 clean_objects:
 	$(RM) `find $(TMP_ROOT)/ -type f -name '*.o' -print`

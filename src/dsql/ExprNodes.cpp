@@ -540,8 +540,8 @@ const UCHAR decimalDescTable[6][6] = {
 /*	DSC_ZTYPE_FLT64		*/	{DSC_ZTYPE_FLT64,	DSC_ZTYPE_FLT128,	DSC_ZTYPE_FLT128,	DSC_ZTYPE_FLT128,	DSC_ZTYPE_FLT128,	DSC_ZTYPE_FLT128},
 /*	DSC_ZTYPE_FLT128	*/	{DSC_ZTYPE_FLT128,	DSC_ZTYPE_FLT128,	DSC_ZTYPE_FLT128,	DSC_ZTYPE_FLT128,	DSC_ZTYPE_FLT128,	DSC_ZTYPE_FLT128},
 /*	DSC_ZTYPE_FIXED		*/	{DSC_ZTYPE_FLT128,	DSC_ZTYPE_FLT128,	DSC_ZTYPE_FIXED,	DSC_ZTYPE_FIXED,	DSC_ZTYPE_FIXED,	DSC_ZTYPE_FLT128},
-/*	DSC_ZTYPE_INT64		*/	{DSC_ZTYPE_FLT128,	DSC_ZTYPE_FLT128,	DSC_ZTYPE_FIXED,	DSC_ZTYPE_FIXED,	DSC_ZTYPE_BAD,		DSC_ZTYPE_BAD},
-/*	DSC_ZTYPE_INT		*/	{DSC_ZTYPE_FLT128,	DSC_ZTYPE_FLT128,	DSC_ZTYPE_FIXED,	DSC_ZTYPE_BAD,		DSC_ZTYPE_BAD,		DSC_ZTYPE_BAD},
+/*	DSC_ZTYPE_INT64		*/	{DSC_ZTYPE_FLT128,	DSC_ZTYPE_FLT128,	DSC_ZTYPE_FIXED,	DSC_ZTYPE_FIXED,	DSC_ZTYPE_FIXED,	DSC_ZTYPE_BAD},
+/*	DSC_ZTYPE_INT		*/	{DSC_ZTYPE_FLT128,	DSC_ZTYPE_FLT128,	DSC_ZTYPE_FIXED,	DSC_ZTYPE_FIXED,	DSC_ZTYPE_BAD,		DSC_ZTYPE_BAD},
 /*	DSC_ZTYPE_OTHER		*/	{DSC_ZTYPE_FLT128,	DSC_ZTYPE_FLT128,	DSC_ZTYPE_FLT128,	DSC_ZTYPE_BAD,		DSC_ZTYPE_BAD,		DSC_ZTYPE_BAD}
 };
 
@@ -4488,18 +4488,11 @@ dsc* CurrentRoleNode::execute(thread_db* tdbb, jrd_req* request) const
 	impure->vlu_desc.dsc_sub_type = 0;
 	impure->vlu_desc.dsc_scale = 0;
 	impure->vlu_desc.setTextType(ttype_metadata);
-	const char* curRole = NULL;
 
-	if (tdbb->getAttachment()->att_user)
-	{
-		curRole = tdbb->getAttachment()->att_user->getSqlRole().c_str();
-		impure->vlu_desc.dsc_address = reinterpret_cast<UCHAR*>(const_cast<char*>(curRole));
-	}
+	const char* curRole = tdbb->getAttachment()->getSqlRole().c_str();
 
-	if (curRole)
-		impure->vlu_desc.dsc_length = static_cast<USHORT>(strlen(curRole));
-	else
-		impure->vlu_desc.dsc_length = 0;
+	impure->vlu_desc.dsc_address = reinterpret_cast<UCHAR*>(const_cast<char*>(curRole));
+	impure->vlu_desc.dsc_length = static_cast<USHORT>(strlen(curRole));
 
 	return &impure->vlu_desc;
 }
@@ -4581,18 +4574,11 @@ dsc* CurrentUserNode::execute(thread_db* tdbb, jrd_req* request) const
 	impure->vlu_desc.dsc_sub_type = 0;
 	impure->vlu_desc.dsc_scale = 0;
 	impure->vlu_desc.setTextType(ttype_metadata);
-	const char* curUser = NULL;
 
-	if (tdbb->getAttachment()->att_user)
-	{
-		curUser = tdbb->getAttachment()->att_user->getUserName().c_str();
-		impure->vlu_desc.dsc_address = reinterpret_cast<UCHAR*>(const_cast<char*>(curUser));
-	}
+	const char* curUser = tdbb->getAttachment()->getUserName().c_str();
 
-	if (curUser)
-		impure->vlu_desc.dsc_length = static_cast<USHORT>(strlen(curUser));
-	else
-		impure->vlu_desc.dsc_length = 0;
+	impure->vlu_desc.dsc_address = reinterpret_cast<UCHAR*>(const_cast<char*>(curUser));
+	impure->vlu_desc.dsc_length = static_cast<USHORT>(strlen(curUser));
 
 	return &impure->vlu_desc;
 }
@@ -9162,14 +9148,13 @@ WindowClause* WindowClause::dsqlPass(DsqlCompilerScratch* dsqlScratch)
 		doDsqlPass(dsqlScratch, extent ? extent : window->extent),
 		exclusion ? exclusion : window->exclusion);
 
-	if (node->order && node->extent && node->extent->unit == FrameExtent::Unit::RANGE &&
+	if (node->extent && node->extent->unit == FrameExtent::Unit::RANGE &&
 		(node->extent->frame1->value || (node->extent->frame2 && node->extent->frame2->value)))
 	{
-		if (node->order->items.getCount() > 1)
-		{
-			status_exception::raise(
-				Arg::Gds(isc_dsql_window_range_multi_key));
-		}
+		if (!node->order)
+			status_exception::raise(Arg::Gds(isc_dsql_window_range_inv_key_type));
+		else if (node->order->items.getCount() > 1)
+			status_exception::raise(Arg::Gds(isc_dsql_window_range_multi_key));
 		else
 		{
 			OrderNode* key = nodeAs<OrderNode>(node->order->items[0]);
@@ -9179,10 +9164,7 @@ WindowClause* WindowClause::dsqlPass(DsqlCompilerScratch* dsqlScratch)
 			DsqlDescMaker::fromNode(dsqlScratch, &desc, key->value);
 
 			if (!desc.isDateTime() && !desc.isNumeric())
-			{
-				status_exception::raise(
-					Arg::Gds(isc_dsql_window_range_inv_key_type));
-			}
+				status_exception::raise(Arg::Gds(isc_dsql_window_range_inv_key_type));
 		}
 	}
 
@@ -10675,6 +10657,7 @@ dsc* StrCaseNode::execute(thread_db* tdbb, jrd_req* request) const
 		return NULL;
 
 	TextType* textType = INTL_texttype_lookup(tdbb, value->getTextType());
+	CharSet* charSet = textType->getCharSet();
 	auto intlFunction = (blrOp == blr_lowcase ? &TextType::str_to_lower : &TextType::str_to_upper);
 
 	if (value->isBlob())
@@ -10689,13 +10672,15 @@ dsc* StrCaseNode::execute(thread_db* tdbb, jrd_req* request) const
 		blb* blob = blb::open(tdbb, tdbb->getRequest()->req_transaction,
 			reinterpret_cast<bid*>(value->dsc_address));
 
-		HalfStaticArray<UCHAR, BUFFER_SMALL> buffer;
+		HalfStaticArray<UCHAR, BUFFER_MEDIUM> buffer;
 
 		if (charSet->isMultiByte())
-			buffer.getBuffer(blob->blb_length);	// alloc space to put entire blob in memory
+		{
+			// Alloc space to put entire blob in memory, with extra space for additional bytes when changing case.
+			buffer.getBuffer(blob->blb_length / charSet->minBytesPerChar() * charSet->maxBytesPerChar());
+		}
 
-		blb* newBlob = blb::create(tdbb, tdbb->getRequest()->req_transaction,
-			&impure->vlu_misc.vlu_bid);
+		blb* newBlob = blb::create(tdbb, tdbb->getRequest()->req_transaction, &impure->vlu_misc.vlu_bid);
 
 		while (!(blob->blb_flags & BLB_eof))
 		{
@@ -10703,7 +10688,7 @@ dsc* StrCaseNode::execute(thread_db* tdbb, jrd_req* request) const
 
 			if (len)
 			{
-				len = (textType->*intlFunction)(len, buffer.begin(), len, buffer.begin());
+				len = (textType->*intlFunction)(len, buffer.begin(), buffer.getCapacity(), buffer.begin());
 				newBlob->BLB_put_data(tdbb, buffer.begin(), len);
 			}
 		}
@@ -10716,16 +10701,16 @@ dsc* StrCaseNode::execute(thread_db* tdbb, jrd_req* request) const
 		UCHAR* ptr;
 		VaryStr<TEMP_STR_LENGTH> temp;
 		USHORT ttype;
+		ULONG len = MOV_get_string_ptr(tdbb, value, &ttype, &ptr, &temp, sizeof(temp));
 
 		dsc desc;
-		desc.dsc_length = MOV_get_string_ptr(tdbb, value, &ttype, &ptr, &temp, sizeof(temp));
+		desc.dsc_length = len / charSet->minBytesPerChar() * charSet->maxBytesPerChar();
 		desc.dsc_dtype = dtype_text;
 		desc.dsc_address = NULL;
 		desc.setTextType(ttype);
 		EVL_make_value(tdbb, &desc, impure);
 
-		ULONG len = (textType->*intlFunction)(desc.dsc_length,
-			ptr, desc.dsc_length, impure->vlu_desc.dsc_address);
+		len = (textType->*intlFunction)(len, ptr, desc.dsc_length, impure->vlu_desc.dsc_address);
 
 		if (len == INTL_BAD_STR_LENGTH)
 			status_exception::raise(Arg::Gds(isc_arith_except));
@@ -11949,6 +11934,8 @@ ValueExprNode* SubstringSimilarNode::pass2(thread_db* tdbb, CompilerScratch* csb
 {
 	if (nodFlags & FLAG_INVARIANT)
 		csb->csb_invariants.push(&impureOffset);
+	else
+		nodFlags |= FLAG_PATTERN_MATCHER_CACHE;
 
 	ValueExprNode::pass2(tdbb, csb);
 
@@ -11996,33 +11983,73 @@ dsc* SubstringSimilarNode::execute(thread_db* tdbb, jrd_req* request) const
 	if (escapeLen == 0 || charSet->length(escapeLen, escapeStr, true) != 1)
 		ERR_post(Arg::Gds(isc_escape_invalid));
 
-	impure_value* impure = request->getImpure<impure_value>(impureOffset);
-
 	AutoPtr<BaseSubstringSimilarMatcher> autoEvaluator;	// deallocate non-invariant evaluator
 	BaseSubstringSimilarMatcher* evaluator;
+
+	impure_value* impure = request->getImpure<impure_value>(impureOffset);
+
+	auto createMatcher = [&]()
+	{
+		return collation->createSubstringSimilarMatcher(
+			tdbb, *tdbb->getDefaultPool(), patternStr, patternLen, escapeStr, escapeLen);
+	};
 
 	if (nodFlags & FLAG_INVARIANT)
 	{
 		if (!(impure->vlu_flags & VLU_computed))
 		{
 			delete impure->vlu_misc.vlu_invariant;
+			impure->vlu_misc.vlu_invariant = nullptr;
 
-			impure->vlu_misc.vlu_invariant = evaluator = collation->createSubstringSimilarMatcher(
-				tdbb, *tdbb->getDefaultPool(), patternStr, patternLen, escapeStr, escapeLen);
+			impure->vlu_misc.vlu_invariant = evaluator = createMatcher();
 
 			impure->vlu_flags |= VLU_computed;
 		}
 		else
+			impure->vlu_misc.vlu_invariant->reset();
+
+		evaluator = static_cast<BaseSubstringSimilarMatcher*>(impure->vlu_misc.vlu_invariant);
+	}
+	else if (nodFlags & FLAG_PATTERN_MATCHER_CACHE)
+	{
+		auto& cache = impure->vlu_misc.vlu_patternMatcherCache;
+		const bool cacheHit = cache &&
+			cache->matcher &&
+			cache->ttype == textType &&
+			cache->patternLen == patternLen &&
+			cache->escapeLen == escapeLen &&
+			memcmp(cache->key, patternStr, patternLen) == 0 &&
+			memcmp(cache->key + patternLen, escapeStr, escapeLen) == 0;
+
+		if (cacheHit)
+			cache->matcher->reset();
+		else
 		{
-			evaluator = static_cast<BaseSubstringSimilarMatcher*>(impure->vlu_misc.vlu_invariant);
-			evaluator->reset();
+			if (cache && cache->keySize < patternLen + escapeLen)
+			{
+				delete cache;
+				cache = nullptr;
+			}
+
+			if (!cache)
+			{
+				cache = FB_NEW_RPT(*tdbb->getDefaultPool(), patternLen + escapeLen)
+					impure_value::PatternMatcherCache(patternLen + escapeLen);
+			}
+
+			cache->ttype = textType;
+			cache->patternLen = patternLen;
+			cache->escapeLen = escapeLen;
+			memcpy(cache->key, patternStr, patternLen);
+			memcpy(cache->key + patternLen, escapeStr, escapeLen);
+
+			cache->matcher = createMatcher();
 		}
+
+		evaluator = static_cast<BaseSubstringSimilarMatcher*>(cache->matcher.get());
 	}
 	else
-	{
-		autoEvaluator = evaluator = collation->createSubstringSimilarMatcher(tdbb, *tdbb->getDefaultPool(),
-			patternStr, patternLen, escapeStr, escapeLen);
-	}
+		autoEvaluator = evaluator = createMatcher();
 
 	evaluator->process(exprStr, exprLen);
 

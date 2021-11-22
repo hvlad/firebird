@@ -51,6 +51,7 @@
 #include "../jrd/constants.h"
 #include "../jrd/status.h"
 #include "../common/os/os_utils.h"
+#include "../common/os/mac_utils.h"
 #include "../common/classes/BlrReader.h"
 
 #include "../common/classes/alloc.h"
@@ -260,6 +261,7 @@ const int op_partition_args	= 26;
 const int op_subproc_decl	= 27;
 const int op_subfunc_decl	= 28;
 const int op_window_win		= 29;
+const int op_erase			= 30;	// special due to optional blr_marks after blr_erase
 
 static const UCHAR
 	// generic print formats
@@ -346,7 +348,8 @@ static const UCHAR
 	relation_field[] = { op_line, op_indent, op_byte, op_literal,
 						 op_line, op_indent, op_byte, op_literal, op_pad, op_line, 0},
 	store3[] = { op_line, op_byte, op_line, op_verb, op_verb, op_verb, 0},
-	marks[] = { op_byte, op_literal, op_line, op_verb, 0};
+	marks[] = { op_byte, op_literal, op_line, op_verb, 0},
+	erase[] = { op_erase, 0};
 
 
 #include "../jrd/blp.h"
@@ -1190,6 +1193,30 @@ void API_ROUTINE gds__log(const TEXT* text, ...)
 	now = time((time_t *)0);
 #endif
 
+	TEXT hostName[MAXPATHLEN];
+	ISC_get_host(hostName, MAXPATHLEN);
+
+#ifdef DARWIN
+
+	if (isSandboxed())
+	{
+		static Firebird::GlobalPtr<Firebird::Mutex> logMutex;	// protects big static
+		static char buffer[10240];								// buffer for messages
+
+		Firebird::MutexLockGuard(logMutex, FB_FUNCTION);
+		fb_utils::snprintf(buffer, sizeof(buffer), "\n\n%s\t%.25s\t", hostName, ctime(&now));
+		unsigned hdrlen = strlen(buffer);
+		va_start(ptr, text);
+		VSNPRINTF(&buffer[hdrlen], sizeof(buffer) - hdrlen, text, ptr);
+		va_end(ptr);
+		buffer[sizeof(buffer) - 1] = '\0';		// be safe
+
+		osLog(buffer);
+		return;
+	}
+
+#endif // DARWIN
+
 	Firebird::PathName name = fb_utils::getPrefix(Firebird::IConfigManager::DIR_LOG, LOGFILE);
 
 #ifdef WIN_NT
@@ -1216,8 +1243,7 @@ void API_ROUTINE gds__log(const TEXT* text, ...)
 		fseek(file, 0, SEEK_END);
 #endif
 
-		TEXT buffer[MAXPATHLEN];
-		fprintf(file, "\n%s\t%.25s\t", ISC_get_host(buffer, MAXPATHLEN), ctime(&now));
+		fprintf(file, "\n%s\t%.25s\t", hostName, ctime(&now));
 		va_start(ptr, text);
 		vfprintf(file, text, ptr);
 		va_end(ptr);
@@ -3723,6 +3749,21 @@ static void blr_print_verb(gds_ctl* control, SSHORT level)
 			break;
 		}
 
+		case op_erase:
+			blr_print_byte(control);
+			if (control->ctl_blr_reader.peekByte() == blr_marks)
+			{
+				offset = blr_print_line(control, offset);
+				blr_indent(control, level);
+				blr_print_blr(control, control->ctl_blr_reader.getByte());
+				n = blr_print_byte(control);
+
+				while (n-- > 0)
+					blr_print_char(control);
+			}
+			offset = blr_print_line(control, offset);
+			break;
+
 		default:
 			fb_assert(false);
 			break;
@@ -3892,7 +3933,11 @@ public:
 		}
 		if (!tempDir.length() || tempDir.length() >= MAXPATHLEN)
 		{
-			tempDir = WORKFILE;
+			const char* tmp = getTemporaryFolder();
+			if (tmp)
+				tempDir = tmp;
+			else
+				tempDir = WORKFILE;
 		}
 		tempDir.copyTo(fbTempDir, sizeof(fbTempDir));
 
@@ -3902,8 +3947,11 @@ public:
 		Firebird::PathName lockPrefix;
 		if (!fb_utils::readenv(FB_LOCK_ENV, lockPrefix))
 		{
-#ifndef WIN_NT
-			PathUtils::concatPath(lockPrefix, WORKFILE, LOCKDIR);
+#if !defined(WIN_NT)
+			const char* tmp = getTemporaryFolder();
+			if (!tmp)
+				tmp = WORKFILE;
+			PathUtils::concatPath(lockPrefix, tmp, LOCKDIR);
 #else
 			char cmnData[MAXPATHLEN];
 			if (SHGetSpecialFolderPath(NULL, cmnData, CSIDL_COMMON_APPDATA, TRUE))

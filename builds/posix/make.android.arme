@@ -40,7 +40,7 @@ DEV_FLAGS=$(COMMON_FLAGS) $(WARN_FLAGS)
 CROSS_CONFIG=android.arme
 
 LDFLAGS += --sysroot=$(CROSS_PLATFORM) -static-libstdc++
-DroidLibs := -lm -ldl $(DECLIB) $(RE2LIB)
+DroidLibs := -lm -ldl $(DECLIB) $(RE2LIB) $(I128LIB)
 UDR_SUPPORT_LIBS :=
 
 LINK_LIBS = $(DroidLibs)

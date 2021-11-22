@@ -173,13 +173,16 @@ enum db_info_types
 
 	fb_info_replica_mode = 146,
 
-	fb_info_reads_wait_async_cnt	= 147,
-	fb_info_reads_wait_async_time	= 148,
-	fb_info_reads_wait_cnt			= 149,
-	fb_info_reads_wait_time			= 150,
-	fb_info_reads_multy_cnt			= 151,
-	fb_info_reads_multy_pages		= 152,
-	fb_info_reads_multy_iosize		= 153,
+	fb_info_username = 147,
+	fb_info_sqlrole = 148,
+
+	fb_info_reads_wait_async_cnt	= 149,
+	fb_info_reads_wait_async_time	= 150,
+	fb_info_reads_wait_cnt			= 151,
+	fb_info_reads_wait_time			= 152,
+	fb_info_reads_multy_cnt			= 153,
+	fb_info_reads_multy_pages		= 154,
+	fb_info_reads_multy_iosize		= 155,
 
 	isc_info_db_last_value   /* Leave this LAST! */
 };
@@ -483,6 +486,8 @@ enum info_db_provider
 #define isc_info_sql_stmt_timeout_user	28
 #define isc_info_sql_stmt_timeout_run	29
 #define isc_info_sql_stmt_blob_align	30
+#define isc_info_sql_exec_path_blr_bytes	31
+#define isc_info_sql_exec_path_blr_text		32
 
 /*********************************/
 /* SQL information return values */

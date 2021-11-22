@@ -1,4 +1,198 @@
-# v4.0 Release Candidate 1 (planned)
+# v4.0 Release
+
+## Improvements
+
+* [#6806](https://github.com/FirebirdSQL/firebird/issues/6806): Rename RSA_SIGN and RSA_VERIFY  
+  Reference(s): [/doc/sql.extensions/README.builtin_functions.txt](https://github.com/FirebirdSQL/firebird/raw/master/doc/sql.extensions/README.builtin_functions.txt), [/doc/sql.extensions/README.keywords](https://github.com/FirebirdSQL/firebird/raw/master/doc/sql.extensions/README.keywords)  
+  Contributor(s): Alex Peshkoff
+
+* [#6786](https://github.com/FirebirdSQL/firebird/issues/6786): Add session time zone to system context  
+  Reference(s): [/doc/sql.extensions/README.time_zone.md](https://github.com/FirebirdSQL/firebird/raw/master/doc/sql.extensions/README.time_zone.md), [/doc/sql.extensions/README.context_variables2](https://github.com/FirebirdSQL/firebird/raw/master/doc/sql.extensions/README.context_variables2)  
+  Contributor(s): Adriano dos Santos Fernandes
+
+* [#6769](https://github.com/FirebirdSQL/firebird/issues/6769): More efficient implementation of SUBSTRING for UTF8 character set  
+  Contributor(s): Adriano dos Santos Fernandes
+
+* [#6767](https://github.com/FirebirdSQL/firebird/issues/6767): Add ability for a replication plugin to refuse attachment  
+  Contributor(s): Dmitry Yemanov
+
+* [#6748](https://github.com/FirebirdSQL/firebird/issues/6748): Freeing a statement using DSQL_drop or DSQL_unprepare should send free packet immediately  
+  Contributor(s): Vlad Khorsun
+
+* [#6715](https://github.com/FirebirdSQL/firebird/issues/6715): Provide time zone ID constants in public headers  
+  Contributor(s): Adriano dos Santos Fernandes
+
+* [#6253](https://github.com/FirebirdSQL/firebird/issues/6253): RDB$GET_TRANSACTION_CN should work the same way in Super and Classic  
+  Contributor(s): Vlad Khorsun
+
+## Bugfixes
+
+* [#6816](https://github.com/FirebirdSQL/firebird/issues/6816): Illegal output length in base64/hex encode/decode functions  
+  Contributor(s): Alex Peshkoff
+
+* [#6812](https://github.com/FirebirdSQL/firebird/issues/6812): BASE64_ENCODE and HEX_ENCODE can exceed maximum widths for VARCHAR  
+  Contributor(s): Alex Peshkoff
+
+* [#6808](https://github.com/FirebirdSQL/firebird/issues/6808): Segfault in encrypt/decrypt functions when their first argument is NULL  
+  Contributor(s): Alex Peshkoff
+
+* [#6805](https://github.com/FirebirdSQL/firebird/issues/6805): RDB$TYPES has incorrect entries for RDB$TYPE 28 and 29 in RDB$TYPE_NAME column  
+  Contributor(s): Alex Peshkoff
+
+* [#6804](https://github.com/FirebirdSQL/firebird/issues/6804): Assertion in tomcrypt when key length for RC4 is too small  
+  Contributor(s): Alex Peshkoff
+
+* [#6802](https://github.com/FirebirdSQL/firebird/issues/6802): When the statement timeout is set, it causes the lock manager to delay reporting deadlocks until timeout is expired  
+  Contributor(s): Vlad Khorsun
+
+* [#6800](https://github.com/FirebirdSQL/firebird/issues/6800): Client config DefaultTimeZone is not passed to server when isc_dpb_session_time_zone is not set  
+  Contributor(s): Adriano dos Santos Fernandes
+
+* [#6797](https://github.com/FirebirdSQL/firebird/issues/6797): Functions DECRYPT and RSA_DECRYPT return VARCHAR CHARACTER SET NONE instead of VARBINARY (VARCHAR CHARACTER SET OCTETS)  
+  Contributor(s): Alex Peshkoff
+
+* [#6796](https://github.com/FirebirdSQL/firebird/issues/6796): Buffer overflow when padding line with national characters causes ISQL to crash  
+  Contributor(s): Adriano dos Santos Fernandes
+
+* [#6795](https://github.com/FirebirdSQL/firebird/issues/6795): Replication gets stuck due to "Blob xxx.xx is not found for table xxx" error  
+  Contributor(s): Dmitry Yemanov
+
+* [#6790](https://github.com/FirebirdSQL/firebird/issues/6790): MON$ATTACHMENTS.MON$TIMESTAMP is incorrect when DefaultTimeZone is configured with time zone different from the server's default  
+  Contributor(s): Adriano dos Santos Fernandes
+
+* [#6787](https://github.com/FirebirdSQL/firebird/issues/6787): MON$ATTACHMENTS.MON$TIMESTAMP should use its session original time zone  
+  Contributor(s): Adriano dos Santos Fernandes
+
+* [#6785](https://github.com/FirebirdSQL/firebird/issues/6785): Problem when restoring the database on Firebird 4 RC1  
+  Contributor(s): Vlad Khorsun
+
+* [#6782](https://github.com/FirebirdSQL/firebird/issues/6782): Cannot get "records fetched" for selectable procedures in trace  
+  Contributor(s): Vlad Khorsun
+
+* [#6781](https://github.com/FirebirdSQL/firebird/issues/6781): Crashing (due to UDF exception) process hangs  
+  Contributor(s): Vlad Khorsun
+
+* [#6780](https://github.com/FirebirdSQL/firebird/issues/6780): firebird.msg is missing in Firebird Android builds  
+  Contributor(s): Alex Peshkoff
+
+* [#6778](https://github.com/FirebirdSQL/firebird/issues/6778): Inconsistent cursor-driven deletion  
+  Contributor(s): Dmitry Yemanov
+
+* [#6777](https://github.com/FirebirdSQL/firebird/issues/6777): AV when the engine shuts down and cancels an attachment waiting in the lock manager  
+  Contributor(s): Vlad Khorsun
+
+* [#6768](https://github.com/FirebirdSQL/firebird/issues/6768): Restore backup on RawDevice (error during "open O_CREAT" operation for file "/dev/sda1")  
+  Contributor(s): Alex Peshkoff
+
+* [#6766](https://github.com/FirebirdSQL/firebird/issues/6766): Replication plugin can crash engine returning nullptr from startTransaction() method  
+  Contributor(s): Dmitry Yemanov
+
+* [#6761](https://github.com/FirebirdSQL/firebird/issues/6761): Hash join cannot match records using some TIME ZONE / DECFLOAT keys  
+  Contributor(s): Dmitry Yemanov
+
+* [#6759](https://github.com/FirebirdSQL/firebird/issues/6759): Results of concatenation with blob has no info about collation of source columns (which are declared with such info)  
+  Contributor(s): Vlad Khorsun
+
+* [#6758](https://github.com/FirebirdSQL/firebird/issues/6758): COMPUTED BY column looses charset and collate of source field <F> when <F> is either of type BLOB or VARCHAR casted to BLOB  
+  Contributor(s): Vlad Khorsun
+
+* [#6756](https://github.com/FirebirdSQL/firebird/issues/6756): Error "no current record for fetch operation" when sorting by a international string  
+  Contributor(s): Dmitry Yemanov
+
+* [#6754](https://github.com/FirebirdSQL/firebird/issues/6754): Connect to database that contains broken pages can lead to FB crash  
+  Contributor(s): Alex Peshkoff
+
+* [#6753](https://github.com/FirebirdSQL/firebird/issues/6753): AV in the engine when StatementTimeout is active for user statement and some internal DSQL statement was executed as part of overall execution process  
+  Contributor(s): Vlad Khorsun
+
+* [#6752](https://github.com/FirebirdSQL/firebird/issues/6752): Segfaults in fbclient when receiving invalid / unexpected data from server  
+  Contributor(s): Alex Peshkoff
+
+* [#6751](https://github.com/FirebirdSQL/firebird/issues/6751): Various segfaults in fbclient  
+  Contributor(s): Alex Peshkoff
+
+* [#6750](https://github.com/FirebirdSQL/firebird/issues/6750): CAST of Infinity values to FLOAT doesn't work  
+  Contributor(s): Alex Peshkoff
+
+* [#6749](https://github.com/FirebirdSQL/firebird/issues/6749): Error "Invalid time zone (+08). Falling back to displacement" in firebird.log  
+  Contributor(s): Adriano dos Santos Fernandes
+
+* [#6747](https://github.com/FirebirdSQL/firebird/issues/6747): Wrong message when connecting to tiny trash database file  
+  Contributor(s): Alex Peshkoff
+
+* [#6746](https://github.com/FirebirdSQL/firebird/issues/6746): Regression: CREATE DATABASE fails with 'Token unknown' error when DB name is enclosed in double quotes and 'DEFAULT CHARACTER SET' is specified after DB name  
+  Contributor(s): Adriano dos Santos Fernandes
+
+* [#6745](https://github.com/FirebirdSQL/firebird/issues/6745): Protect included tomcrypt library from being overwritten by a system package  
+  Contributor(s): Alex Peshkoff
+
+* [#6738](https://github.com/FirebirdSQL/firebird/issues/6738): Segfault when GFIX requests for database page buffer more memory than available from OS  
+  Contributor(s): Alex Peshkoff
+
+* [#6734](https://github.com/FirebirdSQL/firebird/issues/6734): Provide same results for date arithmetics when date is changed by values near +/-max(bigint)  
+  Contributor(s): Alex Peshkoff
+
+* [#6733](https://github.com/FirebirdSQL/firebird/issues/6733): Attempt to create database with page_size >= 65536 makes DB with actual page size = 4KB or 8KB, but not 32KB as it should  
+  Contributor(s): Alex Peshkoff
+
+* [#6731](https://github.com/FirebirdSQL/firebird/issues/6731): Segfault when shutting down database which got encrypted by another process  
+  Contributor(s): Alex Peshkoff
+
+* [#6729](https://github.com/FirebirdSQL/firebird/issues/6729): Regression: GSTAT with switch -t executed via services fails with "found unknown switch" error  
+  Contributor(s): Alex Peshkoff
+
+* [#6727](https://github.com/FirebirdSQL/firebird/issues/6727): Synchronous replication to localhost hangs on disconnect  
+  Contributor(s): Dmitry Yemanov
+
+* [#6724](https://github.com/FirebirdSQL/firebird/issues/6724): Inconsistent translation "string->timestamp->string->timestamp" in Dialect 1  
+  Contributor(s): Adriano dos Santos Fernandes
+
+* [#6719](https://github.com/FirebirdSQL/firebird/issues/6719): User without ALTER ANY ROLE privilege can use COMMENT ON ROLE  
+  Contributor(s): Alex Peshkoff
+
+* [#6718](https://github.com/FirebirdSQL/firebird/issues/6718): Event delivery could be missed when local (XNET) protocol is used  
+  Contributor(s): Vlad Khorsun
+
+* [#6717](https://github.com/FirebirdSQL/firebird/issues/6717): FETCH ABSOLUTE and RELATIVE beyond bounds of cursor should always position immediately before-first or after-last  
+  Contributor(s): Dmitry Yemanov
+
+* [#6716](https://github.com/FirebirdSQL/firebird/issues/6716): FETCH RELATIVE has an off by one error for the first row  
+  Contributor(s): Dmitry Yemanov
+
+* [#6710](https://github.com/FirebirdSQL/firebird/issues/6710): COMMENT ON USER can only apply comment on user defined by the default user manager plugin  
+  Contributor(s): Alex Peshkoff
+
+* [#6709](https://github.com/FirebirdSQL/firebird/issues/6709): GBAK discards replica mode during backup/restore  
+  Contributor(s): Dmitry Yemanov
+
+* [#6708](https://github.com/FirebirdSQL/firebird/issues/6708): Rare race condition in Plugin Manager could lead to the server crash  
+  Contributor(s): Vlad Khorsun
+
+* [#6700](https://github.com/FirebirdSQL/firebird/issues/6700): Wire compression causes sporadic "Error reading data from the connection" errors  
+  Contributor(s): Alex Peshkoff
+
+* [#6698](https://github.com/FirebirdSQL/firebird/issues/6698): Comments before the first line of code are removed  
+  Contributor(s): Adriano dos Santos Fernandes
+
+* [#6679](https://github.com/FirebirdSQL/firebird/issues/6679): CLOOP envelopes are wrong regarding IStatus  
+  Contributor(s): Alex Peshkoff
+
+* [#6265](https://github.com/FirebirdSQL/firebird/issues/6265): Segfault when using expression index with complex expression  
+  Contributor(s): Vlad Khorsun
+
+* [#5784](https://github.com/FirebirdSQL/firebird/issues/5784): When 32-bit and 64-bit Firebird 3 servers run on a single Windows machine concurrently, Firebird services freeze several minutes after first disconnect  
+  Contributor(s): Vlad Khorsun
+
+* [#3810](https://github.com/FirebirdSQL/firebird/issues/3810): Wrong or missing IS NULL optimization (regression)  
+  Contributor(s): Vlad Khorsun
+
+* [#3106](https://github.com/FirebirdSQL/firebird/issues/3106): Many indexed reads in a compound index with NULLs  
+  Contributor(s): Vlad Khorsun
+
+* [#2469](https://github.com/FirebirdSQL/firebird/issues/2469): Stored procedure recursively called by calculated field fails after reconnect  
+  Contributor(s): Vlad Khorsun
+
+# v4.0 Release Candidate 1 (01-Feb-2021)
 
 ## New features
 

@@ -604,6 +604,19 @@ namespace Jrd
 		UCHAR* getData(thread_db* tdbb) const;
 		void mapData(thread_db* tdbb, jrd_req* request, UCHAR* data) const;
 
+		bool isKey(const dsc* desc) const
+		{
+			return ((ULONG)(IPTR) desc->dsc_address < m_map->keyLength);
+		}
+
+		static bool hasVolatileKey(const dsc* desc)
+		{
+			// International type text has a computed key.
+			// Different decimal float values sometimes have same keys.
+			// The same for date/time with time zones.
+			return (IS_INTL_DATA(desc) || desc->isDecFloat() || desc->isDateTimeTz());
+		}
+
 	private:
 		Sort* init(thread_db* tdbb) const;
 
@@ -781,6 +794,10 @@ namespace Jrd
 	class WindowedStream : public RecordSource
 	{
 	public:
+		using Frame = WindowClause::Frame;
+		using FrameExtent = WindowClause::FrameExtent;
+		using Exclusion = WindowClause::Exclusion;
+
 		class WindowStream : public BaseAggWinStream<WindowStream, BaseBufferedStream>
 		{
 		private:
@@ -830,8 +847,8 @@ namespace Jrd
 			WindowStream(thread_db* tdbb, CompilerScratch* csb, StreamType stream,
 				const NestValueArray* group, BaseBufferedStream* next,
 				SortNode* order, MapNode* windowMap,
-				WindowClause::FrameExtent* frameExtent,
-				WindowClause::Exclusion exclusion);
+				FrameExtent* frameExtent,
+				Exclusion exclusion);
 
 		public:
 			void open(thread_db* tdbb) const;
@@ -851,19 +868,19 @@ namespace Jrd
 
 		private:
 			const void getFrameValue(thread_db* tdbb, jrd_req* request,
-				const WindowClause::Frame* frame, impure_value_ex* impureValue) const;
+				const Frame* frame, impure_value_ex* impureValue) const;
 
 			SINT64 locateFrameRange(thread_db* tdbb, jrd_req* request, Impure* impure,
-				const WindowClause::Frame* frame, const dsc* offsetDesc, SINT64 position) const;
+				const Frame* frame, const dsc* offsetDesc, SINT64 position) const;
 
 		private:
 			NestConst<SortNode> m_order;
 			const MapNode* m_windowMap;
-			NestConst<WindowClause::FrameExtent> m_frameExtent;
+			NestConst<FrameExtent> m_frameExtent;
 			Firebird::Array<NestConst<ArithmeticNode> > m_arithNodes;
 			NestValueArray m_aggSources, m_aggTargets;
 			NestValueArray m_winPassSources, m_winPassTargets;
-			WindowClause::Exclusion m_exclusion;
+			Exclusion m_exclusion;
 			UCHAR m_invariantOffsets;	// 0x1 | 0x2 bitmask
 		};
 

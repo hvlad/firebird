@@ -106,7 +106,7 @@ using namespace Firebird;
 #define TEXT		SCHAR
 
 static bool	maybeCloseFile(HANDLE&);
-static jrd_file* seek_file(jrd_file*, BufferDesc*, OVERLAPPED*);
+static jrd_file* seek_file(jrd_file*, BufferDesc*, OVERLAPPED*, bool ioport = false);
 static jrd_file* setup_file(Database*, const Firebird::PathName&, HANDLE, bool, bool);
 static bool nt_error(const TEXT*, const jrd_file*, ISC_STATUS, FbStatusVector* const);
 static void adjustFileSystemCacheSize();
@@ -290,10 +290,10 @@ void PIO_extend(thread_db* tdbb, jrd_file* main_file, const ULONG extPages, cons
 
 			const DWORD ret = SetFilePointer(hFile, newSize.LowPart, &newSize.HighPart, FILE_BEGIN);
 			if (ret == INVALID_SET_FILE_POINTER && GetLastError() != NO_ERROR) {
-				nt_error("SetFilePointer", file, isc_io_write_err, 0);
+				nt_error("SetFilePointer", file, isc_io_write_err, NULL);
 			}
 			if (!SetEndOfFile(hFile)) {
-				nt_error("SetEndOfFile", file, isc_io_write_err, 0);
+				nt_error("SetEndOfFile", file, isc_io_write_err, NULL);
 			}
 
 			leftPages -= extendBy;
@@ -375,7 +375,10 @@ void PIO_force_write(jrd_file* file, const bool forceWrite, const bool notUseFSC
 		}
 
 		file->fil_flags &= ~FIL_aio_init;
-//		SetFileCompletionNotificationModes(hFile, FILE_SKIP_SET_EVENT_ON_HANDLE);
+
+#ifndef _USING_V110_SDK71_
+		SetFileCompletionNotificationModes(hFile, FILE_SKIP_SET_EVENT_ON_HANDLE);
+#endif
 	}
 }
 
@@ -408,19 +411,16 @@ void PIO_header(thread_db* tdbb, UCHAR* address, int length)
 	ThreadSync* thread = ThreadSync::getThread("PIO_header");
 	overlapped.hEvent = (HANDLE) ((UINT_PTR) thread->getIOEvent() | 1);
 
-    DWORD actual_length;
-
-	if (!ReadFile(desc, address, length, &actual_length, &overlapped) ||
-		actual_length != (DWORD) length)
+	DWORD actual_length;
+	BOOL ret = ReadFile(desc, address, length, &actual_length, &overlapped);
+	if (!ret)
 	{
-		const DWORD dwError = GetLastError();
-		if (dwError != ERROR_IO_PENDING ||
-			!GetOverlappedResult(desc, &overlapped, &actual_length, TRUE) ||
-			actual_length != length)
-		{
-			nt_error("ReadFile", file, isc_io_read_err, 0);
-		}
+		if (GetLastError() == ERROR_IO_PENDING)
+			ret = GetOverlappedResult(desc, &overlapped, &actual_length, TRUE);
 	}
+
+	if (!ret || (length != actual_length))
+		nt_error("ReadFile", file, isc_io_read_err, NULL);
 }
 
 // we need a class here only to return memory on shutdown and avoid
@@ -463,8 +463,6 @@ USHORT PIO_init_data(thread_db* tdbb, jrd_file* main_file, FbStatusVector* statu
 	if (file->fil_min_page + 8 > startPage)
 		return 0;
 
-	ThreadSync* thread = ThreadSync::getThread("PIO_init_data");
-
 	USHORT leftPages = initPages;
 	const ULONG initBy = MIN(file->fil_max_page - startPage, leftPages);
 	if (initBy < leftPages)
@@ -480,22 +478,20 @@ USHORT PIO_init_data(thread_db* tdbb, jrd_file* main_file, FbStatusVector* statu
 		jrd_file* file1 = seek_file(main_file, &bdb, &overlapped);
 		fb_assert(file1 == file);
 
-		overlapped.hEvent = (HANDLE) ((UINT_PTR) thread->getIOEvent() | 1);
-
 		const DWORD to_write = (DWORD) write_pages * dbb->dbb_page_size;
 		DWORD written;
 
-		if (!WriteFile(file->fil_desc, zero_buff, to_write, &written, &overlapped) ||
-			to_write != written)
+		BOOL ret = WriteFile(file->fil_desc, zero_buff, to_write, &written, &overlapped);
+		if (!ret)
 		{
-			const DWORD dwError = GetLastError();
-			if (dwError != ERROR_IO_PENDING ||
-				!GetOverlappedResult(file->fil_desc, &overlapped, &written, TRUE) ||
-				to_write != written)
-			{
-				nt_error("WriteFile", file, isc_io_write_err, status_vector);
-				break;
-			}
+			if (GetLastError() == ERROR_IO_PENDING)
+				ret = GetOverlappedResult(file->fil_desc, &overlapped, &written, TRUE);
+		}
+
+		if (!ret || (to_write != written))
+		{
+			nt_error("WriteFile", file, isc_io_write_err, status_vector);
+			break;
 		}
 
 		leftPages -= write_pages;
@@ -567,7 +563,9 @@ jrd_file* PIO_open(thread_db* tdbb,
 		}
 	}
 
-//	SetFileCompletionNotificationModes(desc, FILE_SKIP_SET_EVENT_ON_HANDLE);
+#ifndef _USING_V110_SDK71_
+	SetFileCompletionNotificationModes(desc, FILE_SKIP_SET_EVENT_ON_HANDLE);
+#endif
 
 	return setup_file(dbb, string, desc, readOnly, shareMode);
 }
@@ -598,28 +596,16 @@ bool PIO_read(thread_db* tdbb, jrd_file* file, BufferDesc* bdb, Ods::pag* page, 
 
 	HANDLE desc = file->fil_desc;
 
-	// This read request should be processed syncronously, i.e. it should not be
-	// handled via completion port. 
-	// See: http://msdn.microsoft.com/en-us/library/windows/desktop/aa364986.aspx :
-	// A valid event handle whose low-order bit is set keeps I/O completion from being 
-	// queued to the completion port.
-
-	ThreadSync* thread = ThreadSync::getThread("PIO_read");
-	overlapped.hEvent = (HANDLE) ((UINT_PTR) thread->getIOEvent() | 1);
-
 	DWORD actual_length;
-
-	if (!ReadFile(desc, page, size, &actual_length, &overlapped) ||
-		actual_length != size)
+	BOOL ret = ReadFile(desc, page, size, &actual_length, &overlapped);
+	if (!ret)
 	{
-		const DWORD dwError = GetLastError();
-		if (dwError != ERROR_IO_PENDING ||
-			!GetOverlappedResult(desc, &overlapped, &actual_length, TRUE) ||
-			actual_length != size)
-		{
-			return nt_error("ReadFile", file, isc_io_read_err, status_vector);
-		}
+		if (GetLastError() == ERROR_IO_PENDING)
+			ret = GetOverlappedResult(desc, &overlapped, &actual_length, TRUE);
 	}
+
+	if (!ret || (size != actual_length))
+		return nt_error("ReadFile", file, isc_io_read_err, status_vector);
 
 	return true;
 }
@@ -662,7 +648,7 @@ bool PIORequest::postRead(Database* dbb)
 	ULONG lastPageNo = firstPageNo;
 	ULONG prevPageNo = firstPageNo - 1;
 
-	jrd_file* file = seek_file(m_file, m_pages[i], &m_osData);
+	jrd_file* file = seek_file(m_file, m_pages[i], &m_osData, true);
 	dbb->dbb_page_manager.pioPort.addFile(file);
 
 	if (file->fil_flags & FIL_no_fs_cache)
@@ -813,22 +799,16 @@ bool PIO_write(thread_db* tdbb, jrd_file* file, BufferDesc* bdb, Ods::pag* page,
 
 	HANDLE desc = file->fil_desc;
 
-	// See comments at PIO_read
-	ThreadSync* thread = ThreadSync::getThread("PIO_write");
-	overlapped.hEvent = (HANDLE) ((UINT_PTR) thread->getIOEvent() | 1);
-
 	DWORD actual_length;
-
-	if (!WriteFile(desc, page, size, &actual_length, &overlapped) || actual_length != size )
+	BOOL ret = WriteFile(desc, page, size, &actual_length, &overlapped);
+	if (!ret)
 	{
-		const DWORD dwError = GetLastError();
-		if (dwError != ERROR_IO_PENDING ||
-			!GetOverlappedResult(desc, &overlapped, &actual_length, TRUE) ||
-			actual_length != size)
-		{
-			return nt_error("WriteFile", file, isc_io_write_err, status_vector);
-		}
+		if (GetLastError() == ERROR_IO_PENDING)
+			ret = GetOverlappedResult(desc, &overlapped, &actual_length, TRUE);
 	}
+
+	if (!ret || (size != actual_length))
+		return nt_error("WriteFile", file, isc_io_write_err, status_vector);
 
 	return true;
 }
@@ -861,7 +841,8 @@ ULONG PIO_get_number_of_pages(const jrd_file* file, const USHORT pagesize)
 
 static jrd_file* seek_file(jrd_file*	file,
 					 	   BufferDesc*	bdb,
-					 	   OVERLAPPED*	overlapped)
+					 	   OVERLAPPED*	overlapped,
+						   bool ioport)
 {
 /**************************************
  *
@@ -897,8 +878,18 @@ static jrd_file* seek_file(jrd_file*	file,
 	overlapped->Internal = 0;
 	overlapped->InternalHigh = 0;
 
-	ThreadSync* thd = ThreadSync::getThread(FB_FUNCTION);
-	overlapped->hEvent = thd->getIOEvent();
+	if (ioport)
+		overlapped->hEvent = NULL;
+	else
+	{
+		// IO request should not be handled via completion port. 
+		// See: https://docs.microsoft.com/en-us/windows/win32/api/ioapiset/nf-ioapiset-getqueuedcompletionstatus :
+		// A valid event handle whose low-order bit is set keeps I/O completion from being 
+		// queued to the completion port.
+
+		ThreadSync* thd = ThreadSync::getThread(FB_FUNCTION);
+		overlapped->hEvent = (HANDLE)((UINT_PTR)thd->getIOEvent() | 1);
+	}
 
 	return file;
 }
@@ -997,7 +988,10 @@ MessageBox(NULL, string, "nt_error", MB_OK);
 	Arg::StatusVector status;
 	status << Arg::Gds(isc_io_error) << Arg::Str(string) << Arg::Str(file->fil_string) <<
 			  Arg::Gds(operation);
-	if (lastError != ERROR_SUCCESS)
+
+	// Caller must already handle ERROR_IO_PENDING by calling GetOverlappedResult().
+	// Since GetOverlappedResult() not clears last error - ignore it here.
+	if (lastError != ERROR_SUCCESS && lastError != ERROR_IO_PENDING)
 		status << Arg::Windows(lastError);
 
 	if (!status_vector)

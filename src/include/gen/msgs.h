@@ -822,7 +822,7 @@ Data source : @4"},		/* eds_statement */
 	{335545115, "Cannot open cursor for non-SELECT statement"},		/* no_cursor */
 	{335545116, "If <window frame bound 1> specifies @1, then <window frame bound 2> shall not specify @2"},		/* dsql_window_incompat_frames */
 	{335545117, "RANGE based window with <expr> {PRECEDING | FOLLOWING} cannot have ORDER BY with more than one value"},		/* dsql_window_range_multi_key */
-	{335545118, "RANGE based window must have an ORDER BY key of numerical, date, time or timestamp types"},		/* dsql_window_range_inv_key_type */
+	{335545118, "RANGE based window with <offset> PRECEDING/FOLLOWING must have a single ORDER BY key of numerical, date, time or timestamp types"},		/* dsql_window_range_inv_key_type */
 	{335545119, "Window RANGE/ROWS PRECEDING/FOLLOWING value must be of a numerical type"},		/* dsql_window_frame_value_inv_type */
 	{335545120, "Invalid PRECEDING or FOLLOWING offset in window function: cannot be negative"},		/* window_frame_value_invalid */
 	{335545121, "Window @1 not found"},		/* dsql_window_not_found */
@@ -882,7 +882,7 @@ Data source : @4"},		/* eds_statement */
 	{335545175, "Segment size (@1) should not exceed 65535 (64K - 1) when using segmented blob"},		/* big_segment */
 	{335545176, "Invalid blob policy in the batch for @1() call"},		/* batch_policy */
 	{335545177, "Can't change default BPB after adding any data to batch"},		/* batch_defbpb */
-	{335545178, "Unexpected info buffer structure querying for default blob alignment"},		/* batch_align */
+	{335545178, "Unexpected info buffer structure querying for server batch parameters"},		/* batch_align */
 	{335545179, "Duplicated segment @1 in multisegment connect block parameter"},		/* multi_segment_dup */
 	{335545180, "Plugin not supported by network protocol"},		/* non_plugin_protocol */
 	{335545181, "Error parsing message format"},		/* message_format */
@@ -977,6 +977,10 @@ Data source : @4"},		/* eds_statement */
 	{335545270, "RDB$PAGES written by non-system transaction, DB appears to be damaged"},		/* wrong_page */
 	{335545271, "Replication error"},		/* repl_error */
 	{335545272, "Reset of user session failed. Connection is shut down."},		/* ses_reset_failed */
+	{335545273, "File size is less than expected"},		/* block_size */
+	{335545274, "Invalid key length @1, need >@2"},		/* tom_key_length */
+	{335545275, "Invalid information arguments"},		/* inf_invalid_args */
+	{335545276, "Empty or NULL parameter @1 is not accepted"},		/* sysf_invalid_null_empty */
 	{335740929, "data base file name (@1) already given"},		/* gfix_db_name */
 	{335740930, "invalid switch @1"},		/* gfix_invalid_sw */
 	{335740932, "incompatible switch combination"},		/* gfix_incmp_sw */

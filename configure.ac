@@ -549,6 +549,11 @@ AC_ARG_WITH(builtin-tomcrypt,
   [TOMCRYPT_BUILD=Y])
 AC_SUBST(TOMCRYPT_BUILD)
 
+TERMLIB=
+AC_ARG_WITH(termlib,
+  [  --with-termlib          build with explicitly specified termcap support library],
+  [TERMLIB=${withval}])
+
 dnl Avoid dumb '-g -O2' autoconf's default
 dnl Debugging information and optimization flags should be set in prefix.$platform file
 dnl Should be replaced with AC_PROG_GCC_DEFAULT_FLAGS() when available
@@ -858,18 +863,21 @@ else
 fi
 AC_SUBST(CRYPTLIB)
 
-dnl Check for libraries
-AC_SEARCH_LIBS(dlopen, dl)
-AC_CHECK_LIB(m, main)
+dnl Check for termcap support
 if test "$EDITLINE_FLG" = "Y"; then
-	AC_CHECK_LIB(curses, tgetent, TERMLIB=curses, \
-		AC_CHECK_LIB(ncurses, tgetent, TERMLIB=ncurses, \
-			AC_CHECK_LIB(termcap, tgetent, TERMLIB=termcap, \
-				AC_CHECK_LIB(tinfo, tgetent, TERMLIB=tinfo, \
-					AC_MSG_ERROR(termcap support not found)))))
+	if test -z "$TERMLIB"; then
+		AC_CHECK_LIB(curses, tgetent, TERMLIB=curses, \
+			AC_CHECK_LIB(ncurses, tgetent, TERMLIB=ncurses, \
+				AC_CHECK_LIB(termcap, tgetent, TERMLIB=termcap, \
+					AC_CHECK_LIB(tinfo, tgetent, TERMLIB=tinfo, \
+						AC_MSG_ERROR(termcap support not found)))))
+	fi
 	AC_SUBST(TERMLIB)
 fi
 
+dnl Check for libraries
+AC_SEARCH_LIBS(dlopen, dl)
+AC_CHECK_LIB(m, main)
 AC_SEARCH_LIBS(inet_aton, resolv)
 AC_CHECK_LIB(atomic, main)
 
@@ -975,6 +983,18 @@ case $host in
 		;;
 esac
 AC_CHECK_FUNCS(poll)
+AC_CHECK_FUNCS(dlinfo)
+if test "$ac_cv_func_dlinfo" = "yes"; then
+  AC_MSG_CHECKING(if dlinfo supports RTLD_DI_LINKMAP)
+  AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[#define _GNU_SOURCE
+#include <link.h>
+#include <dlfcn.h>]], [[struct link_map info; dlinfo(0, RTLD_DI_LINKMAP, &info);]])],[AC_DEFINE(HAVE_RTLD_DI_LINKMAP, [1], [Linkmap info support]) AC_MSG_RESULT(yes)],[AC_MSG_RESULT(no)])
+
+  AC_MSG_CHECKING(if dlinfo supports RTLD_DI_ORIGIN)
+  AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[#define _GNU_SOURCE
+#include <link.h>
+#include <dlfcn.h>]], [[char info[256]; dlinfo(0, RTLD_DI_ORIGIN, info);]])],[AC_DEFINE(HAVE_RTLD_DI_ORIGIN, [1], [Origin info support]) AC_MSG_RESULT(yes)],[AC_MSG_RESULT(no)])
+fi
 
 dnl Check for time function
 AC_SEARCH_LIBS(clock_gettime, rt)
@@ -1027,7 +1047,15 @@ AC_LINK_IFELSE(
 AC_LANG_POP(C++)
 
 dnl Checks for typedefs, structures, and compiler characteristics.
-AC_C_BIGENDIAN
+AC_C_BIGENDIAN(
+	[
+		AC_DEFINE(WORDS_BIGENDIAN,1,[Words have most significant byte first])
+		AC_SUBST(TZDATA_ZIP,be.zip)
+	],
+	[
+		AC_SUBST(TZDATA_ZIP,le.zip)
+	]
+)
 AC_C_VOLATILE
 AC_TYPE_OFF_T
 AC_TYPE_SIZE_T
@@ -1041,6 +1069,15 @@ if test "$ac_cv_sys_file_offset_bits" = "no"; then
   }]])],[ac_cv_sys_file_offset_bits=64; AC_DEFINE(_FILE_OFFSET_BITS,64)
    AC_MSG_RESULT(yes)],[AC_MSG_RESULT(no)],[])
 fi
+
+dnl Use int128 support for big endians
+if test "$ac_cv_c_bigendian" = "yes"; then
+  ABSEIL_BUILD_FLG=Y
+  AC_DEFINE(FB_USE_ABSEIL_INT128, 1, [Use Abseil's class int128])
+else
+  ABSEIL_BUILD_FLG=N
+fi
+AC_SUBST(ABSEIL_BUILD_FLG)
 
 AC_CHECK_SIZEOF(void *)
 VOID_PTR_SIZE=$ac_cv_sizeof_void_p
@@ -1094,6 +1131,25 @@ AC_RUN_IFELSE([AC_LANG_SOURCE([[main () {
 }]])],[ac_cv_c_double_align=$ac_status],[ac_cv_c_double_align=$ac_status],[])
 AC_MSG_RESULT($ac_cv_c_double_align)
 AC_DEFINE_UNQUOTED(FB_DOUBLE_ALIGN, $ac_cv_c_double_align, [Alignment of double])
+
+AC_MSG_CHECKING(correctness of comparing 64-bit integers)
+ac_cv_compare_failed=1
+ac_cv_compare_result=failed
+savedflags="$CFLAGS"
+CFLAGS="$CFLAGS -O3"
+AC_RUN_IFELSE([AC_LANG_SOURCE([[typedef long long int SINT64;
+static int abs64Compare(SINT64 n1, SINT64 n2) {
+    n1 = n1 > 0 ? -n1 : n1;
+    n2 = n2 > 0 ? -n2 : n2;
+    return n1 == n2 ? 0 : n1 < n2 ? 1 : -1;
+}
+int main() {
+	exit (abs64Compare(-9223372036854775808, 3652058) == 1 ? 0 : 1);
+}]])],[ac_cv_compare_failed=0
+ac_cv_compare_result=success])
+CFLAGS="$savedflags"
+AC_MSG_RESULT($ac_cv_compare_result)
+AC_DEFINE_UNQUOTED(FB_INT64_COMPARE_FAILED, $ac_cv_compare_failed, [Error when comparing 64-bit integers])
 
 dnl EKU: Add any platform specific tests below
 case "$PLATFORM" in

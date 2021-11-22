@@ -240,19 +240,17 @@ if "%VSCMD_ARG_TGT_ARCH%"=="x86" (
 @if "%FBBUILD_SHIP_PDB%"=="ship_pdb" (
   @echo   Copying pdb files...
   @copy %FB_TEMP_DIR%\%FBBUILD_BUILDTYPE%\fbserver\firebird.pdb %FB_OUTPUT_DIR%\ > nul
+  @copy %FB_TEMP_DIR%\%FBBUILD_BUILDTYPE%\burp\burp.pdb %FB_OUTPUT_DIR%\gbak.pdb > nul
+  @copy %FB_TEMP_DIR%\%FBBUILD_BUILDTYPE%\gfix\gfix.pdb %FB_OUTPUT_DIR%\ > nul
+  @copy %FB_TEMP_DIR%\%FBBUILD_BUILDTYPE%\isql\isql.pdb %FB_OUTPUT_DIR%\ > nul
   @copy %FB_TEMP_DIR%\%FBBUILD_BUILDTYPE%\yvalve\fbclient.pdb %FB_OUTPUT_DIR%\ > nul
-  @copy %FB_TEMP_DIR%\%FBBUILD_BUILDTYPE%\engine\engine*.pdb %FB_OUTPUT_DIR%\ > nul
-  @copy %FB_TEMP_DIR%\%FBBUILD_BUILDTYPE%\fbtrace\fbtrace.pdb %FB_OUTPUT_DIR%\ > nul
-  @copy %FB_TEMP_DIR%\%FBBUILD_BUILDTYPE%\legacy_auth\legacy_auth.pdb %FB_OUTPUT_DIR%\ > nul
-  @copy %FB_TEMP_DIR%\%FBBUILD_BUILDTYPE%\legacy_usermanager\legacy_usermanager.pdb %FB_OUTPUT_DIR%\ > nul
-  @copy %FB_TEMP_DIR%\%FBBUILD_BUILDTYPE%\srp\srp.pdb %FB_OUTPUT_DIR%\ > nul
-  @copy %FB_TEMP_DIR%\%FBBUILD_BUILDTYPE%\udr_engine\udr_engine.pdb %FB_OUTPUT_DIR%\ > nul
+  @copy %FB_TEMP_DIR%\%FBBUILD_BUILDTYPE%\engine\engine*.pdb %FB_OUTPUT_DIR%\plugins\ > nul
+  @copy %FB_TEMP_DIR%\%FBBUILD_BUILDTYPE%\fbtrace\fbtrace.pdb %FB_OUTPUT_DIR%\plugins\ > nul
+  @copy %FB_TEMP_DIR%\%FBBUILD_BUILDTYPE%\legacy_auth\legacy_auth.pdb %FB_OUTPUT_DIR%\plugins\ > nul
+  @copy %FB_TEMP_DIR%\%FBBUILD_BUILDTYPE%\legacy_usermanager\legacy_usermanager.pdb %FB_OUTPUT_DIR%\plugins\ > nul
+  @copy %FB_TEMP_DIR%\%FBBUILD_BUILDTYPE%\srp\srp.pdb %FB_OUTPUT_DIR%\plugins\ > nul
+  @copy %FB_TEMP_DIR%\%FBBUILD_BUILDTYPE%\udr_engine\udr_engine.pdb %FB_OUTPUT_DIR%\plugins\ > nul
 )
-:: Maybe include these and other executables, one day ?
-::  @copy %FB_TEMP_DIR%\%FBBUILD_BUILDTYPE%\gbak\gbak.pdb %FB_OUTPUT_DIR%\ > nul
-::  @copy %FB_TEMP_DIR%\%FBBUILD_BUILDTYPE%\gfix\gfix.pdb %FB_OUTPUT_DIR%\ > nul
-::  @copy %FB_TEMP_DIR%\%FBBUILD_BUILDTYPE%\isql\isql.pdb %FB_OUTPUT_DIR%\ > nul
-
 
 @echo   Started copying docs...
 @rmdir /S /Q %FB_OUTPUT_DIR%\doc 2>nul
@@ -411,8 +409,6 @@ setlocal
 set OUTPATH=%FB_OUTPUT_DIR%\include
 @copy %FB_ROOT_PATH%\src\yvalve\perf.h %OUTPATH%\ > nul
 @copy %FB_ROOT_PATH%\src\include\gen\firebird.pas %OUTPATH%\firebird\ > nul || (@call :ERROR Failure executing copy %FB_ROOT_PATH%\src\include\gen\firebird.pas %OUTPATH%\firebird\  )
-@if %ERRLEV% GEQ 1 goto :END
-@xcopy /e /i /y %FB_ROOT_PATH%\src\include\firebird\impl %OUTPATH%\firebird\  > nul || (@call :ERROR Failure executing @xcopy /e /i /y %FB_ROOT_PATH%\src\include\firebird\* %OUTPATH%\firebird\  )
 @if %ERRLEV% GEQ 1 goto :END
 
 endlocal

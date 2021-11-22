@@ -651,8 +651,8 @@ using namespace Firebird;
 %token <metaNamePtr> RSA_ENCRYPT
 %token <metaNamePtr> RSA_PRIVATE
 %token <metaNamePtr> RSA_PUBLIC
-%token <metaNamePtr> RSA_SIGN
-%token <metaNamePtr> RSA_VERIFY
+%token <metaNamePtr> RSA_SIGN_HASH
+%token <metaNamePtr> RSA_VERIFY_HASH
 %token <metaNamePtr> SALT_LENGTH
 %token <metaNamePtr> SECURITY
 %token <metaNamePtr> SESSION
@@ -676,6 +676,11 @@ using namespace Firebird;
 %token <metaNamePtr> LIFETIME
 %token <metaNamePtr> CLEAR
 %token <metaNamePtr> OLDEST
+
+// tokens added for Firebird 4.0.1
+
+%token <metaNamePtr> DEBUG
+%token <metaNamePtr> PKCS_1_5
 
 // precedence declarations for expression evaluation
 
@@ -884,7 +889,8 @@ tra_statement
 
 %type <mngNode> mng_statement
 mng_statement
-	: set_decfloat_round						{ $$ = $1; }
+	: set_debug_option							{ $$ = $1; }
+	| set_decfloat_round						{ $$ = $1; }
 	| set_decfloat_traps						{ $$ = $1; }
 	| session_statement							{ $$ = $1; }
 	| set_role									{ $$ = $1; }
@@ -5348,6 +5354,12 @@ set_role
 		{ $$ = newNode<SetRoleNode>(); }
 	;
 
+%type <mngNode> set_debug_option
+set_debug_option
+	: SET DEBUG OPTION valid_symbol_name '=' constant
+		{ $$ = newNode<SetDebugOptionNode>($4, $6); }
+	;
+
 %type <setDecFloatRoundNode> set_decfloat_round
 set_decfloat_round
 	: SET DECFLOAT ROUND valid_symbol_name
@@ -5638,13 +5650,27 @@ comment
 		{ $$ = newNode<CommentOnNode>($3, *$4, *$5, *$7); }
 	| COMMENT ON ddl_type4 ddl_qualified_name IS ddl_desc
 		{ $$ = newNode<CommentOnNode>($3, *$4, "", *$6); }
-	| COMMENT ON USER symbol_user_name IS ddl_desc
-		{
-			CreateAlterUserNode* node =
-				newNode<CreateAlterUserNode>(CreateAlterUserNode::USER_MOD, *$4);
-			node->comment = $6;
-			$$ = node;
-		}
+	| comment_on_user
+		{ $$ = $1; }
+	;
+
+%type <createAlterUserNode> comment_on_user
+comment_on_user
+	: COMMENT ON USER symbol_user_name
+			{
+				$$ = newNode<CreateAlterUserNode>(CreateAlterUserNode::USER_MOD, *$4);
+			}
+		opt_use_plugin($5) IS ddl_desc
+			{
+				CreateAlterUserNode* node = $$ = $5;
+				node->comment = $8;
+			}
+	;
+
+%type opt_use_plugin(<createAlterUserNode>)
+opt_use_plugin($node)
+	: // nothing
+	| use_plugin($node)
 	;
 
 %type <intVal> ddl_type0
@@ -7160,9 +7186,14 @@ user_fixed_option($node)
 	| REVOKE ADMIN ROLE		{ setClause($node->adminRole, "ADMIN ROLE", false); }
 	| ACTIVE				{ setClause($node->active, "ACTIVE/INACTIVE", true); }
 	| INACTIVE				{ setClause($node->active, "ACTIVE/INACTIVE", false); }
-	| USING PLUGIN valid_symbol_name
-							{ setClause($node->plugin, "USING PLUGIN", $3); }
+	| use_plugin($node)
 	| TAGS '(' user_var_list($node) ')'
+	;
+
+%type use_plugin(<createAlterUserNode>)
+use_plugin($node)
+	: USING PLUGIN valid_symbol_name
+							{ setClause($node->plugin, "USING PLUGIN", $3); }
 	;
 
 %type user_var_list(<createAlterUserNode>)
@@ -8195,25 +8226,25 @@ system_function_special_syntax
 		}
 	| POSITION '(' value_list_opt  ')'
 		{ $$ = newNode<SysFuncCallNode>(*$1, $3); }
-	| rsa_encrypt_decrypt '(' value KEY value crypt_opt_lparam crypt_opt_hash ')'
+	| rsa_encrypt_decrypt '(' value KEY value crypt_opt_lparam crypt_opt_hash crypt_opt_pkcs')'
 		{
 			$$ = newNode<SysFuncCallNode>(*$1,
 				newNode<ValueListNode>($3)->add($5)->add($6)->
-					add(MAKE_str_constant(newIntlString($7->c_str()), CS_ASCII)));
+					add(MAKE_str_constant(newIntlString($7->c_str()), CS_ASCII))->add($8));
 			$$->dsqlSpecialSyntax = true;
 		}
-	| RSA_SIGN '(' value KEY value crypt_opt_hash crypt_opt_saltlen ')'
+	| RSA_SIGN_HASH '(' value KEY value crypt_opt_hash crypt_opt_saltlen crypt_opt_pkcs ')'
 		{
 			$$ = newNode<SysFuncCallNode>(*$1,
 				newNode<ValueListNode>($3)->add($5)->
-					add(MAKE_str_constant(newIntlString($6->c_str()), CS_ASCII))->add($7));
+					add(MAKE_str_constant(newIntlString($6->c_str()), CS_ASCII))->add($7)->add($8));
 			$$->dsqlSpecialSyntax = true;
 		}
-	| RSA_VERIFY'(' value SIGNATURE value KEY value crypt_opt_hash crypt_opt_saltlen ')'
+	| RSA_VERIFY_HASH '(' value SIGNATURE value KEY value crypt_opt_hash crypt_opt_saltlen crypt_opt_pkcs ')'
 		{
 			$$ = newNode<SysFuncCallNode>(*$1,
 				newNode<ValueListNode>($3)->add($5)->add($7)->
-					add(MAKE_str_constant(newIntlString($8->c_str()), CS_ASCII))->add($9));
+					add(MAKE_str_constant(newIntlString($8->c_str()), CS_ASCII))->add($9)->add($10));
 			$$->dsqlSpecialSyntax = true;
 		}
 	| RDB_SYSTEM_PRIVILEGE '(' valid_symbol_name ')'
@@ -8239,6 +8270,14 @@ crypt_opt_lparam
 		{ $$ = MAKE_str_constant(newIntlString(""), CS_ASCII); }
 	| LPARAM value
 		{ $$ = $2; }
+	;
+
+%type <valueExprNode> crypt_opt_pkcs
+crypt_opt_pkcs
+	: // nothing
+		{ $$ = MAKE_const_slong(0); }
+	| PKCS_1_5
+		{ $$ = MAKE_const_slong(1); }
 	;
 
 %type <metaNamePtr> crypt_opt_hash
@@ -9009,8 +9048,8 @@ non_reserved_word
 	| RSA_ENCRYPT
 	| RSA_PRIVATE
 	| RSA_PUBLIC
-	| RSA_SIGN
-	| RSA_VERIFY
+	| RSA_SIGN_HASH
+	| RSA_VERIFY_HASH
 	| SALT_LENGTH
 	| SECURITY
 	| SESSION
@@ -9021,6 +9060,8 @@ non_reserved_word
 	| TOTALORDER
 	| TRAPS
 	| ZONE
+	| DEBUG				// added in FB 4.0.1
+	| PKCS_1_5
 	;
 
 %%

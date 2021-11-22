@@ -104,11 +104,17 @@ namespace
 
 		UCHAR getByte()
 		{
+			if (m_data >= m_end)
+				malformed();
+
 			return *m_data++;
 		}
 
 		SSHORT getInt16()
 		{
+			if (m_data + sizeof(SSHORT) > m_end)
+				malformed();
+
 			SSHORT value;
 			memcpy(&value, m_data, sizeof(SSHORT));
 			m_data += sizeof(SSHORT);
@@ -117,6 +123,9 @@ namespace
 
 		SLONG getInt32()
 		{
+			if (m_data + sizeof(SLONG) > m_end)
+				malformed();
+
 			SLONG value;
 			memcpy(&value, m_data, sizeof(SLONG));
 			m_data += sizeof(SLONG);
@@ -125,6 +134,9 @@ namespace
 
 		SINT64 getInt64()
 		{
+			if (m_data + sizeof(SINT64) > m_end)
+				malformed();
+
 			SINT64 value;
 			memcpy(&value, m_data, sizeof(SINT64));
 			m_data += sizeof(SINT64);
@@ -140,6 +152,10 @@ namespace
 		string getString()
 		{
 			const auto length = getInt32();
+
+			if (m_data + length > m_end)
+				malformed();
+
 			const string str((const char*) m_data, length);
 			m_data += length;
 			return str;
@@ -147,6 +163,9 @@ namespace
 
 		const UCHAR* getBinary(ULONG length)
 		{
+			if (m_data + length > m_end)
+				malformed();
+
 			const auto ptr = m_data;
 			m_data += length;
 			return ptr;
@@ -175,6 +194,11 @@ namespace
 		const UCHAR* m_data;
 		const UCHAR* const m_end;
 		HalfStaticArray<MetaString, 64> m_atoms;
+
+		static void malformed()
+		{
+			raiseError("Replication block is malformed");
+		}
 	};
 
 	class LocalThreadContext
@@ -221,11 +245,16 @@ Applier* Applier::create(thread_db* tdbb)
 	request->req_attachment = attachment;
 
 	auto& att_pool = *attachment->att_pool;
-	return FB_NEW_POOL(att_pool) Applier(att_pool, dbb->dbb_filename, request);
+	const auto applier = FB_NEW_POOL(att_pool) Applier(att_pool, dbb->dbb_filename, request);
+
+	attachment->att_repl_appliers.add(applier);
+	return applier;
 }
 
 void Applier::shutdown(thread_db* tdbb)
 {
+	const auto attachment = tdbb->getAttachment();
+
 	cleanupTransactions(tdbb);
 
 	CMP_release(tdbb, m_request);
@@ -233,6 +262,14 @@ void Applier::shutdown(thread_db* tdbb)
 	m_record = NULL;
 
 	m_bitmap->clear();
+
+	attachment->att_repl_appliers.findAndRemove(this);
+
+	if (m_interface)
+	{
+		m_interface->resetHandle();
+		m_interface = nullptr;
+	}
 }
 
 void Applier::process(thread_db* tdbb, ULONG length, const UCHAR* data)
@@ -328,9 +365,13 @@ void Applier::process(thread_db* tdbb, ULONG length, const UCHAR* data)
 				blob_id.bid_quad.bid_quad_high = reader.getInt32();
 				blob_id.bid_quad.bid_quad_low = reader.getInt32();
 				do {
-					const ULONG length = reader.getInt16();
+					const ULONG length = (USHORT) reader.getInt16();
 					if (!length)
+					{
+						// Close our newly created blob
+						storeBlob(tdbb, traNum, &blob_id, 0, nullptr);
 						break;
+					}
 					const auto blob = reader.getBinary(length);
 					storeBlob(tdbb, traNum, &blob_id, length, blob);
 				} while (!reader.isEof());
@@ -457,7 +498,7 @@ void Applier::cleanupSavepoint(thread_db* tdbb, TraNumber traNum, bool undo)
 
 	LocalThreadContext context(tdbb, transaction);
 
-	if (!transaction->tra_save_point)
+	if (!transaction->tra_save_point || transaction->tra_save_point->isRoot())
 		raiseError("Transaction %" SQUADFORMAT" has no savepoints to cleanup", traNum);
 
 	if (undo)
@@ -514,6 +555,21 @@ void Applier::insertRecord(thread_db* tdbb, TraNumber traNum,
 		}
 
 		fb_utils::init_status(tdbb->tdbb_status_vector);
+
+		// Undo this particular insert (without involving a savepoint)
+		VIO_backout(tdbb, &rpb, transaction);
+
+		if (transaction->tra_save_point)
+		{
+			const auto action = transaction->tra_save_point->getAction(relation);
+			if (action && action->vct_records)
+			{
+				const auto recno = rpb.rpb_number.getValue();
+				fb_assert(action->vct_records->test(recno));
+				fb_assert(!action->vct_undo || !action->vct_undo->locate(recno));
+				action->vct_records->clear(recno);
+			}
+		}
 	}
 
 	bool found = false;
@@ -815,15 +871,13 @@ void Applier::storeBlob(thread_db* tdbb, TraNumber traNum, bid* blobId,
 
 	LocalThreadContext context(tdbb, transaction);
 
-	const auto orgBlobId = blobId->get_permanent_number().getValue();
-
+	ULONG tempBlobId;
 	blb* blob = NULL;
 
-	ReplBlobMap::Accessor accessor(&transaction->tra_repl_blobs);
-	if (accessor.locate(orgBlobId))
-	{
-		const auto tempBlobId = accessor.current()->second;
+	const auto numericId = blobId->get_permanent_number().getValue();
 
+	if (transaction->tra_repl_blobs.get(numericId, tempBlobId))
+	{
 		if (transaction->tra_blobs->locate(tempBlobId))
 		{
 			const auto current = &transaction->tra_blobs->current();
@@ -835,10 +889,12 @@ void Applier::storeBlob(thread_db* tdbb, TraNumber traNum, bid* blobId,
 	{
 		bid newBlobId;
 		blob = blb::create(tdbb, transaction, &newBlobId);
-		transaction->tra_repl_blobs.put(orgBlobId, newBlobId.bid_temp_id());
+		transaction->tra_repl_blobs.put(numericId, newBlobId.bid_temp_id());
 	}
 
 	fb_assert(blob);
+	fb_assert(blob->blb_flags & BLB_temporary);
+	fb_assert(!(blob->blb_flags & BLB_closed));
 
 	if (length)
 		blob->BLB_put_segment(tdbb, data, length);
@@ -850,7 +906,7 @@ void Applier::executeSql(thread_db* tdbb,
 						 TraNumber traNum,
 						 unsigned charset,
 						 const string& sql,
-						 const MetaName& owner)
+						 const MetaName& ownerName)
 {
 	jrd_tra* transaction = NULL;
 	if (!m_txnMap.get(traNum, transaction))
@@ -864,11 +920,10 @@ void Applier::executeSql(thread_db* tdbb,
 	const auto dialect =
 		(dbb->dbb_flags & DBB_DB_SQL_dialect_3) ? SQL_DIALECT_V6 : SQL_DIALECT_V5;
 
-	UserId user(*attachment->att_user);
-	user.setUserName(owner);
-
 	AutoSetRestore<SSHORT> autoCharset(&attachment->att_charset, charset);
-	AutoSetRestore<UserId*> autoOwner(&attachment->att_user, &user);
+
+	UserId* const owner = attachment->getUserId(ownerName);
+	AutoSetRestore<UserId*> autoOwner(&attachment->att_ss_user, owner);
 
 	DSQL_execute_immediate(tdbb, attachment, &transaction,
 						   0, sql.c_str(), dialect,
@@ -1086,13 +1141,13 @@ void Applier::doInsert(thread_db* tdbb, record_param* rpb, jrd_tra* transaction)
 
 			if (!blobId->isEmpty())
 			{
+				ULONG tempBlobId;
 				bool found = false;
 
 				const auto numericId = blobId->get_permanent_number().getValue();
 
-				ReplBlobMap::Accessor accessor(&transaction->tra_repl_blobs);
-				if (accessor.locate(numericId) &&
-					transaction->tra_blobs->locate(accessor.current()->second))
+				if (transaction->tra_repl_blobs.get(numericId, tempBlobId) &&
+					transaction->tra_blobs->locate(tempBlobId))
 				{
 					const auto current = &transaction->tra_blobs->current();
 
@@ -1107,7 +1162,6 @@ void Applier::doInsert(thread_db* tdbb, record_param* rpb, jrd_tra* transaction)
 						current->bli_materialized = true;
 						current->bli_blob_id = *blobId;
 						transaction->tra_blobs->fastRemove();
-						accessor.fastRemove();
 						found = true;
 					}
 				}
@@ -1122,6 +1176,24 @@ void Applier::doInsert(thread_db* tdbb, record_param* rpb, jrd_tra* transaction)
 			}
 		}
 	}
+
+	// Cleanup temporary blobs stored for this command beforehand but not materialized
+
+	ReplBlobMap::ConstAccessor accessor(&transaction->tra_repl_blobs);
+	for (bool found = accessor.getFirst(); found; found = accessor.getNext())
+	{
+		const auto tempBlobId = accessor.current()->second;
+
+		if (transaction->tra_blobs->locate(tempBlobId))
+		{
+			const auto current = &transaction->tra_blobs->current();
+
+			if (!current->bli_materialized)
+				current->bli_blob_object->BLB_cancel(tdbb);
+		}
+	}
+
+	transaction->tra_repl_blobs.clear();
 
 	Savepoint::ChangeMarker marker(transaction->tra_save_point);
 
@@ -1164,13 +1236,13 @@ void Applier::doUpdate(thread_db* tdbb, record_param* orgRpb, record_param* newR
 				}
 				else
 				{
+					ULONG tempBlobId;
 					bool found = false;
 
 					const auto numericId = dstBlobId->get_permanent_number().getValue();
 
-					ReplBlobMap::Accessor accessor(&transaction->tra_repl_blobs);
-					if (accessor.locate(numericId) &&
-						transaction->tra_blobs->locate(accessor.current()->second))
+					if (transaction->tra_repl_blobs.get(numericId, tempBlobId) &&
+						transaction->tra_blobs->locate(tempBlobId))
 					{
 						const auto current = &transaction->tra_blobs->current();
 
@@ -1185,7 +1257,6 @@ void Applier::doUpdate(thread_db* tdbb, record_param* orgRpb, record_param* newR
 							current->bli_materialized = true;
 							current->bli_blob_id = *dstBlobId;
 							transaction->tra_blobs->fastRemove();
-							accessor.fastRemove();
 							found = true;
 						}
 					}
@@ -1201,6 +1272,24 @@ void Applier::doUpdate(thread_db* tdbb, record_param* orgRpb, record_param* newR
 			}
 		}
 	}
+
+	// Cleanup temporary blobs stored for this command beforehand but not materialized
+
+	ReplBlobMap::ConstAccessor accessor(&transaction->tra_repl_blobs);
+	for (bool found = accessor.getFirst(); found; found = accessor.getNext())
+	{
+		const auto tempBlobId = accessor.current()->second;
+
+		if (transaction->tra_blobs->locate(tempBlobId))
+		{
+			const auto current = &transaction->tra_blobs->current();
+
+			if (!current->bli_materialized)
+				current->bli_blob_object->BLB_cancel(tdbb);
+		}
+	}
+
+	transaction->tra_repl_blobs.clear();
 
 	Savepoint::ChangeMarker marker(transaction->tra_save_point);
 
@@ -1231,6 +1320,6 @@ void Applier::logConflict(const char* msg, ...)
 	vsprintf(buffer, msg, ptr);
 	va_end(ptr);
 
-	logReplicaMessage(m_database, buffer, WARNING_MSG);
+	logReplicaWarning(m_database, buffer);
 #endif
 }

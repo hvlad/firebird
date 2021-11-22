@@ -471,7 +471,8 @@ void INI_format(const char* owner, const char* charset)
 			charset->name;
 			++charset)
 		{
-			add_security_to_sys_obj(tdbb, reqAddSC, reqModObjSC, reqInsUserPriv, ownerName, obj_charset, charset->name, length, buffer);
+			add_security_to_sys_obj(tdbb, reqAddSC, reqModObjSC, reqInsUserPriv, ownerName, obj_charset,
+				charset->name, length, buffer);
 		}
 
 		reqModObjSC.reset();
@@ -479,8 +480,13 @@ void INI_format(const char* owner, const char* charset)
 			collation->name;
 			++collation)
 		{
-			add_security_to_sys_obj(tdbb, reqAddSC, reqModObjSC, reqInsUserPriv, ownerName, obj_collation, collation->name, length, buffer);
+			add_security_to_sys_obj(tdbb, reqAddSC, reqModObjSC, reqInsUserPriv, ownerName, obj_collation,
+				collation->name, length, buffer);
 		}
+
+		reqModObjSC.reset();
+		add_security_to_sys_obj(tdbb, reqAddSC, reqModObjSC, reqInsUserPriv, ownerName, obj_sql_role,
+				ADMIN_ROLE, length, buffer);
 
 		// Must be last!
 		acl = aclPublicStart;
@@ -1202,6 +1208,18 @@ static void add_security_to_sys_obj(thread_db* tdbb,
 			END_MODIFY
 
 			needsUsagePrivileges = true;
+		}
+		END_FOR
+	}
+	else if (obj_type == obj_sql_role)
+	{
+		FOR(REQUEST_HANDLE reqModObjSC) R IN RDB$ROLES
+			WITH R.RDB$ROLE_NAME EQ obj_name.c_str()
+		{
+			MODIFY R USING
+				R.RDB$SECURITY_CLASS.NULL = FALSE;
+				PAD(security_class.c_str(), R.RDB$SECURITY_CLASS);
+			END_MODIFY
 		}
 		END_FOR
 	}

@@ -288,7 +288,7 @@ bool DsqlDmlRequest::fetch(thread_db* tdbb, UCHAR* msgBuffer)
 	UCHAR* dsqlMsgBuffer = req_msg_buffers[message->msg_buffer_number];
 	if (!firstRowFetched && needRestarts())
 	{
-		// Note: tra_handle can't be changed by executeReceiveWithRestarts below 
+		// Note: tra_handle can't be changed by executeReceiveWithRestarts below
 		// and outMetadata and outMsg in not used there, so passing NULL's is safe.
 		jrd_tra* tra = req_transaction;
 
@@ -392,7 +392,7 @@ void DSQL_free_statement(thread_db* tdbb, dsql_req* request, USHORT option)
  **/
 dsql_req* DSQL_prepare(thread_db* tdbb,
 					   Attachment* attachment, jrd_tra* transaction,
-					   ULONG length, const TEXT* string, USHORT dialect,
+					   ULONG length, const TEXT* string, USHORT dialect, unsigned prepareFlags,
 					   Array<UCHAR>* items, Array<UCHAR>* buffer,
 					   bool isInternalRequest)
 {
@@ -940,7 +940,7 @@ void DsqlDmlRequest::executeReceiveWithRestarts(thread_db* tdbb, jrd_tra** traHa
 				"\tQuery:\n%s\n", numTries, req_request->getStatement()->sqlText->c_str() );
 		}
 
-		// When restart we must execute query 
+		// When restart we must execute query
 		exec = true;
 	}
 }
@@ -1479,8 +1479,7 @@ static void checkD(IStatus* st)
 static dsql_req* prepareRequest(thread_db* tdbb, dsql_dbb* database, jrd_tra* transaction,
 	ULONG textLength, const TEXT* text, USHORT clientDialect, bool isInternalRequest)
 {
-	return prepareStatement(tdbb, database, transaction, textLength, text, clientDialect,
-		isInternalRequest);
+	return prepareStatement(tdbb, database, transaction, textLength, text, clientDialect, isInternalRequest);
 }
 
 
@@ -1818,7 +1817,7 @@ TimeoutTimer* dsql_req::setupTimer(thread_db* tdbb)
 {
 	if (req_request)
 	{
-		if (req_request->getStatement()->flags & JrdStatement::FLAG_INTERNAL)
+		if (req_request->hasInternalStatement())
 			return req_timer;
 
 		req_request->req_timeout = this->req_timeout;
@@ -2030,7 +2029,7 @@ static void sql_info(thread_db* tdbb,
 
 	const DsqlCompiledStatement* statement = request->getStatement();
 
-	while (items < end_items && *items != isc_info_end)
+	while (items < end_items && *items != isc_info_end && info < end_info)
 	{
 		ULONG length;
 		USHORT number;
@@ -2136,9 +2135,25 @@ static void sql_info(thread_db* tdbb,
 			break;
 
 		case isc_info_sql_sqlda_start:
-			length = *items++;
-			first_index = static_cast<USHORT>(gds__vax_integer(items, length));
-			items += length;
+			if (items < end_items)
+			{
+				length = *items++;
+
+				if (end_items - items >= length)
+				{
+					first_index = static_cast<USHORT>(gds__vax_integer(items, length));
+					items += length;
+					break;
+				}
+			}
+
+			buffer[0] = item;
+			length = 1 + INF_convert(isc_inf_invalid_args, buffer + 1);
+
+			if (!(info = put_item(isc_info_error, length, buffer, info, end_info)))
+				return;
+
+			items = end_items;
 			break;
 
 		case isc_info_sql_batch_fetch:
@@ -2223,6 +2238,64 @@ static void sql_info(thread_db* tdbb,
 			}
 			break;
 
+		case isc_info_sql_exec_path_blr_bytes:
+		case isc_info_sql_exec_path_blr_text:
+			{
+				HalfStaticArray<UCHAR, 128> path;
+
+				if (request->req_request && request->req_request->getStatement())
+				{
+					const auto& blr = request->req_request->getStatement()->blr;
+
+					if (blr.hasData())
+					{
+						if (item == isc_info_sql_exec_path_blr_bytes)
+							path.push(blr.begin(), blr.getCount());
+						else if (item == isc_info_sql_exec_path_blr_text)
+						{
+							fb_print_blr(blr.begin(), (ULONG) blr.getCount(),
+								[](void* arg, SSHORT offset, const char* line)
+								{
+									auto& localPath = *static_cast<HalfStaticArray<UCHAR, 128>*>(arg);
+									auto lineLen = strlen(line);
+
+									// Trim trailing spaces.
+									while (lineLen > 0 && line[lineLen - 1] == ' ')
+										--lineLen;
+
+									char offsetStr[10];
+									const auto offsetLen = sprintf(offsetStr, "%5d", (int) offset);
+
+									localPath.push(reinterpret_cast<const UCHAR*>(offsetStr), offsetLen);
+									localPath.push(' ');
+									localPath.push(reinterpret_cast<const UCHAR*>(line), lineLen);
+									localPath.push('\n');
+								},
+								&path, 0);
+						}
+					}
+				}
+
+				if (path.hasData())
+				{
+					// 1-byte item + 2-byte length + isc_info_end/isc_info_truncated == 4
+					const ULONG bufferLength = end_info - info - 4;
+					const ULONG maxLength = MIN(bufferLength, MAX_USHORT);
+
+					if (path.getCount() > maxLength)
+					{
+						*info = isc_info_truncated;
+						info = NULL;
+					}
+					else
+						info = put_item(item, path.getCount(), path.begin(), info, end_info);
+				}
+
+				if (!info)
+					return;
+			}
+			break;
+
 		case isc_info_sql_num_variables:
 		case isc_info_sql_describe_vars:
 			if (messageFound)
@@ -2261,7 +2334,8 @@ static void sql_info(thread_db* tdbb,
 		}
 	}
 
-	*info++ = isc_info_end;
+	if (info < end_info)
+		*info++ = isc_info_end;
 
 	if (start_info && (end_info - info >= 7))
 	{

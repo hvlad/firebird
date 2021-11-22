@@ -170,18 +170,18 @@ void createLockDirectory(const char* pathname)
 		if (access(pathname, R_OK | W_OK | X_OK) == 0)
 		{
 			if (os_utils::stat(pathname, &st) != 0)
-				system_call_failed::raise("stat");
+				system_call_failed::raise("stat", pathname);
 			if (S_ISDIR(st.st_mode))
 				return;
 			// not exactly original meaning, but very close to it
-			system_call_failed::raise("access", ENOTDIR);
+			system_call_failed::raise("mkdir", pathname, ENOTDIR);
 		}
 
 		if (SYSCALL_INTERRUPTED(errno))
 			continue;
 		if (errno == ENOENT)
 			break;
-		system_call_failed::raise("access", ENOTDIR);
+		system_call_failed::raise("access", pathname);
 	}
 
 	Firebird::PathName newname(pathname);
@@ -238,16 +238,16 @@ void createLockDirectory(const char* pathname)
 				if (access(pathname, R_OK | W_OK | X_OK) == 0)
 				{
 					if (os_utils::stat(pathname, &st) != 0)
-						system_call_failed::raise("stat");
+						system_call_failed::raise("stat", pathname);
 					if (S_ISDIR(st.st_mode))
 						return;
 					// not exactly original meaning, but very close to it
-					system_call_failed::raise("access", ENOTDIR);
+					system_call_failed::raise("stat", pathname, ENOTDIR);
 				}
 
 				if (SYSCALL_INTERRUPTED(errno))
 					continue;
-				system_call_failed::raise("access", ENOTDIR);
+				system_call_failed::raise("access", pathname);
 			}
 
 			return;

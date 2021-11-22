@@ -322,7 +322,7 @@ void PreparedStatement::init(thread_db* tdbb, Attachment* attachment, jrd_tra* t
 		const int dialect = isInternalRequest || (dbb.dbb_flags & DBB_DB_SQL_dialect_3) ?
 			SQL_DIALECT_V6 : SQL_DIALECT_V5;
 
-		request = DSQL_prepare(tdbb, attachment, transaction, text.length(), text.c_str(), dialect,
+		request = DSQL_prepare(tdbb, attachment, transaction, text.length(), text.c_str(), dialect, 0,
 			NULL, NULL, isInternalRequest);
 
 		const DsqlCompiledStatement* statement = request->getStatement();
