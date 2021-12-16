@@ -2028,11 +2028,14 @@ void RegrAggNode::aggPass(thread_db* /*tdbb*/, jrd_req* /*request*/, dsc* /*desc
 dsc* RegrAggNode::aggExecute(thread_db* tdbb, jrd_req* request) const
 {
 	impure_value_ex* impure = request->getImpure<impure_value_ex>(impureOffset);
-	RegrImpure* impure2 = request->getImpure<RegrImpure>(impure2Offset);
-	dsc temp;
 
 	if (impure->vlux_count == 0)
 		return NULL;
+
+	RegrImpure* impure2 = request->getImpure<RegrImpure>(impure2Offset);
+	dsc temp;
+	double doubleVal;
+	Decimal128 decimal128Val;
 
 	if (nodFlags & FLAG_DECFLOAT)
 	{
@@ -2054,57 +2057,55 @@ dsc* RegrAggNode::aggExecute(thread_db* tdbb, jrd_req* request) const
 		const Decimal128 sq = varPopX.sqrt(decSt).mul(decSt, varPopY.sqrt(decSt));
 		const Decimal128 corr = covarPop.div(safeDivide, sq);
 
-		Decimal128 d;
-
 		switch (type)
 		{
 			case TYPE_REGR_AVGX:
-				d = avgX;
+				decimal128Val = avgX;
 				break;
 
 			case TYPE_REGR_AVGY:
-				d = avgY;
+				decimal128Val = avgY;
 				break;
 
 			case TYPE_REGR_INTERCEPT:
 				if (varPopX.compare(decSt, CDecimal128(0)) == 0)
 					return NULL;
 				else
-					d = avgY.sub(decSt, slope.mul(decSt, avgX));
+					decimal128Val = avgY.sub(decSt, slope.mul(decSt, avgX));
 				break;
 
 			case TYPE_REGR_R2:
 				if (varPopX.compare(decSt, CDecimal128(0)) == 0)
 					return NULL;
 				else if (varPopY.compare(decSt, CDecimal128(0)) == 0)
-					d.set(1, decSt, 0);
+					decimal128Val.set(1, decSt, 0);
 				else if (sq.compare(decSt, CDecimal128(0)) == 0)
 					return NULL;
 				else
-					d = corr.mul(decSt, corr);
+					decimal128Val = corr.mul(decSt, corr);
 				break;
 
 			case TYPE_REGR_SLOPE:
 				if (varPopX.compare(decSt, CDecimal128(0)) == 0)
 					return NULL;
 				else
-					d = slope;
+					decimal128Val = slope;
 				break;
 
 			case TYPE_REGR_SXX:
-				d = sxx;
+				decimal128Val = sxx;
 				break;
 
 			case TYPE_REGR_SXY:
-				d = sxy;
+				decimal128Val = sxy;
 				break;
 
 			case TYPE_REGR_SYY:
-				d = syy;
+				decimal128Val = syy;
 				break;
 		}
 
-		temp.makeDecimal128(&d);
+		temp.makeDecimal128(&decimal128Val);
 	}
 	else
 	{
@@ -2117,57 +2118,55 @@ dsc* RegrAggNode::aggExecute(thread_db* tdbb, jrd_req* request) const
 		const double sq = sqrt(varPopX) * sqrt(varPopY);
 		const double corr = covarPop / sq;
 
-		double d;
-
 		switch (type)
 		{
 			case TYPE_REGR_AVGX:
-				d = avgX;
+				doubleVal = avgX;
 				break;
 
 			case TYPE_REGR_AVGY:
-				d = avgY;
+				doubleVal = avgY;
 				break;
 
 			case TYPE_REGR_INTERCEPT:
 				if (varPopX == 0.0)
 					return NULL;
 				else
-					d = avgY - slope * avgX;
+					doubleVal = avgY - slope * avgX;
 				break;
 
 			case TYPE_REGR_R2:
 				if (varPopX == 0.0)
 					return NULL;
 				else if (varPopY == 0.0)
-					d = 1.0;
+					doubleVal = 1.0;
 				else if (sq == 0.0)
 					return NULL;
 				else
-					d = corr * corr;
+					doubleVal = corr * corr;
 				break;
 
 			case TYPE_REGR_SLOPE:
 				if (varPopX == 0.0)
 					return NULL;
 				else
-					d = covarPop / varPopX;
+					doubleVal = covarPop / varPopX;
 				break;
 
 			case TYPE_REGR_SXX:
-				d = impure->vlux_count * varPopX;
+				doubleVal = impure->vlux_count * varPopX;
 				break;
 
 			case TYPE_REGR_SXY:
-				d = impure->vlux_count * covarPop;
+				doubleVal = impure->vlux_count * covarPop;
 				break;
 
 			case TYPE_REGR_SYY:
-				d = impure->vlux_count * varPopY;
+				doubleVal = impure->vlux_count * varPopY;
 				break;
 		}
 
-		temp.makeDouble(&d);
+		temp.makeDouble(&doubleVal);
 	}
 
 	EVL_make_value(tdbb, &temp, impure);

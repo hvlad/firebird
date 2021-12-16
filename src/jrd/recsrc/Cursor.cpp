@@ -129,6 +129,9 @@ void Cursor::close(thread_db* tdbb) const
 
 bool Cursor::fetchNext(thread_db* tdbb) const
 {
+	if (m_scrollable)
+		return fetchRelative(tdbb, 1);
+
 	if (!validate(tdbb))
 		return false;
 
@@ -142,43 +145,17 @@ bool Cursor::fetchNext(thread_db* tdbb) const
 	}
 
 	if (impure->irsb_state == EOS)
-	{
-		// error: cursor is past EOF
-		status_exception::raise(Arg::Gds(isc_stream_eof));
-	}
-	else if (impure->irsb_state == BOS)
-	{
-		impure->irsb_position = 0;
-	}
-	else
-	{
-		impure->irsb_position++;
-	}
+		return false;
 
-	if (!m_scrollable)
+	if (!m_top->getRecord(tdbb))
 	{
-		if (!m_top->getRecord(tdbb))
-		{
-			impure->irsb_state = EOS;
-			return false;
-		}
-	}
-	else
-	{
-		const BufferedStream* const buffer = static_cast<const BufferedStream*>(m_top);
-		buffer->locate(tdbb, impure->irsb_position);
-
-		if (!buffer->getRecord(tdbb))
-		{
-			impure->irsb_state = EOS;
-			return false;
-		}
+		impure->irsb_state = EOS;
+		return false;
 	}
 
 	request->req_records_selected++;
 	request->req_records_affected.bumpFetched();
 	impure->irsb_state = POSITIONED;
-
 	return true;
 }
 
@@ -190,47 +167,7 @@ bool Cursor::fetchPrior(thread_db* tdbb) const
 		status_exception::raise(Arg::Gds(isc_invalid_fetch_option) << Arg::Str("PRIOR"));
 	}
 
-	if (!validate(tdbb))
-		return false;
-
-	jrd_req* const request = tdbb->getRequest();
-	Impure* const impure = request->getImpure<Impure>(m_impure);
-
-	if (!impure->irsb_active)
-	{
-		// error: invalid cursor state
-		status_exception::raise(Arg::Gds(isc_cursor_not_open));
-	}
-
-	const BufferedStream* const buffer = static_cast<const BufferedStream*>(m_top);
-
-	if (impure->irsb_state == BOS)
-	{
-		// error: cursor is prior BOF
-		status_exception::raise(Arg::Gds(isc_stream_bof));
-	}
-	else if (impure->irsb_state == EOS)
-	{
-		impure->irsb_position = buffer->getCount(tdbb) - 1;
-	}
-	else
-	{
-		impure->irsb_position--;
-	}
-
-	buffer->locate(tdbb, impure->irsb_position);
-
-	if (!buffer->getRecord(tdbb))
-	{
-		impure->irsb_state = BOS;
-		return false;
-	}
-
-	request->req_records_selected++;
-	request->req_records_affected.bumpFetched();
-	impure->irsb_state = POSITIONED;
-
-	return true;
+	return fetchRelative(tdbb, -1);
 }
 
 bool Cursor::fetchFirst(thread_db* tdbb) const
@@ -283,12 +220,25 @@ bool Cursor::fetchAbsolute(thread_db* tdbb, SINT64 offset) const
 
 	const auto buffer = static_cast<const BufferedStream*>(m_top);
 	const auto count = buffer->getCount(tdbb);
+	const SINT64 position = (offset > 0) ? offset - 1 : count + offset;
 
-	impure->irsb_position = (offset > 0) ? offset - 1 : count + offset;
+	if (position < 0)
+	{
+		impure->irsb_state = BOS;
+		return false;
+	}
+	else if (position >= (SINT64) count)
+	{
+		impure->irsb_state = EOS;
+		return false;
+	}
+
+	impure->irsb_position = position;
 	buffer->locate(tdbb, impure->irsb_position);
 
 	if (!buffer->getRecord(tdbb))
 	{
+		fb_assert(false); // this should not happen
 		impure->irsb_state = (offset > 0) ? EOS : BOS;
 		return false;
 	}
@@ -296,7 +246,6 @@ bool Cursor::fetchAbsolute(thread_db* tdbb, SINT64 offset) const
 	request->req_records_selected++;
 	request->req_records_affected.bumpFetched();
 	impure->irsb_state = POSITIONED;
-
 	return true;
 }
 
@@ -321,36 +270,48 @@ bool Cursor::fetchRelative(thread_db* tdbb, SINT64 offset) const
 	}
 
 	if (!offset)
-	{
 		return (impure->irsb_state == POSITIONED);
-	}
 
 	const auto buffer = static_cast<const BufferedStream*>(m_top);
 	const auto count = buffer->getCount(tdbb);
+	SINT64 position = impure->irsb_position;
 
 	if (impure->irsb_state == BOS)
 	{
 		if (offset < 0)
 			return false;
 
-		impure->irsb_position = offset - 1;
+		position = offset - 1;
 	}
 	else if (impure->irsb_state == EOS)
 	{
 		if (offset > 0)
 			return false;
 
-		impure->irsb_position = count + offset;
+		position = count + offset;
 	}
 	else
 	{
-		impure->irsb_position += offset;
+		position += offset;
 	}
 
+	if (position < 0)
+	{
+		impure->irsb_state = BOS;
+		return false;
+	}
+	else if (position >= (SINT64) count)
+	{
+		impure->irsb_state = EOS;
+		return false;
+	}
+
+	impure->irsb_position = position;
 	buffer->locate(tdbb, impure->irsb_position);
 
 	if (!buffer->getRecord(tdbb))
 	{
+		fb_assert(false); // this should not happen
 		impure->irsb_state = (offset > 0) ? EOS : BOS;
 		return false;
 	}
@@ -358,7 +319,6 @@ bool Cursor::fetchRelative(thread_db* tdbb, SINT64 offset) const
 	request->req_records_selected++;
 	request->req_records_affected.bumpFetched();
 	impure->irsb_state = POSITIONED;
-
 	return true;
 }
 

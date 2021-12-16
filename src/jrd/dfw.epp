@@ -2810,6 +2810,10 @@ static bool create_expression_index(thread_db* tdbb, SSHORT phase, DeferredWork*
 			{
 				tdbb->setTransaction(current_transaction);
 				tdbb->setRequest(current_request);
+
+				// Get rid of the expression statement.
+				idx.idx_expression_statement->release(tdbb);
+
 				throw;
 			}
 
@@ -2818,9 +2822,8 @@ static bool create_expression_index(thread_db* tdbb, SSHORT phase, DeferredWork*
 
 			DFW_update_index(work->dfw_name.c_str(), idx.idx_id, selectivity, transaction);
 
-			// Get rid of the pool containing the expression tree
-
-			attachment->deletePool(new_pool);
+			// Get rid of the expression statement.
+			idx.idx_expression_statement->release(tdbb);
 		}
 		break;
 

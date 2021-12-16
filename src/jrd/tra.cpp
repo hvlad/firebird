@@ -530,8 +530,8 @@ void TRA_commit(thread_db* tdbb, jrd_tra* transaction, const bool retaining_flag
 
 	// Set the state on the inventory page to be committed
 
-	TRA_set_state(tdbb, transaction, transaction->tra_number, tra_committed);
 	REPL_trans_commit(tdbb, transaction);
+	TRA_set_state(tdbb, transaction, transaction->tra_number, tra_committed);
 
 	// Perform any post commit work
 
@@ -1455,8 +1455,8 @@ void TRA_rollback(thread_db* tdbb, jrd_tra* transaction, const bool retaining_fl
 		return;
 	}
 
-	TRA_set_state(tdbb, transaction, transaction->tra_number, state);
 	REPL_trans_rollback(tdbb, transaction);
+	TRA_set_state(tdbb, transaction, transaction->tra_number, state);
 
 	TRA_release_transaction(tdbb, transaction, &trace);
 }
@@ -1992,8 +1992,8 @@ int TRA_wait(thread_db* tdbb, jrd_tra* trans, TraNumber number, jrd_tra::wait_t 
 	if (state == tra_active)
 	{
 		state = tra_dead;
-		TRA_set_state(tdbb, 0, number, tra_dead);
 		REPL_trans_cleanup(tdbb, number);
+		TRA_set_state(tdbb, 0, number, tra_dead);
 	}
 
 	// If the transaction disappeared into limbo, died, for constructively
@@ -2629,13 +2629,13 @@ static void retain_context(thread_db* tdbb, jrd_tra* transaction, bool commit, i
 
 	if (!dbb->readOnly())
 	{
-		// Set the state on the inventory page
-		TRA_set_state(tdbb, transaction, old_number, state);
-
 		if (commit)
 			REPL_trans_commit(tdbb, transaction);
 		else
 			REPL_trans_rollback(tdbb, transaction);
+
+		// Set the state on the inventory page
+		TRA_set_state(tdbb, transaction, old_number, state);
 	}
 	if (dbb->dbb_config->getClearGTTAtRetaining())
 		release_temp_tables(tdbb, transaction);

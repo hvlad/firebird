@@ -1,10 +1,18 @@
+bits=${1}
+[ -z "$bits" ] && bits=32
+[ "$bits" = "32" ] && cross=arm-linux-androideabi
+[ "$bits" = "64" ] && cross=aarch64-linux-android
+[ -z "$cross" ] && echo "Invalid bits passed" && exit 1
+arm=""
+[ "$bits" = "64" ] && arm=64
+
 MakeVersion=gen/Make.Version
 Build=`grep ^BuildNum ${MakeVersion}|awk '{print $3;}'`
 Version=`grep ^FirebirdVersion ${MakeVersion}|awk '{print $3;}'`
-Release="Firebird-${Version}.${Build}-0.arm.tar.gz"
-Debug="Firebird-withDebugInfo-${Version}.${Build}-0.arm.tar.gz"
+Release="Firebird-${Version}.${Build}-0.arm${arm}.tar.gz"
+Debug="Firebird-withDebugInfo-${Version}.${Build}-0.arm${arm}.tar.gz"
 Stripped=strip
-aStrip=${NDK}/toolchains/arm-linux-androideabi-4.9/prebuilt/linux-x86_64/bin/arm-linux-androideabi-strip
+aStrip=${NDK}/toolchains/${cross}-4.9/prebuilt/linux-x86_64/bin/${cross}-strip
 fbRootDir=`pwd`
 
 cd gen/Release

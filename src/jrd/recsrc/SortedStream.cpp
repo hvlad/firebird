@@ -432,7 +432,9 @@ void SortedStream::mapData(thread_db* tdbb, jrd_req* request, UCHAR* data) const
 		const auto relation = rpb->rpb_relation;
 
 		// Ensure the record is still in the most recent format
-		VIO_record(tdbb, rpb, MET_current(tdbb, relation), tdbb->getDefaultPool());
+		const auto format = MET_current(tdbb, relation);
+		VIO_record(tdbb, rpb, format, tdbb->getDefaultPool());
+		rpb->rpb_format_number = format->fmt_version;
 
 		// Set all fields to NULL if the stream was originally marked as invalid
 		if (!rpb->rpb_number.isValid())

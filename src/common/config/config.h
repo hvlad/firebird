@@ -276,7 +276,7 @@ constexpr ConfigEntry entries[MAX_CONFIG_KEY] =
 	{TYPE_STRING,	"SecurityDatabase",			false,	nullptr},	// sec/db alias - rely on ConfigManager::getDefaultSecurityDb(
 	{TYPE_STRING,	"ServerMode",				true,	nullptr},	// actual value differs in boot/regular cases and set at setupDefaultConfig(
 	{TYPE_STRING,	"WireCrypt",				false,	nullptr},
-	{TYPE_STRING,	"WireCryptPlugin",			false,	"ChaCha, Arc4"},
+	{TYPE_STRING,	"WireCryptPlugin",			false,	"ChaCha64, ChaCha, Arc4"},
 	{TYPE_STRING,	"KeyHolderPlugin",			false,	""},
 	{TYPE_BOOLEAN,	"RemoteAccess",				false,	true},
 	{TYPE_BOOLEAN,	"IPv6V6Only",				false,	false},

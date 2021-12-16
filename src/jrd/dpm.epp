@@ -3784,6 +3784,8 @@ static void store_big_record(thread_db* tdbb,
 
 	// What's left fits on a page.  Luckily, we don't have to store it ourselves.
 
+	stack.push(prior);
+
 	// rpb is already converted to UTC
 	const Compressor dcc(*tdbb->getDefaultPool(), in - rpb->rpb_address, rpb->rpb_address);
 	size = (ULONG) dcc.getPackedLength();

@@ -327,7 +327,7 @@ public:
 			return *m_counts;
 		}
 
-private:
+	private:
 		const RelationCounts* m_counts;
 	};
 

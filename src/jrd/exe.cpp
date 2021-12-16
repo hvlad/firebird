@@ -1077,7 +1077,7 @@ static void execute_looper(thread_db* tdbb,
 	{
 		if (transaction->tra_save_point &&
 			transaction->tra_save_point->isSystem() &&
-			transaction->tra_save_point->getNumber() == savNumber)
+			transaction->tra_save_point->getNumber() >= savNumber)
 		{
 			const auto savepoint = transaction->tra_save_point;
 			// Forget about any undo for this verb

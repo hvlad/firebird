@@ -1083,6 +1083,8 @@ public:
 		CheckStatusWrapper st(&ls);
 		for (GetPlugins<IWireCryptPlugin> cpItr(IPluginManager::TYPE_WIRE_CRYPT); cpItr.hasData(); cpItr.next())
 		{
+			WIRECRYPT_DEBUG(fprintf(stderr, "CryptKeyTypeManager %s\n", cpItr.name()));
+
 			const char* list = cpItr.plugin()->getKnownTypes(&st);
 			check(&st);
 			fb_assert(list);
@@ -7244,7 +7246,7 @@ bool SrvAuthBlock::extractNewKeys(CSTRING* to, ULONG flags)
 				for (CryptKeyTypeManager::SpecificPlugins sp(knownCryptKeyTypes().getSpecific(t)); sp.hasData(); sp.next())
 				{
 					PathName plugin = sp.get();
-					GetPlugins<IWireCryptPlugin> cp(IPluginManager::TYPE_WIRE_CRYPT);
+					GetPlugins<IWireCryptPlugin> cp(IPluginManager::TYPE_WIRE_CRYPT, plugin.c_str());
 					fb_assert(cp.hasData());
 					if (cp.hasData())
 					{

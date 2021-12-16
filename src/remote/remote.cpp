@@ -1215,12 +1215,15 @@ bool rem_port::tryKeyType(const KnownServerKey& srvKey, InternalCryptKey* cryptK
 	for (unsigned n = 0; n < clientPlugins.getCount(); ++n)
 	{
 		Firebird::PathName p(clientPlugins[n]);
+		WIRECRYPT_DEBUG(fprintf(stderr, "tryKeyType, client plugin %s\n", p.c_str()));
 		if (srvKey.plugins.find(" " + p + " ") != Firebird::PathName::npos)
 		{
+			WIRECRYPT_DEBUG(fprintf(stderr, "tryKeyType, server listed plugin %s\n", p.c_str()));
 			Firebird::GetPlugins<Firebird::IWireCryptPlugin>
 				cp(Firebird::IPluginManager::TYPE_WIRE_CRYPT, p.c_str());
 			if (cp.hasData())
 			{
+				WIRECRYPT_DEBUG(fprintf(stderr, "tryKeyType, client loaded plugin %s\n", p.c_str()));
 				Firebird::LocalStatus st;
 				Firebird::CheckStatusWrapper statusWrapper(&st);
 

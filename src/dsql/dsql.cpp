@@ -277,6 +277,12 @@ bool DsqlDmlRequest::fetch(thread_db* tdbb, UCHAR* msgBuffer)
 
 	dsql_msg* message = (dsql_msg*) statement->getReceiveMsg();
 
+	if (delayedFormat && message)
+	{
+		parseMetadata(delayedFormat, message->msg_parameters);
+		delayedFormat = NULL;
+	}
+
 	// Set up things for tracing this call
 	Jrd::Attachment* att = req_dbb->dbb_attachment;
 	TraceDSQLFetch trace(att, this);
@@ -309,13 +315,12 @@ bool DsqlDmlRequest::fetch(thread_db* tdbb, UCHAR* msgBuffer)
 		if (req_timer)
 			req_timer->stop();
 
-		delayedFormat = NULL;
 		trace.fetch(true, ITracePlugin::RESULT_SUCCESS);
 		return false;
 	}
 
-	mapInOut(tdbb, true, message, delayedFormat, msgBuffer);
-	delayedFormat = NULL;
+	if (msgBuffer)
+		mapInOut(tdbb, true, message, NULL, msgBuffer);
 
 	trace.fetch(false, ITracePlugin::RESULT_SUCCESS);
 	return true;
