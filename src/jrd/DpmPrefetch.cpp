@@ -42,7 +42,7 @@ using namespace Firebird;
 
 namespace Jrd {
 
-void DPMPrefetchInfo::nextDP(thread_db* tdbb, const RelationPages* relPages, 
+void DPMPrefetchInfo_1::nextDP(thread_db* tdbb, const RelationPages* relPages, 
 		const pointer_page* ppage, int slot)
 {
 	if (m_len)
@@ -163,6 +163,7 @@ void DPMPrefetchInfo::nextDP(thread_db* tdbb, const RelationPages* relPages,
 			const pointer_page* pp2 = ppage;
 			int pp2_seq = ppage->ppg_sequence;
 
+			//m_len = 4;
 			for (int i = 0; i < m_len; i++)
 			{
 				FB_UINT64 recno = recs.current();
@@ -183,7 +184,7 @@ void DPMPrefetchInfo::nextDP(thread_db* tdbb, const RelationPages* relPages,
 
 					ULONG pp2_page = (*relPages->rel_pages)[seq];
 
-					if (!CCH_page_cached(tdbb, PageNumber(pageSpace->pageSpaceID, pp2_page)))
+					if (CCH_page_cached(tdbb, PageNumber(pageSpace->pageSpaceID, pp2_page)) == pgMissing)
 					{
 						prf.push(pp2_page);
 						break;
@@ -227,6 +228,7 @@ void DPMPrefetchInfo::nextDP(thread_db* tdbb, const RelationPages* relPages,
 			if (pp2 && pp2 != ppage)
 				CCH_RELEASE(tdbb, &pp2_window);
 		}
+/*
 		else
 		{
 			m_slotDone = ppage->ppg_count;
@@ -237,7 +239,7 @@ void DPMPrefetchInfo::nextDP(thread_db* tdbb, const RelationPages* relPages,
 			{
 				const int ADJACENT_PAGES = 8;
 				ULONG pageno = ppage->ppg_page[slot];
-				if (!CCH_page_cached(tdbb, PageNumber(pageSpace->pageSpaceID, pageno)))
+				if (CCH_page_cached(tdbb, PageNumber(pageSpace->pageSpaceID, pageno)) == pgMissing)
 				{
 					pageno = pageno & ~(ADJACENT_PAGES-1);
 					for (int i = 0; i < ADJACENT_PAGES; i++, pageno++)
@@ -245,6 +247,7 @@ void DPMPrefetchInfo::nextDP(thread_db* tdbb, const RelationPages* relPages,
 				}
 			}
 		}
+*/
 	}
 
 	if (prf.hasData())
@@ -269,5 +272,245 @@ void DPMPrefetchInfo::nextDP(thread_db* tdbb, const RelationPages* relPages,
 **/
 	}
 }
+
+
+void DPMPrefetchInfo::nextDP(thread_db* tdbb, const RelationPages* relPages,
+	const pointer_page* ppage, int slot)
+{
+	if (!m_enabled)
+		return;
+
+	if (m_len == 0)		// initialization
+	{
+		if (ppage->ppg_count < 4)
+			return;
+
+		m_len = 4;
+		m_distance = m_len / 2;
+
+		makePrefetch(tdbb, relPages, ppage);
+		return;
+	}
+
+	Database* dbb = tdbb->getDatabase();
+	ULONG currPage = ppage->ppg_sequence * dbb->dbb_dp_per_pp + slot;
+
+	if (m_checkPage && currPage >= m_checkPage)
+	{
+		const PageNumber page(relPages->rel_pg_space_id, ppage->ppg_page[slot]);
+		const PageCacheState state = CCH_page_cached(tdbb, page);
+		switch (state)
+		{
+		case pgMissing:
+			// prefetched page was preempted as it was never accessed, or
+			// prefetch request still in queue
+			if (m_distance > 0)
+				m_distance--;
+			else if (m_len > 4)
+			{
+				m_len -= 4;
+				m_distance = m_len / 2;
+			}
+			break;
+
+		case pgPending:
+			// prefetched page still reading from disk
+			if (m_distance < m_len - 1)
+				m_distance++;
+			else if (m_len > 4)
+			{
+				m_len -= 4;
+				m_distance = m_distance > 2 ? m_distance - 2 : 0;
+				if (m_distance >= m_len)
+					m_distance = m_len - 1;
+			}
+			else
+			{
+				m_len = 2;
+				m_distance = 0;
+			}
+
+//			if (m_trigPage && currPage >= m_trigPage)
+//				m_trigPage = currPage + 1;
+			break;
+
+		case pgCached:
+			if (m_len < m_maxLen)
+			{
+				if (m_len == 2)
+				{
+					m_len = 4;
+					m_distance = 2;
+				}
+				else
+				{
+					m_len += 4;
+					m_distance = MIN(m_len - 1, m_distance + 2);
+				}
+			}
+			break;
+
+		default:
+			fb_assert(false);
+			break;
+		}
+
+		m_checkPage = 0;
+	}
+
+	if (m_trigPage && currPage >= m_trigPage)
+	{
+		if (currPage > m_lastPage)
+			m_lastPage = currPage;
+
+		makePrefetch(tdbb, relPages, ppage);
+	}
+}
+
+void DPMPrefetchInfo::makePrefetch(thread_db* tdbb, const RelationPages* relPages,
+	const pointer_page* ppage)
+{
+	Database* dbb = tdbb->getDatabase();
+	PrefetchArray prf;
+
+	m_checkPage = 0;
+	m_trigPage++;
+
+	const pointer_page* pp2 = ppage;
+	PointerPageHolder ppHolder(tdbb, relPages, ppage);
+
+	// where to start new prefetch
+	ULONG seq = (m_lastPage + 1) / dbb->dbb_dp_per_pp;
+	int s = (m_lastPage + 1) % dbb->dbb_dp_per_pp - 1;
+
+	RecordNumber recno;
+	RecordBitmap::Accessor recs(m_recs);
+	if (m_kind == RECS_BITMAP)
+	{
+		recno.setValue(dbb->dbb_max_records * (m_lastPage + 1));
+	}
+
+	for (ULONG len = 0; len < m_len; )
+	{
+		if (m_kind == RECS_BITMAP)
+		{
+			if (!recs.locate(locGreatEqual, recno.getValue()))
+				break;
+
+			recno.setValue(recs.current());
+
+			USHORT slot, line;
+			recno.decompose(dbb->dbb_max_records, dbb->dbb_dp_per_pp, line, slot, seq);
+			s = slot;
+		}
+
+		if (seq != pp2->ppg_sequence)
+			pp2 = ppHolder.fetch(seq);
+
+		if (!pp2)
+		{
+			const ULONG pp2_page = ppHolder.getPageNum();
+			if (pp2_page)
+				prf.push(pp2_page);
+
+			break;
+		}
+
+		if (m_kind == FULLSCAN)
+		{
+			for (s++; s < pp2->ppg_count; s++)
+				if (pp2->ppg_page[s])		// TODO: check per-dp bits
+					break;
+
+			if (s == pp2->ppg_count)
+			{
+				s = -1;
+				seq++;
+				continue;
+			}
+		}
+		else if (m_kind == RECS_BITMAP)
+		{
+			recno.compose(dbb->dbb_max_records, dbb->dbb_dp_per_pp, 0, s + 1, seq);
+			if (!pp2->ppg_page[s])
+				continue;
+		}
+
+		prf.push(pp2->ppg_page[s]);
+		m_lastPage = seq * dbb->dbb_dp_per_pp + s;
+
+		if (len == 0)
+			m_checkPage = m_lastPage;
+
+		if (len + 1 + m_distance == m_len)
+			m_trigPage = m_lastPage;
+
+		if (m_kind == FULLSCAN)
+		{
+			if (pp2 && (s + m_len >= pp2->ppg_count) && pp2->ppg_next)
+				prf.push(pp2->ppg_next);
+		}
+
+		len++;
+	}
+
+	if (prf.hasData())
+	{
+		PageSpace* pageSpace = dbb->dbb_page_manager.findPageSpace(relPages->rel_pg_space_id);
+		pageSpace->registerPrefetch(prf);
+/*
+		PrefetchReq* req = pageSpace->newPrefetchReq();
+		if (req)
+		{
+			req->assign(prf);
+
+			while (!req->isEmpty())
+			{
+				PIORequest* pio = CCH_make_PIO(tdbb, req);
+				while (pio)
+				{
+					PIO_read_multy(dbb, &pio, 1);
+					if (!pio || pio->readComplete(tdbb))
+						break;
+				}
+			}
+			pageSpace->freePrefetchReq(req);
+		}
+*/
+	}
+}
+
+const pointer_page* DPMPrefetchInfo::PointerPageHolder::fetch(ULONG ppSequence)
+{
+	release();
+
+	if (!m_relPages->rel_pages || ppSequence >= m_relPages->rel_pages->count())
+	{
+		m_window.win_page = 0;	// EOF
+		return nullptr;
+	}
+
+	m_window.win_page = (*m_relPages->rel_pages)[ppSequence];
+
+	if (CCH_page_cached(m_tdbb, m_window.win_page) == pgMissing)
+		return nullptr;
+
+	const pointer_page* ppage = (pointer_page*) CCH_FETCH_TIMEOUT(m_tdbb, &m_window, LCK_read, pag_undefined, 0);
+
+	if (!ppage)
+		return nullptr;
+
+	if (ppage->ppg_header.pag_type != pag_pointer ||
+		ppage->ppg_relation != m_ppage->ppg_relation ||
+		ppage->ppg_sequence != ppSequence)
+	{
+		CCH_RELEASE(m_tdbb, &m_window);
+		m_window.win_page = 0;
+		return nullptr;
+	}
+
+	return ppage;
+}
+
 
 } // namespace Jrd

@@ -55,7 +55,11 @@ void FullTableScan::open(thread_db* tdbb) const
 	Impure* const impure = request->getImpure<Impure>(m_impure);
 
 	impure->irsb_flags = irsb_open;
-	impure->irsb_prfInfo.reset(false);
+
+	const bool prfEnabled = PageSpace::prefetchEnabled(dbb, 
+		m_relation->getPages(tdbb)->rel_pg_space_id, PREFETCH_CTRL_ENABLE_FULL_SCAN);
+
+	impure->irsb_prfInfo.reset(prfEnabled);
 
 	RLCK_reserve_relation(tdbb, request->req_transaction, m_relation, false);
 

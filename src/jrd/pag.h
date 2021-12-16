@@ -76,6 +76,21 @@ class PageSpace;
 class PageManager;
 //class PIORequest;
 
+// Prefetch control bit flags
+// flags below could be used together in any combination
+const ULONG	PREFETCH_CTRL_ENABLE_FULL_SCAN		= 0x0001;		// FullTableScan, IDX_create_index, DPM_next
+const ULONG	PREFETCH_CTRL_ENABLE_INDEX_SCAN		= 0x0002;		// BitmapTableScan, DPM_get
+const ULONG	PREFETCH_CTRL_ENABLE_PP_SCAN		= 0x0004;		// DPM_data_pages
+const ULONG	PREFETCH_CTRL_ENABLE_BTR_LEAF		= 0x0008;		// BTR_evaluate, BTR_selectivity
+const ULONG	PREFETCH_CTRL_ENABLE_WITH_FS_CACHE	= 0x0010;		// enable when file system cache is in use
+const ULONG	PREFETCH_CTRL_ENABLE_LOG_STATS		= 0x0020;		// log stats into firebird.log on database shutdown
+// flags below is mutual exclusive
+const ULONG	PREFETCH_CTRL_DEVICE_SLOW			= 0x0000;		// HDD
+const ULONG	PREFETCH_CTRL_DEVICE_FAST			= 0x1000;		// SATA SDD
+const ULONG	PREFETCH_CTRL_DEVICE_ULTRA			= 0x2000;		// NVMe SDD
+const ULONG	PREFETCH_CTRL_DEVICE_SPEED			= 0x3000;		// common mask for values above
+
+
 // maximum pages to prefetch at once
 const int MAX_PREFETCH_PAGES = 16;
 
@@ -208,6 +223,7 @@ public:
 	// is pagespace on raw device
 	bool onRawDevice() const;
 
+	static bool prefetchEnabled(const Database* dbb, USHORT aPageSpaceID, ULONG flag);
 	bool prefetchEnabled() const;
 	void registerPrefetch(const PrefetchArray& prf);
 

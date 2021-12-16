@@ -268,8 +268,12 @@ void IDX_create_index(thread_db* tdbb,
 
 	fb_assert(transaction);
 
+	RelationPages* relPages = relation->getPages(tdbb);
 	DPMPrefetchInfo prefetch;
-	prefetch.reset(false);
+
+	const bool prfEnabled = PageSpace::prefetchEnabled(dbb, relPages->rel_pg_space_id, 
+								PREFETCH_CTRL_ENABLE_FULL_SCAN);
+	prefetch.reset(prfEnabled);
 
 	record_param primary, secondary;
 	secondary.rpb_relation = relation;
@@ -544,7 +548,7 @@ void IDX_create_index(thread_db* tdbb,
 		context.raise(tdbb, idx_e_duplicate, error_record);
 	}
 
-	if ((relation->rel_flags & REL_temp_conn) && (relation->getPages(tdbb)->rel_instance_id != 0))
+	if ((relation->rel_flags & REL_temp_conn) && (relPages->rel_instance_id != 0))
 	{
 		IndexLock* idx_lock = CMP_get_index_lock(tdbb, relation, idx->idx_id);
 		if (idx_lock)

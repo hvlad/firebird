@@ -1320,19 +1320,6 @@ static int raw_devices_unlink_database(const PathName& file_name)
 #endif // SUPPORT_RAW_DEVICES
 
 
-void PIO_read_multy(Database* dbb, PIORequest** pReqs, int cnt)
-{
-	PIORequest** reqPtr = pReqs;
-	PIORequest** end = pReqs + cnt;
-	for (; reqPtr < end; reqPtr++)
-	{
-		PIORequest* req = *reqPtr;
-		if (req->postRead(dbb))
-			*reqPtr = NULL;
-	}
-}
-
-
 /// class PIOPort
 
 PIOPort::PIOPort()

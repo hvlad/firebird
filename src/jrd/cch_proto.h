@@ -40,8 +40,14 @@ enum LockState {
 	lsError
 };
 
+enum PageCacheState {
+	pgMissing,		// page not found in cache
+	pgPending,		// page found and should be read from disk
+	pgCached		// page is cached
+};
+
 void		CCH_clean_page(Jrd::thread_db*, Jrd::PageNumber);
-bool		CCH_page_cached(Jrd::thread_db*, const Jrd::PageNumber&);
+PageCacheState	CCH_page_cached(Jrd::thread_db*, const Jrd::PageNumber&);
 int			CCH_down_grade_dbb(void*);
 bool		CCH_exclusive(Jrd::thread_db*, USHORT, SSHORT, Firebird::Sync*);
 bool		CCH_exclusive_attachment(Jrd::thread_db*, USHORT, SSHORT, Firebird::Sync*);
@@ -60,6 +66,7 @@ Ods::pag*	CCH_handoff(Jrd::thread_db*, Jrd::win*, ULONG, int, SCHAR, int, const 
 void		CCH_init(Jrd::thread_db*, ULONG);
 void		CCH_init2(Jrd::thread_db*);
 void		CCH_mark(Jrd::thread_db*, Jrd::win*, bool, bool);
+Jrd::PIORequest* CCH_make_PIO(Jrd::thread_db* tdbb, Jrd::PrefetchReq* prf);
 void		CCH_must_write(Jrd::thread_db*, Jrd::win*);
 void		CCH_precedence(Jrd::thread_db*, Jrd::win*, ULONG);
 void		CCH_precedence(Jrd::thread_db*, Jrd::win*, Jrd::PageNumber);

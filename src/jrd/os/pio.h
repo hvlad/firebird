@@ -164,7 +164,7 @@ public:
 		return m_pages.isEmpty();
 	}
 
-	bool isFull() const;
+	bool isFull(ULONG maxPages) const;
 	ULONG minPage() const;
 	ULONG maxPage() const;
 
@@ -178,8 +178,15 @@ public:
 
 	// platrofm-dependent routines
 
+	// Start read request, return false if error happens
 	bool postRead(Database* dbb);
+
+	// Called after IO completion. Release used bdb's, adjust stats. 
+	// If more IO should be run, prepare requiest and return false.
+	// Else release requiest to page space and returns true.
 	bool readComplete(thread_db* tdbb);
+
+	// Mark request as completed, set error code
 	void markCompletion(bool error, size_t ioSize);
 
 	int getOSError() const

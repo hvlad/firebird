@@ -52,9 +52,6 @@ Jrd::jrd_file*	PIO_open(Jrd::thread_db*, const Firebird::PathName&,
 						 const Firebird::PathName&);
 bool	PIO_read(Jrd::thread_db*, Jrd::jrd_file*, Jrd::BufferDesc*, Ods::pag*, Jrd::FbStatusVector*);
 
-void	PIO_read_multy(Jrd::Database*, Jrd::PIORequest**, int);
-Jrd::PIORequest*	PIO_get_completed_io(Jrd::Database*);
-
 #ifdef SUPERSERVER_V2
 bool	PIO_read_ahead(Jrd::thread_db*, SLONG, SCHAR*, SLONG,
 				   struct Jrd::phys_io_blk*, Jrd::FbStatusVector*);

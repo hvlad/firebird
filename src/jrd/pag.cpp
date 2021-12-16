@@ -2525,12 +2525,28 @@ ULONG PageSpace::getSCNPageNum(const Database* dbb, ULONG sequence)
 }
 
 
+bool PageSpace::prefetchEnabled(const Database* dbb, USHORT aPageSpaceID, ULONG flag)
+{
+	if (!(dbb->dbb_config->getPrefetchFlags() & flag) ||
+		!dbb->dbb_bcb->bcb_reader_cnt.value())
+	{
+		return false;
+	}
+
+	PageSpace* pageSpace = dbb->dbb_page_manager.findPageSpace(aPageSpaceID);
+	return pageSpace->prefetchEnabled();
+}
+
+
 bool PageSpace::prefetchEnabled() const
 {
-	//return false;
-	static bool x = true;
-	return x;
-	return (file->fil_flags & FIL_no_fs_cache);
+	if (file->fil_flags & FIL_no_fs_cache)
+		return true;
+
+	if (dbb->dbb_config->getPrefetchFlags() & PREFETCH_CTRL_ENABLE_WITH_FS_CACHE)
+		return true;
+
+	return false;
 }
 
 void PageSpace::registerPrefetch(const PrefetchArray& prf)
@@ -2744,14 +2760,17 @@ void PageManager::addPrefetchReq(PrefetchReq* prf, bool ahead)
 		return;
 	}
 
+	bool wake = false;
 	{
 		SyncLockGuard guard(&syncReqQue, SYNC_EXCLUSIVE, "PageManager::addPrefetchReq");
+		wake = prefetchQue.isEmpty();
 		if (ahead)
 			prefetchQue.push(prf);
 		else
 			prefetchQue.insert(0, prf);
 	}
-	pioPort.postEvent(PIO_EVENT_WAKEUP);
+	if (wake)
+		pioPort.postEvent(PIO_EVENT_WAKEUP);
 
 	logPrfOp(prf, ahead ? "Prf push ahead" : "Prf push");
 }

@@ -205,6 +205,7 @@ public:
 		: irb_relation(relation), irb_index(idx->idx_id),
 		  irb_generic(0), irb_lower_count(0), irb_upper_count(0), irb_key(NULL),
 		  irb_name(FB_NEW_POOL(pool) MetaName(name)),
+		  irb_prefetch(NULL),
 		  irb_value(FB_NEW_POOL(pool) ValueExprNode*[idx->idx_count * 2])
 	{
 		memcpy(&irb_desc, idx, sizeof(irb_desc));

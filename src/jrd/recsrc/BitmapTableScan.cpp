@@ -48,38 +48,20 @@ BitmapTableScan::BitmapTableScan(CompilerScratch* csb, const string& alias,
 
 void BitmapTableScan::open(thread_db* tdbb) const
 {
+	Database* dbb = tdbb->getDatabase();
 	jrd_req* const request = tdbb->getRequest();
 	Impure* const impure = request->getImpure<Impure>(m_impure);
 
 	impure->irsb_flags = irsb_open;
 	impure->irsb_bitmap = EVL_bitmap(tdbb, m_inversion, NULL);
 
-	impure->irsb_prfInfo.reset(*impure->irsb_bitmap, false);
+	const bool prfEnabled = PageSpace::prefetchEnabled(dbb, 
+		m_relation->getPages(tdbb)->rel_pg_space_id, PREFETCH_CTRL_ENABLE_INDEX_SCAN);
+
+	impure->irsb_prfInfo.reset(*impure->irsb_bitmap, prfEnabled);
 
 	record_param* const rpb = &request->req_rpb[m_stream];
-	rpb->rpb_prf_info = NULL;
-
-	// allow prefetch only if bitmap contains records from at least 8 pages
-	//if (*impure->irsb_bitmap)
-	//{
-	//	RecordBitmap::Accessor recs(*impure->irsb_bitmap);
-	//	if (recs.getFirst())
-	//	{
-	//		Database* dbb = tdbb->getDatabase();
-	//		int pages = 0;
-	//		FB_UINT64 recno;
-	//		do
-	//		{
-	//			recno = recs.current();
-	//			if (++pages == 8)
-	//			{
-					rpb->rpb_prf_info = &impure->irsb_prfInfo;
-	//				break;
-	//			}
-	//			recno -= recno % dbb->dbb_max_records;
-	//		} while (recs.locate(locGreatEqual, recno + dbb->dbb_max_records));
-	//	}
-	//}
+	rpb->rpb_prf_info = &impure->irsb_prfInfo;
 
 	RLCK_reserve_relation(tdbb, request->req_transaction, m_relation, false);
 

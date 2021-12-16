@@ -78,10 +78,10 @@ int PIORequest::fitPageNumber(ULONG pageNumber, ULONG pageSize) const
 	return 0;
 }
 
-bool PIORequest::isFull() const
+bool PIORequest::isFull(ULONG maxPages) const
 {
 	return (m_pages.getCount() == m_pages.getCapacity() ||
-		maxPage() - minPage() >= MAX_PAGES_PER_PIOREQ);
+		(maxPage() - minPage() + 1) >= maxPages);
 }
 
 ULONG PIORequest::minPage() const
@@ -107,6 +107,8 @@ void* PIORequest::allocIOBuffer(int sysPageSize)
 
 bool PIORequest::readComplete(thread_db* tdbb)
 {
+	fb_assert(m_state != PIOR_PENDING);
+
 	Database* dbb = tdbb->getDatabase();
 
 	const SCHAR* ioBuffer = (SCHAR*) getIOBuffer();
@@ -125,7 +127,7 @@ bool PIORequest::readComplete(thread_db* tdbb)
 			prevPageNo = pageNo;
 		}
 
-		bdb->readComplete(tdbb, m_state != PIORequest::PIOR_COMPLETED, ioBuffer);
+		bdb->readComplete(tdbb, m_state != PIOR_COMPLETED, ioBuffer);
 
 		if (ioBuffer)
 			ioBuffer += dbb->dbb_page_size;
@@ -139,7 +141,7 @@ bool PIORequest::readComplete(thread_db* tdbb)
 		m_pages[m_startIdx + m_count - 1]->bdb_page.getPageNum() - 
 		m_pages[m_startIdx]->bdb_page.getPageNum() + 1);
 
-	if (m_state == PIORequest::PIOR_COMPLETED && 
+	if (m_state == PIOR_COMPLETED && 
 		m_startIdx + m_count < m_pages.getCount())
 	{
 		m_startIdx += m_count;

@@ -638,7 +638,7 @@ bool PIORequest::postRead(Database* dbb)
 
 	BOOL ret = FALSE;
 
-	m_state = PIORequest::PIOR_PENDING;
+	m_state = PIOR_PENDING;
 	m_osError = 0;
 	m_count = 0;
 	m_ioSize = 0;
@@ -727,28 +727,15 @@ bool PIORequest::postRead(Database* dbb)
 		ret = ReadFile(file->fil_desc, ioBuffer, m_ioSize, NULL, &m_osData);
 	}
 
-	PIORequest::PIOR_STATE newState = PIORequest::PIOR_PENDING;
-	if (ret) 
-	{
-/***
-		DWORD readBytes;
-		if (GetOverlappedResult(m_file->fil_desc, &m_osData, &readBytes, FALSE))
-		{
-			if (readBytes == m_ioSize)
-				newState = PIORequest::PIOR_COMPLETED;
-			else
-				newState = PIORequest::PIOR_ERROR;
-		}
-***/
-	}
-	else
+	PIOR_STATE newState = PIOR_PENDING;
+	if (!ret) 
 	{
 		DWORD err = GetLastError();
 		if (err != ERROR_IO_PENDING)
-			newState = PIORequest::PIOR_ERROR;
+			newState = PIOR_ERROR;
 	}
 
-	if (newState == PIORequest::PIOR_PENDING)
+	if (newState == PIOR_PENDING)
 		return true;
 
 	m_state = newState;
@@ -756,19 +743,6 @@ bool PIORequest::postRead(Database* dbb)
 		m_file->fil_ext_lock->endRead();
 
 	return false;
-}
-
-
-void PIO_read_multy(Database* dbb, PIORequest** pReqs, int cnt)
-{
-	PIORequest** reqPtr = pReqs;
-	PIORequest** end = pReqs + cnt;
-	for (; reqPtr < end; reqPtr++)
-	{
-		PIORequest* req = *reqPtr;
-		if (req->postRead(dbb))
-			*reqPtr = NULL;
-	}
 }
 
 

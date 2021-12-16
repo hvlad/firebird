@@ -366,7 +366,7 @@ private:
 					  UCHAR* pointer, temporary_key* upper);
 
 	bool			m_enabled;
-	temporary_key	m_lastKey;		// key and recno up to which we made prefetch requests
+	temporary_key	m_lastKey;			// key and recno up to which we made prefetch requests
 	RecordNumber	m_lastRecno;
 
 	ULONG			m_pageNo;			// page number, incarnation and offset of the 1st level 
@@ -971,14 +971,17 @@ void BTR_evaluate(thread_db* tdbb, const IndexRetrieval* retrieval, RecordBitmap
 	SET_TDBB(tdbb);
 
 	// Remove ignore_nulls flag for older ODS
-	//const Database* dbb = tdbb->getDatabase();
+	const Database* dbb = tdbb->getDatabase();
+	RelationPages* relPages = retrieval->irb_relation->getPages(tdbb);
+
+	BtrPrefetchCtrl prefetch;
+	if (!PageSpace::prefetchEnabled(dbb, relPages->rel_pg_space_id, PREFETCH_CTRL_ENABLE_BTR_LEAF))
+		prefetch.disable();
 
 	IndexRetrieval* _retrieval = const_cast<IndexRetrieval*> (retrieval);
-	BtrPrefetchCtrl prefetch;
-	_retrieval->irb_prefetch = &prefetch;
+	AutoSetRestore<BtrPrefetchCtrl*>  setCtrl(&_retrieval->irb_prefetch, &prefetch);
 
 	index_desc idx;
-	RelationPages* relPages = retrieval->irb_relation->getPages(tdbb);
 	WIN window(relPages->rel_pg_space_id, -1);
 	temporary_key lower, upper;
 	lower.key_flags = 0;
@@ -1133,7 +1136,6 @@ void BTR_evaluate(thread_db* tdbb, const IndexRetrieval* retrieval, RecordBitmap
 	}
 
 	CCH_RELEASE(tdbb, &window);
-	_retrieval->irb_prefetch = NULL;
 }
 
 
@@ -2376,8 +2378,13 @@ void BTR_selectivity(thread_db* tdbb, jrd_rel* relation, USHORT id, SelectivityL
 	if (!root)
 		return;
 
+	Database* dbb = tdbb->getDatabase();
+
 	// prepare for prefetch
 	BtrPrefetchCtrl prefetch;
+	if (!PageSpace::prefetchEnabled(dbb, relPages->rel_pg_space_id, PREFETCH_CTRL_ENABLE_BTR_LEAF))
+		prefetch.disable();
+
 	IndexRetrieval retrieval(relation, id, &prefetch);
 	BTR_description(tdbb, relation, root, &retrieval.irb_desc, id);
 
@@ -2419,7 +2426,6 @@ void BTR_selectivity(thread_db* tdbb, jrd_rel* relation, USHORT id, SelectivityL
 	duplicatesList.grow(segments);
 	memset(duplicatesList.begin(), 0, segments * sizeof(FB_UINT64));
 
-	Database* dbb = tdbb->getDatabase();
 	PageSpace* pageSpace = dbb->dbb_page_manager.findPageSpace(relPages->rel_pg_space_id);
 
 	// go through all the leaf nodes and count them;

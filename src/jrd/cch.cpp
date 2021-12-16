@@ -981,7 +981,7 @@ void CCH_fetch_page(thread_db* tdbb, WIN* window, const bool read_shadow)
 		}
 	}
 
-	timeRead = (fb_utils::query_performance_counter() - timeRead) * 1000;
+	timeRead = (fb_utils::query_performance_counter() - timeRead) * 1000000;
 	if (timeRead > fb_utils::query_performance_frequency())
 	{
 		tdbb->bumpStats(RuntimeStatistics::PAGE_READS_WAIT_CNT);
@@ -2210,8 +2210,11 @@ void CCH_shutdown(thread_db* tdbb)
 		}
 	}
 
-	if (bcb->bcb_flags & BCB_exclusive && readers)
+	if (bcb->bcb_flags & BCB_exclusive && readers &&
+		(dbb->dbb_config->getPrefetchFlags() & PREFETCH_CTRL_ENABLE_LOG_STATS))
 	{
+		const SINT64 waits_latch_cnt	 = dbb->dbb_stats.getValue(RuntimeStatistics::PAGE_LATCH_WAIT_CNT);
+		const SINT64 waits_latch_time	 = dbb->dbb_stats.getValue(RuntimeStatistics::PAGE_LATCH_WAIT_TIME);
 		const SINT64 waits_prf_cnt		 = dbb->dbb_stats.getValue(RuntimeStatistics::PAGE_READS_WAIT_ASYNC_CNT);
 		const SINT64 waits_prf_time		 = dbb->dbb_stats.getValue(RuntimeStatistics::PAGE_READS_WAIT_ASYNC_TIME);
 		const SINT64 waits_read_cnt		 = dbb->dbb_stats.getValue(RuntimeStatistics::PAGE_READS_WAIT_CNT);
@@ -2222,19 +2225,29 @@ void CCH_shutdown(thread_db* tdbb)
 
 		string s;
 		s.printf(
-			"CCH_fini\n"
-			"\tprefetch  : count %9" QUADFORMAT "d, time %9" QUADFORMAT "d, avg %2.2f\n"
+			"CCH_shutdown\n"
+			"\tdatabase: %s\n"
+			"\tprefetch flags : 0x%04x\n"
+			"\tlatch wait: count %9" QUADFORMAT "d, time %9" QUADFORMAT "d, avg %2.2f\n"
+			"\tprf   wait: count %9" QUADFORMAT "d, time %9" QUADFORMAT "d, avg %2.2f\n"
 			"\tsync reads: count %9" QUADFORMAT "d, time %9" QUADFORMAT "d, avg %2.2f\n"
 			"\tmultyreads: count %9" QUADFORMAT "d, pags %9" QUADFORMAT "d, avg %2.2f\n"
 			"\t\t\t\t\t\t\t\t io   %9" QUADFORMAT "d, avg %2.2f\n", 
 
-			waits_prf_cnt, 
-			waits_prf_time, 
-			waits_prf_cnt ? waits_prf_time / (double) waits_prf_cnt : .0,
+			dbb->dbb_filename.c_str(),
+			dbb->dbb_config->getPrefetchFlags(),
+
+			waits_latch_cnt,
+			waits_latch_time / 1000,
+			waits_latch_cnt ? waits_latch_time / (double)waits_latch_cnt / 1000.0 : .0,
+
+			waits_prf_cnt,
+			waits_prf_time / 1000, 
+			waits_prf_cnt ? waits_prf_time / (double) waits_prf_cnt / 1000.0 : .0,
 
 			waits_read_cnt, 
-			waits_read_time, 
-			waits_read_cnt ? waits_read_time / (double) waits_read_cnt : .0,
+			waits_read_time / 1000, 
+			waits_read_cnt ? waits_read_time / (double) waits_read_cnt / 1000.0 : .0,
 
 			read_multy_cnt, 
 			read_multy_page_cnt, 
@@ -3723,6 +3736,8 @@ static BufferDesc* find_buffer(BufferControl* bcb, const PageNumber page, bool f
 static LatchState latch_buffer(thread_db* tdbb, Sync &bcbSync, BufferDesc *bdb,
 							   const PageNumber page, SyncType syncType, int wait)
 {
+	SINT64 timeWait = fb_utils::query_performance_counter();
+
 	//++bdb->bdb_use_count;
 
 	if (!(bdb->bdb_flags & BDB_free_pending)
@@ -3758,21 +3773,27 @@ static LatchState latch_buffer(thread_db* tdbb, Sync &bcbSync, BufferDesc *bdb,
 			latchOk = bdb->addRefConditional(tdbb, syncType);
 		else
 		{
-			if (bdb->bdb_flags & BDB_read_pending)
-			{
-				SINT64 timeWait = fb_utils::query_performance_counter();
-				latchOk = bdb->addRef(tdbb, syncType, wait);
-				timeWait = (fb_utils::query_performance_counter() - timeWait) * 1000;
+			const bool readPending = (bdb->bdb_flags & BDB_read_pending);
+			//SINT64 timeWait = fb_utils::query_performance_counter();
 
-				if (timeWait > fb_utils::query_performance_frequency())
+			latchOk = bdb->addRef(tdbb, syncType, wait);
+			timeWait = (fb_utils::query_performance_counter() - timeWait) * 1000000;
+
+			if (timeWait > fb_utils::query_performance_frequency())
+			{
+				if (readPending)
 				{
 					tdbb->bumpStats(RuntimeStatistics::PAGE_READS_WAIT_ASYNC_CNT);
-					tdbb->bumpStats(RuntimeStatistics::PAGE_READS_WAIT_ASYNC_TIME, 
+					tdbb->bumpStats(RuntimeStatistics::PAGE_READS_WAIT_ASYNC_TIME,
+						timeWait / fb_utils::query_performance_frequency());
+				}
+				else
+				{
+					tdbb->bumpStats(RuntimeStatistics::PAGE_LATCH_WAIT_CNT);
+					tdbb->bumpStats(RuntimeStatistics::PAGE_LATCH_WAIT_TIME,
 						timeWait / fb_utils::query_performance_frequency());
 				}
 			}
-			else
-				latchOk = bdb->addRef(tdbb, syncType, wait);
 		}
 
 		//--bdb->bdb_use_count;
@@ -3783,6 +3804,7 @@ static LatchState latch_buffer(thread_db* tdbb, Sync &bcbSync, BufferDesc *bdb,
 		if (bdb->bdb_page == page)
 		{
 			//bdb->bdb_flags &= ~(BDB_faked | BDB_prefetch);
+			bdb->bdb_flags &= ~BDB_prefetch;
 			return lsOk;
 		}
 
@@ -3994,6 +4016,14 @@ static BufferDesc* get_buffer(thread_db* tdbb, const PageNumber page, SyncType s
 
 			if ((oldest->bdb_flags & BDB_free_pending) || !writeable(oldest))
 			{
+				oldest->release(tdbb, true);
+				continue;
+			}
+
+			if (oldest->bdb_flags & BDB_prefetch)
+			{
+				oldest->bdb_flags &= ~BDB_prefetch;
+				recentlyUsed(oldest);
 				oldest->release(tdbb, true);
 				continue;
 			}
@@ -5424,15 +5454,38 @@ void BufferDesc::readComplete(thread_db* tdbb, bool error, const void* data)
 }
 
 
-bool CCH_page_cached(thread_db* tdbb, const PageNumber& pageno)
+PageCacheState CCH_page_cached(thread_db* tdbb, const PageNumber& pageno)
 {
 	BufferControl* bcb = tdbb->getDatabase()->dbb_bcb;
+	BufferDesc* bdb = nullptr;
 
-	SyncLockGuard bcbSync(&bcb->bcb_syncObject, SYNC_SHARED, "CCH_page_cached");
-	const BufferDesc* bdb = find_buffer(bcb, pageno, true);
-	return (bdb && !(bdb->bdb_flags & BDB_read_pending)/* && 
-		((bdb->bdb_page == pageno) && !(bdb->bdb_flags & BDB_free_pending) || 
-		 (bdb->bdb_pending_page == pageno) && (bdb->bdb_flags & BDB_free_pending)) */);
+	{
+		SyncLockGuard bcbSync(&bcb->bcb_syncObject, SYNC_SHARED, FB_FUNCTION);
+		bdb = find_buffer(bcb, pageno, true);
+	}
+
+	if (!bdb)
+		return pgMissing;
+
+	if (bdb->bdb_page == pageno)
+	{
+		if (bdb->bdb_flags & BDB_read_pending)
+			return pgPending;
+		if (bdb->bdb_flags & BDB_free_pending)
+			return pgMissing;
+		else
+			return pgCached;
+	}
+
+	if (bdb->bdb_flags & BDB_free_pending)
+	{
+		if (bdb->bdb_pending_page == pageno)
+			return pgPending;
+		else
+			return pgMissing;
+	}
+
+	return pgMissing;
 }
 
 
@@ -5469,6 +5522,22 @@ static PIORequest* prf_to_pio(thread_db* tdbb, PrefetchReq* prf)
 	const USHORT pageSpaceID = pageSpace->pageSpaceID;
 	prf->sort();
 
+	ULONG maxPages;
+	const ULONG prfFlags = dbb->dbb_config->getPrefetchFlags();
+
+	switch (prfFlags & PREFETCH_CTRL_DEVICE_SPEED)
+	{
+	case PREFETCH_CTRL_DEVICE_SLOW:
+		maxPages = MAX_PAGES_PER_PIOREQ;
+		break;
+	case PREFETCH_CTRL_DEVICE_FAST:
+		maxPages = 16;
+		break;
+	case PREFETCH_CTRL_DEVICE_ULTRA:
+		maxPages = 4;
+		break;
+	}
+
 	ULONG *pageno = prf->begin();
 	while (pageno < prf->end())
 	{
@@ -5481,9 +5550,10 @@ static PIORequest* prf_to_pio(thread_db* tdbb, PrefetchReq* prf)
 
 			if (bdb && (bdb->bdb_flags & BDB_read_pending))
 			{
+				bdb->bdb_flags |= BDB_prefetch;
 				tdbb->clearBdb(bdb);		// bdb could be released by different thread
 				pio->addPage(bdb);
-				if (pio->isFull())
+				if (pio->isFull(maxPages))
 					break;
 			}
 			else if (bdb) {
@@ -5514,10 +5584,10 @@ PIORequest* CCH_make_PIO(thread_db* tdbb, PrefetchReq* prf)
 	if (!pio)
 		return NULL;
 
-	if (!pio->isFull())
-	{
-		// todo: inspect per pageSpace prefetch bitmap
-	}
+	//if (!pio->isFull())
+	//{
+	//	todo: inspect per pageSpace prefetch bitmap
+	//}
 
 	return pio;
 }
@@ -5559,76 +5629,79 @@ void BufferControl::prefetch_thread(BufferControl* bcb)
 
 			PageManager& pageMgr = dbb->dbb_page_manager;
 
+			int cntPending = 0;				// number of currently pending IOs
+			int maxPending = 1;				// number of maximum parallel IOs
+
+			const ULONG prfFlags = dbb->dbb_config->getPrefetchFlags();
+
+			switch (prfFlags & PREFETCH_CTRL_DEVICE_SPEED)
+			{
+			case PREFETCH_CTRL_DEVICE_SLOW:
+				maxPending = 1;
+				break;
+			case PREFETCH_CTRL_DEVICE_FAST:
+				maxPending = 16;
+				break;
+			case PREFETCH_CTRL_DEVICE_ULTRA:
+				maxPending = 64;
+				break;
+			}
+
+			PrefetchReq* prf = nullptr;
+
 			while (!bcb->bcb_reader_sem.tryEnter())
 			{
-				PIORequest* pio = NULL;
-				const PIO_EVENT_T evnt = pageMgr.pioPort.getCompletedRequest(tdbb, &pio, MAX_SLONG);
+				if (!prf)
+					prf = pageMgr.getPrefetchReq();
 
-				if (evnt == PIO_EVENT_WAKEUP)
+				// don't wait if we have prefetch and IO queue is not full
+				const int tout = (prf && (cntPending < maxPending)) ? 0 : MAX_SLONG;
+
+				PIORequest* pio = nullptr;
+				const PIO_EVENT_T evnt = pageMgr.pioPort.getCompletedRequest(tdbb, &pio, tout);
+
+				if (evnt == PIO_EVENT_IO)
 				{
-					fb_assert(pio == NULL);
+					fb_assert(pio != nullptr);
+					fb_assert(cntPending > 0);
 
-					HalfStaticArray<PIORequest*, 8> pioReqs(*dbb->dbb_permanent);
-					PrefetchReq* prf = pageMgr.getPrefetchReq();
-					while (prf)
-					{
-						PageSpace* pageSpace = prf->getPageSpace();
-						pio = CCH_make_PIO(tdbb, prf);
-						if (pio)
-						{
-							pioReqs.push(pio);
-							if (!prf->isEmpty())
-								continue;
-						}
+					if (!pio->readComplete(tdbb))
+						if (pio->postRead(dbb))
+							continue;
 
-						pageSpace->freePrefetchReq(prf);
-						if (pioReqs.getCount() >= 8)
-							break;
-
-						if (pioReqs.isEmpty())
-							prf = pageMgr.getPrefetchReq();
-						else 
-						{
-							if (!pio)
-								break;
-
-							prf = pageMgr.nextPrefetchReq(pageSpace);
-						}
-					}
-
-					while (!pioReqs.isEmpty()) 
-					{
-						PIO_read_multy(dbb, pioReqs.begin(), pioReqs.getCount());
-
-						PIORequest** pPio = pioReqs.begin();
-						while (pPio < pioReqs.end())
-						{
-							pio = *pPio;
-							if (!pio || pio->readComplete(tdbb))
-								pioReqs.remove(pPio);
-							else
-								pPio++;
-						}
-					}
+					cntPending--;
+					fb_assert(cntPending >= 0);
 				}
-				else if (evnt == PIO_EVENT_IO)
+				else if (evnt == PIO_EVENT_WAKEUP)
 				{
-					while (!pio->readComplete(tdbb))
-					{
-						PIORequest** pPio = &pio;
-						PIO_read_multy(dbb, pPio, 1);
-						if (!*pPio)
-							break;
-					}
+					fb_assert(pio == nullptr);
+					if (cntPending >= maxPending)
+						continue;
+
+					if (!prf)
+						prf = pageMgr.getPrefetchReq();
 				}
-				else if (evnt == PIO_EVENT_TIMEOUT)
-					continue;
-				else
+				else if (evnt != PIO_EVENT_TIMEOUT)
 				{
 					fb_assert(false);
 					gds__log("Unknown event %d in pioPort.getCompletedRequest", evnt);
 				}
-			}
+
+				if ((cntPending < maxPending) && prf)
+				{
+					PageSpace* pageSpace = prf->getPageSpace();
+					pio = CCH_make_PIO(tdbb, prf);
+					if (pio)
+						if (pio->postRead(dbb))
+							cntPending++;
+
+					if (prf->isEmpty())
+					{
+						pageSpace->freePrefetchReq(prf);
+						prf = nullptr;
+					}
+				}
+			}	// bcb_reader_sem
 		}
 		catch (const Firebird::Exception& ex)
 		{

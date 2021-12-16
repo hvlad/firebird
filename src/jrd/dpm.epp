@@ -647,14 +647,16 @@ ULONG DPM_data_pages(thread_db* tdbb, jrd_rel* relation)
 	ULONG pages = relPages->rel_data_pages;
 	if (!pages)
 	{
-		// prefetch pointer pages
+		// prefetch pointer pages, if enabled
+		const bool prf_enabled = PageSpace::prefetchEnabled(dbb, relPages->rel_pg_space_id, 
+									PREFETCH_CTRL_ENABLE_PP_SCAN);
 		ULONG prf_sequence = 0;
 		const int prf_len = 8;
 
 		WIN window(relPages->rel_pg_space_id, -1);
 		for (ULONG sequence = 0; true; sequence++)
 		{
-			if (prf_sequence <= sequence && pPages && pPages->count() > sequence + 1)
+			if (prf_enabled && prf_sequence <= sequence && pPages && pPages->count() > sequence + 1)
 			{
 				PrefetchReq* prf = pageSpace->newPrefetchReq();
 				if (prf)
@@ -1528,13 +1530,12 @@ bool DPM_get(thread_db* tdbb, record_param* rpb, SSHORT lock_type)
 	page_number = page->ppg_page[slot];
 	relPages->setDPNumber(dpSequence, page_number);
 
-
-	DPMPrefetchInfo* prfInfo = rpb->rpb_prf_info;
-	if (prfInfo)
-		prfInfo->nextDP(tdbb, relPages, page, slot);
-
 	if (page_number)
 	{
+		DPMPrefetchInfo* prfInfo = rpb->rpb_prf_info;
+		if (prfInfo)
+			prfInfo->nextDP(tdbb, relPages, page, slot);
+
 		CCH_HANDOFF(tdbb, window, page_number, lock_type, pag_data);
 		if (get_header(window, line, rpb) &&
 			!(rpb->rpb_flags & (rpb_blob | rpb_chained | rpb_fragment)))
