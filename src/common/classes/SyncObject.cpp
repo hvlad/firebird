@@ -62,7 +62,11 @@ bool SyncObject::tryLockShared(wait_type w, const char* from)
 		if (lockState.fetch_add(-STATE_READER_INCR) == STATE_READER_INCR)
 			grantLocks();
 		else
+#ifdef WIN_NT
 			YieldProcessor();
+#else
+			Thread::yield();
+#endif
 	}
 
 	return false;
@@ -94,7 +98,11 @@ bool SyncObject::tryLockExclusuve(wait_type w, ThreadSync* thread, const char* f
 		if (lockState.fetch_add(-STATE_WRITER_INCR) == STATE_WRITER_INCR)
 			grantLocks();
 		else
+#ifdef WIN_NT
 			YieldProcessor();
+#else
+			Thread::yield();
+#endif
 	}
 
 	return false;
