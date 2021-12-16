@@ -63,7 +63,7 @@ jobs:
     - name: Prepare (MacOS)
       if: matrix.os == 'macOS-latest'
       run: |
-        brew install automake libtool libaio-devel
+        brew install automake libtool libaio
         export LIBTOOLIZE=glibtoolize
         export LIBTOOL=glibtool
 
