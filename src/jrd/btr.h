@@ -45,7 +45,7 @@ class jrd_tra;
 template <typename T> class vec;
 class JrdStatement;
 struct temporary_key;
-class jrd_tra;
+class thread_db;
 class BtrPageGCLock;
 class Sort;
 
