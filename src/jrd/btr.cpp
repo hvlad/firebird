@@ -554,7 +554,20 @@ void BtrPrefetchCtrl::makePrefetch(thread_db* tdbb, const IndexRetrieval* retrie
 	if (!prf)
 		return;
 
+	const bool descending = retrieval->irb_desc.idx_flags & idx_descending;
 	btree_page* bucket = (btree_page*) window->win_buffer;
+
+	// Last segment used in upper key
+	UCHAR upperSeg = 0;
+	if (retrieval->irb_desc.idx_count > 1 && upper && upper->key_length > 0)
+	{
+		USHORT pos = (upper->key_length - 1) / (STUFF_COUNT + 1);
+		pos *= (STUFF_COUNT + 1);
+
+		upperSeg = upper->key_length ? upper->key_data[pos] : retrieval->irb_desc.idx_count;
+		if (descending)
+			upperSeg ^= -1;
+	}
 
 	IndexNode node;
 	for (int i = 0; i < 8; i++)
@@ -571,18 +584,33 @@ void BtrPrefetchCtrl::makePrefetch(thread_db* tdbb, const IndexRetrieval* retrie
 		if (upper)
 		{
 			// stop if our lastKey is greater than upper key
+			// take into account segments present in upper key only
+
+			USHORT lastKeyLen = m_lastKey.key_length;
+			if (upperSeg)
+			{
+				for (lastKeyLen = 0; lastKeyLen < m_lastKey.key_length; lastKeyLen += STUFF_COUNT + 1)
+				{
+					UCHAR lastSeg = m_lastKey.key_data[lastKeyLen];
+					if (descending)
+						lastSeg ^= -1;
+
+					if (lastSeg < upperSeg)
+						break;
+				}
+				if (lastKeyLen > m_lastKey.key_length)
+					lastKeyLen = m_lastKey.key_length;
+			}
 
 			const int cmp = memcmp(m_lastKey.key_data, upper->key_data, 
-				MIN(upper->key_length, m_lastKey.key_length));
+				MIN(upper->key_length, lastKeyLen));
 
 			if (cmp > 0)
 				break;
 
-			const bool descending = retrieval->irb_desc.idx_flags & idx_descending;
-
 			if (cmp == 0 && 
-				(!descending && m_lastKey.key_length > upper->key_length) ||
-				(descending && m_lastKey.key_length < upper->key_length) )
+				(!descending && lastKeyLen > upper->key_length) ||
+				(descending && lastKeyLen < upper->key_length) )
 				break;
 		}
 
