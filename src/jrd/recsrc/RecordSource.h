@@ -201,6 +201,15 @@ namespace Jrd
 
 	class IndexTableScan : public RecordStream
 	{
+		struct RecordInfo
+		{
+			FB_UINT64 recno;
+			USHORT key_offset;
+			USHORT key_length;
+		};
+		typedef Firebird::Array<RecordInfo> RecordsData;
+		typedef Firebird::Array<UCHAR> KeysData;
+
 		struct Impure : public RecordSource::Impure
 		{
 			RecordNumber irsb_nav_number;				// last record number
@@ -209,6 +218,9 @@ namespace Jrd
 			RecordBitmap** irsb_nav_bitmap;				// bitmap for inversion tree
 			RecordBitmap* irsb_nav_records_visited;		// bitmap of records already retrieved
 			BtrPageGCLock* irsb_nav_btr_gc_lock;		// lock to prevent removal of currently walked index page
+			RecordsData* irsb_nav_recs;					// precomputed record numbers...
+			KeysData* irsb_nav_keys;					// ...and index keys
+			bool irsb_nav_done;							// end of level or upper key was seen
 			USHORT irsb_nav_offset;						// page offset of current index node
 			USHORT irsb_nav_upper_length;				// length of upper key value
 			USHORT irsb_nav_length;						// length of expanded key
@@ -241,9 +253,11 @@ namespace Jrd
 		UCHAR* getPosition(thread_db* tdbb, Impure* impure, win* window) const;
 		UCHAR* openStream(thread_db* tdbb, Impure* impure, win* window) const;
 		void setPage(thread_db* tdbb, Impure* impure, win* window) const;
-		void setPosition(thread_db* tdbb, Impure* impure, record_param*,
+		void setPosition(thread_db* tdbb, Impure* impure, RecordNumber,
 						 win* window, const UCHAR*, const temporary_key&) const;
 		bool setupBitmaps(thread_db* tdbb, Impure* impure) const;
+		void cacheRecordInfo(thread_db* tdbb) const;
+		void makePrefetch(thread_db* tdbb) const;
 
 		const Firebird::string m_alias;
 		jrd_rel* const m_relation;

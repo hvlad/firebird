@@ -36,6 +36,9 @@
 using namespace Firebird;
 using namespace Jrd;
 
+const FB_SIZE_T RECS_TO_CACHE		= 16;	// max number of records to cache
+const FB_SIZE_T KEYS_TO_CACHE		= 256;	// initial size of keys buffer
+
 // ------------------------------------
 // Data access: index driven table scan
 // ------------------------------------
@@ -97,6 +100,15 @@ void IndexTableScan::close(thread_db* tdbb) const
 			impure->irsb_nav_records_visited = NULL;
 		}
 
+		if (impure->irsb_nav_recs)
+		{
+			delete impure->irsb_nav_recs;
+			impure->irsb_nav_recs = NULL;
+
+			delete impure->irsb_nav_keys;
+			impure->irsb_nav_keys = NULL;
+		}
+
 		if (impure->irsb_nav_btr_gc_lock)
 		{
 #ifdef DEBUG_LCK_LIST
@@ -140,10 +152,66 @@ bool IndexTableScan::getRecord(thread_db* tdbb) const
 	if (impure->irsb_flags & irsb_first)
 	{
 		impure->irsb_flags &= ~irsb_first;
+		impure->irsb_nav_done = false;
 		setPage(tdbb, impure, NULL);
 	}
 
 	index_desc* const idx = (index_desc*) ((SCHAR*) impure + m_offset);
+
+	// Find the next interesting record.
+	while (true)
+	{
+		if (!impure->irsb_nav_recs || impure->irsb_nav_recs->isEmpty())
+		{
+			if (!impure->irsb_nav_done)
+				cacheRecordInfo(tdbb);
+
+			if (impure->irsb_nav_recs->isEmpty())
+				break;
+		}
+
+		RecordInfo recInfo = *impure->irsb_nav_recs->begin();
+		impure->irsb_nav_recs->remove((FB_SIZE_T)0);
+
+		rpb->rpb_number.setValue(recInfo.recno);
+
+		if (VIO_get(tdbb, rpb, request->req_transaction, request->req_pool))
+		{
+			temporary_key value;
+
+			const idx_e result = BTR_key(tdbb, m_relation, rpb->rpb_record, idx, &value, false);
+
+			if (result != idx_e_ok)
+			{
+				IndexErrorContext context(m_relation, idx);
+				context.raise(tdbb, result, rpb->rpb_record);
+			}
+
+			if (!compareKeys(idx, impure->irsb_nav_keys->begin() + recInfo.key_offset, 
+							 recInfo.key_length, &value, 0))
+			{
+				// mark in the navigational bitmap that we have visited this record
+				RBM_SET(tdbb->getDefaultPool(), &impure->irsb_nav_records_visited,
+						rpb->rpb_number.getValue());
+
+				rpb->rpb_number.setValid(true);
+				return true;
+			}
+		}
+	}
+
+	// bof or eof must have been set at this point
+	rpb->rpb_number.setValid(false);
+	return false;
+}
+
+
+void IndexTableScan::cacheRecordInfo(thread_db* tdbb) const
+{
+	jrd_req* const request = tdbb->getRequest();
+	Impure* impure = request->getImpure<Impure>(m_impure);
+
+	index_desc* const idx = (index_desc*)((SCHAR*)impure + m_offset);
 
 	// find the last fetched position from the index
 	const USHORT pageSpaceID = m_relation->getPages(tdbb)->rel_pg_space_id;
@@ -151,10 +219,7 @@ bool IndexTableScan::getRecord(thread_db* tdbb) const
 
 	UCHAR* nextPointer = getPosition(tdbb, impure, &window);
 	if (!nextPointer)
-	{
-		rpb->rpb_number.setValid(false);
-		return false;
-	}
+		return;
 
 	temporary_key key;
 	memcpy(key.key_data, impure->irsb_nav_data, impure->irsb_nav_length);
@@ -170,6 +235,18 @@ bool IndexTableScan::getRecord(thread_db* tdbb) const
 		memcpy(upper.key_data, impure->irsb_nav_data + m_length, upper.key_length);
 	}
 
+	if (!impure->irsb_nav_recs)
+	{
+		MemoryPool* pool = tdbb->getDefaultPool();
+		impure->irsb_nav_recs = FB_NEW_POOL(*pool) RecordsData(*pool, RECS_TO_CACHE);
+		impure->irsb_nav_keys = FB_NEW_POOL(*pool) KeysData(*pool, KEYS_TO_CACHE);
+	}
+	else
+	{
+		impure->irsb_nav_recs->clear();
+		impure->irsb_nav_keys->clear();
+	}
+
 	// Find the next interesting node. If necessary, skip to the next page.
 	RecordNumber number;
 	IndexNode node;
@@ -177,15 +254,18 @@ bool IndexTableScan::getRecord(thread_db* tdbb) const
 	{
 		Ods::btree_page* page = (Ods::btree_page*) window.win_buffer;
 
-		UCHAR* pointer = nextPointer;
+		UCHAR* const pointer = nextPointer;
 		if (pointer)
 		{
-			node.readNode(pointer, true);
+			nextPointer = node.readNode(pointer, true);
 			number = node.recordNumber;
 		}
 
 		if (node.isEndLevel)
+		{
+			impure->irsb_nav_done = true;
 			break;
+		}
 
 		if (node.isEndBucket)
 		{
@@ -202,6 +282,7 @@ bool IndexTableScan::getRecord(thread_db* tdbb) const
 		if (retrieval->irb_upper_count &&
 			compareKeys(idx, key.key_data, key.key_length, &upper, flags) > 0)
 		{
+			impure->irsb_nav_done = true;
 			break;
 		}
 
@@ -211,56 +292,95 @@ bool IndexTableScan::getRecord(thread_db* tdbb) const
 		// 2) the record has already been visited
 
 		if ((!(impure->irsb_flags & irsb_mustread) &&
-			 (!impure->irsb_nav_bitmap ||
-				!RecordBitmap::test(*impure->irsb_nav_bitmap, number.getValue()))) ||
+			(!impure->irsb_nav_bitmap ||
+			!RecordBitmap::test(*impure->irsb_nav_bitmap, number.getValue()))) ||
 			RecordBitmap::test(impure->irsb_nav_records_visited, number.getValue()))
 		{
-			nextPointer = node.readNode(pointer, true);
 			continue;
 		}
 
+		// save record number and key
+		RecordInfo& info = impure->irsb_nav_recs->add();
+		info.recno = number.getValue();
+		info.key_offset = impure->irsb_nav_keys->getCount();
+		info.key_length = key.key_length;
+		
+		UCHAR* p = impure->irsb_nav_keys->getBuffer(info.key_offset + info.key_length) + info.key_offset;
+		memcpy(p, key.key_data, key.key_length);
+		
 		// reset the current navigational position in the index
-		rpb->rpb_number = number;
-		setPosition(tdbb, impure, rpb, &window, pointer, key);
-
-		CCH_RELEASE(tdbb, &window);
-
-		if (VIO_get(tdbb, rpb, request->req_transaction, request->req_pool))
+		if (impure->irsb_nav_recs->getCount() == RECS_TO_CACHE)
 		{
-			temporary_key value;
-
-			const idx_e result = BTR_key(tdbb, m_relation, rpb->rpb_record, idx, &value, false);
-
-			if (result != idx_e_ok)
-			{
-				IndexErrorContext context(m_relation, idx);
-				context.raise(tdbb, result, rpb->rpb_record);
-			}
-
-			if (!compareKeys(idx, key.key_data, key.key_length, &value, 0))
-			{
-				// mark in the navigational bitmap that we have visited this record
-				RBM_SET(tdbb->getDefaultPool(), &impure->irsb_nav_records_visited,
-						rpb->rpb_number.getValue());
-
-				rpb->rpb_number.setValid(true);
-				return true;
-			}
-		}
-
-		nextPointer = getPosition(tdbb, impure, &window);
-		if (!nextPointer)
-		{
-			rpb->rpb_number.setValid(false);
-			return false;
+			setPosition(tdbb, impure, number, &window, pointer, key);
+			break;
 		}
 	}
 
 	CCH_RELEASE(tdbb, &window);
 
-	// bof or eof must have been set at this point
-	rpb->rpb_number.setValid(false);
-	return false;
+	// prefetch data pages
+	makePrefetch(tdbb);
+}
+
+
+void IndexTableScan::makePrefetch(thread_db* tdbb) const
+{
+	const Database* const dbb = tdbb->getDatabase();
+	if (!(dbb->dbb_config->getPrefetchFlags() & PREFETCH_CTRL_ENABLE_INDEX_ORDERED))
+		return;
+
+	jrd_req* const request = tdbb->getRequest();
+	Impure* impure = request->getImpure<Impure>(m_impure);
+
+	RelationPages* relPages = m_relation->getPages(tdbb);
+	PageSpace* pageSpace = dbb->dbb_page_manager.findPageSpace(relPages->rel_pg_space_id);
+	if (!pageSpace->prefetchEnabled())
+		return;
+
+	SortedArray<ULONG> dataPages;	// logical data page numbers
+	for (const RecordInfo& rec : *impure->irsb_nav_recs)
+	{
+		const ULONG dpSeq = rec.recno / dbb->dbb_max_records;
+
+		FB_SIZE_T pos;
+		if (!dataPages.find(dpSeq, pos))
+			dataPages.insert(pos, dpSeq);
+	}
+
+	PrefetchArray prf;
+	const USHORT pageSpaceID = relPages->rel_pg_space_id;
+	win window(pageSpaceID, 0);
+
+	Ods::pointer_page* ppage = nullptr;
+	for (const ULONG dpSeq : dataPages)
+	{
+		const ULONG ppSeq = dpSeq / dbb->dbb_dp_per_pp;
+		const USHORT slot = dpSeq % dbb->dbb_dp_per_pp;
+
+		if (!ppage || ppSeq != ppage->ppg_sequence)
+		{
+			if (ppage)
+			{
+				CCH_RELEASE(tdbb, &window);
+				ppage = nullptr;
+			}
+
+			if (ppSeq >= relPages->rel_pages->count())
+				break;
+
+			window.win_page = (*relPages->rel_pages)[ppSeq];
+			ppage = (Ods::pointer_page*) CCH_FETCH(tdbb, &window, LCK_read, pag_pointer);
+		}
+
+		if (slot < ppage->ppg_count)
+			prf.push(ppage->ppg_page[slot]);
+	}
+
+	if (ppage)
+		CCH_RELEASE(tdbb, &window);
+
+	if (prf.hasData())
+		pageSpace->registerPrefetch(prf);
 }
 
 void IndexTableScan::print(thread_db* tdbb, string& plan, bool detailed, unsigned level) const
@@ -592,7 +712,7 @@ void IndexTableScan::setPage(thread_db* tdbb, Impure* impure, win* window) const
 
 void IndexTableScan::setPosition(thread_db* tdbb,
 								 Impure* impure,
-								 record_param* rpb,
+								 RecordNumber recno,
 								 win* window,
 								 const UCHAR* pointer,
 								 const temporary_key& key) const
@@ -601,7 +721,7 @@ void IndexTableScan::setPosition(thread_db* tdbb,
 	// fetched; if not, just set the incarnation to the lowest possible
 	impure->irsb_nav_incarnation = CCH_get_incarnation(window);
 	setPage(tdbb, impure, window);
-	impure->irsb_nav_number = rpb->rpb_number;
+	impure->irsb_nav_number = recno;
 
 	// save the current key value
 	fb_assert(key.key_length <= m_length);

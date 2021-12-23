@@ -84,6 +84,8 @@ const ULONG	PREFETCH_CTRL_ENABLE_PP_SCAN		= 0x0004;		// DPM_data_pages
 const ULONG	PREFETCH_CTRL_ENABLE_BTR_LEAF		= 0x0008;		// BTR_evaluate, BTR_selectivity
 const ULONG	PREFETCH_CTRL_ENABLE_WITH_FS_CACHE	= 0x0010;		// enable when file system cache is in use
 const ULONG	PREFETCH_CTRL_ENABLE_LOG_STATS		= 0x0020;		// log stats into firebird.log on database shutdown
+const ULONG	PREFETCH_CTRL_ENABLE_INDEX_ORDERED	= 0x0040;		// IndexTableScan
+
 // flags below is mutual exclusive
 const ULONG	PREFETCH_CTRL_DEVICE_SLOW			= 0x0000;		// HDD
 const ULONG	PREFETCH_CTRL_DEVICE_FAST			= 0x1000;		// SATA SDD

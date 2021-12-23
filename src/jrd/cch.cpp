@@ -5671,6 +5671,7 @@ void BufferControl::prefetch_thread(BufferControl* bcb)
 
 					cntPending--;
 					fb_assert(cntPending >= 0);
+					continue;
 				}
 				else if (evnt == PIO_EVENT_WAKEUP)
 				{
