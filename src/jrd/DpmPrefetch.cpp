@@ -282,8 +282,21 @@ void DPMPrefetchInfo::nextDP(thread_db* tdbb, const RelationPages* relPages,
 
 	if (m_len == 0)		// initialization
 	{
-		if (ppage->ppg_count < 4)
+		if (m_kind == FULLSCAN && ppage->ppg_count < 4)
+		{
+			m_enabled = false;
 			return;
+		}
+
+		if (m_kind == RECS_BITMAP)
+		{
+			RecordBitmap::Accessor acc(m_recs);
+			if (!acc.getFirst() || !acc.getNext())
+			{
+				m_enabled = false;
+				return;
+			}
+		}
 
 		m_len = 4;
 		m_distance = m_len / 2;
