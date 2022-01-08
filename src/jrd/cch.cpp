@@ -3574,11 +3574,9 @@ static bool expand_buffers(thread_db* tdbb, ULONG number)
 
 	// Initialize tail of new buffer control block
 	bcb_repeat* new_tail;
-	for (new_tail = bcb->bcb_rpt; new_tail < new_end; new_tail++)
 #ifndef HASH_USE_CDS_LIST
+	for (new_tail = bcb->bcb_rpt; new_tail < new_end; new_tail++)
 		QUE_INIT(new_tail->bcb_page_mod);
-#else
-		;
 #endif
 
 	// Move any active buffers from old block to new
