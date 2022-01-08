@@ -5343,11 +5343,16 @@ bool BufferDesc::addRefConditional(thread_db* tdbb, SyncType syncType)
 
 void BufferDesc::downgrade(SyncType syncType)
 {
+	// SH -> SH is no-op
 	if (syncType == SYNC_SHARED && !bdb_writers)
 		return;
 
 	if (bdb_writers != 1)
 		BUGCHECK(296);	// inconsistent latch downgrade call
+
+	// EX -> EX is no-op
+	if (syncType == SYNC_EXCLUSIVE)
+		return;
 
 	--bdb_writers;
 
