@@ -240,10 +240,11 @@ private:
 	Database* dbb;
 	ULONG	pipMaxKnown;
 
+	Firebird::Mutex freeListsMutex;
 	Firebird::Array<PrefetchReq*> allPrefetch;
-	std::atomic<PrefetchReq*> freePrefetch;
+	PrefetchReq* freePrefetch;
 	Firebird::Array<PIORequest*> allPIOReqs;
-	std::atomic<PIORequest*> freePIOReqs;
+	PIORequest* freePIOReqs;
 };
 
 class PageManager : public pool_alloc<type_PageManager>

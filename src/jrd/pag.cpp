@@ -2564,14 +2564,12 @@ PrefetchReq* PageSpace::newPrefetchReq()
 	if (!prefetchEnabled())
 		return NULL;
 
-	PrefetchReq* prf;
-	while (prf = freePrefetch) 
+	MutexLockGuard guard(freeListsMutex, FB_FUNCTION);
+	PrefetchReq* prf = freePrefetch;
+	if (prf)
 	{
-		if (freePrefetch.compare_exchange_strong(prf, prf->m_next))
-		{
-			prf->m_next = NULL;
-			break;
-		}
+		freePrefetch = prf->m_next;
+		prf->m_next = NULL;
 	}
 	return prf;
 }
@@ -2579,25 +2577,23 @@ PrefetchReq* PageSpace::newPrefetchReq()
 void PageSpace::freePrefetchReq(PrefetchReq* prf)
 {
 	prf->clear();
-	while (true)
-	{
-		prf->m_next = freePrefetch;
-		if (freePrefetch.compare_exchange_strong(prf->m_next, prf))
-			break;
-	}
+
+	MutexLockGuard guard(freeListsMutex, FB_FUNCTION);
+	prf->m_next = freePrefetch;
+	freePrefetch = prf;
 }
 
 
 PIORequest* PageSpace::newPIORequest()
 {
-	PIORequest* pio;
-	while (pio = freePIOReqs) {
-		if (freePIOReqs.compare_exchange_strong(pio, pio->m_next))
-		{
-			pio->m_next = NULL;
-			pio->setFile(file);
-			break;
-		}
+	MutexLockGuard guard(freeListsMutex, FB_FUNCTION);
+
+	PIORequest* pio = freePIOReqs;
+	if (pio)
+	{
+		freePIOReqs = pio->m_next;
+		pio->m_next = NULL;
+		pio->setFile(file);
 	}
 	return pio;
 }
@@ -2605,12 +2601,10 @@ PIORequest* PageSpace::newPIORequest()
 void PageSpace::freePIORequest(PIORequest* pio)
 {
 	pio->clear();
-	while (true)
-	{
-		pio->m_next = freePIOReqs;
-		if (freePIOReqs.compare_exchange_strong(pio->m_next, pio))
-			break;
-	}
+
+	MutexLockGuard guard(freeListsMutex, FB_FUNCTION);
+	pio->m_next = freePIOReqs;
+	freePIOReqs = pio;
 }
 
 
