@@ -3821,6 +3821,8 @@ static inline BufferDesc* find_buffer(BufferControl* bcb, const PageNumber& page
 	{
 		fb_assert(ptr->second != nullptr);
 #ifdef DEV_BUILD
+		// Original libcds have no update(key, value), use this code with it, 
+		// see also comment in get_buffer()
 		while (ptr->second == nullptr)
 			cds::backoff::pause();
 #endif
@@ -3866,137 +3868,225 @@ static BufferDesc* get_buffer(thread_db* tdbb, const PageNumber page, SyncType s
 
 	bcb_repeat* new_slot = &bcb->bcb_rpt[page.getPageNum() % bcb->bcb_count];
 
-	BufferDesc* bdb = nullptr;
-	bool is_empty = false;
-	while (!bdb)
-	{
-		// try to get already existing buffer
-		{
-#if defined HASH_USE_BCB_SYNC
-			SyncLockGuard bcbSync(&bcb->bcb_syncObject, SYNC_SHARED, FB_FUNCTION);
-#elif defined HASH_USE_SRW_LOCK
-			AcquireSRWLockShared(&new_slot->bcb_chainLock);
-#endif
-			bdb = find_buffer(bcb, page);
-#if defined HASH_USE_SRW_LOCK
-			ReleaseSRWLockShared(&new_slot->bcb_chainLock);
-#endif
-		}
-
-		if (bdb)
-		{
-			if (!bdb->addRef(tdbb, syncType, wait))
-			{
-				fb_assert(wait <= 0);
-				return nullptr;
-			}
-
-			if (bdb->bdb_page == page)
-			{
-				recentlyUsed(bdb);
-				tdbb->bumpStats(RuntimeStatistics::PAGE_FETCHES);
-				return bdb;
-			}
-
-			bdb->release(tdbb, true);
-			bdb = nullptr;
-			continue;
-		}
-
-		// try empty list
-		if (QUE_NOT_EMPTY(bcb->bcb_empty))
-		{
-			SyncLockGuard bcbSync(&bcb->bcb_syncEmpty, SYNC_EXCLUSIVE, FB_FUNCTION);
-			if (QUE_NOT_EMPTY(bcb->bcb_empty))
-			{
-				QUE que_inst = bcb->bcb_empty.que_forward;
-				QUE_DELETE(*que_inst);
-				bdb = BLOCK(que_inst, BufferDesc, bdb_que);
-
-				bcb->bcb_inuse++;
-				is_empty = true;
-			}
-		}
-
-		if (bdb)
-			bdb->addRef(tdbb, SYNC_EXCLUSIVE);
-		else
-		{
-			bdb = get_oldest_buffer(tdbb, bcb);
-			if (!bdb)
-			{
-				Thread::yield();
-			}
-			else if (bdb->bdb_page == page)
-			{
-				bdb->downgrade(syncType);
-				recentlyUsed(bdb);
-				tdbb->bumpStats(RuntimeStatistics::PAGE_FETCHES);
-				return bdb;
-			}
-		}
-	}
-
-	fb_assert(bdb->ourExclusiveLock());
-
-	// we have either empty buffer or candidate for preemption
-	// try to put it into target hash chain
 	while (true)
 	{
-		BufferDesc* bdb2 = nullptr;
-
-#ifndef HASH_USE_CDS_LIST
+		BufferDesc* bdb = nullptr;
+		bool is_empty = false;
+		while (!bdb)
 		{
-#if defined HASH_USE_BCB_SYNC
-			SyncLockGuard bcbSync(&bcb->bcb_syncObject, SYNC_EXCLUSIVE, FB_FUNCTION);
-#elif defined HASH_USE_SRW_LOCK
-			bcb_repeat* old_slot = nullptr;
-			if (!is_empty)
+			// try to get already existing buffer
 			{
-				old_slot = &bcb->bcb_rpt[bdb->bdb_page.getPageNum() % bcb->bcb_count];
-
-				if (old_slot < new_slot)
-				{
-					AcquireSRWLockExclusive(&old_slot->bcb_chainLock);
-					AcquireSRWLockExclusive(&new_slot->bcb_chainLock);
-				}
-				else if (old_slot > new_slot)
-				{
-					AcquireSRWLockExclusive(&new_slot->bcb_chainLock);
-					AcquireSRWLockExclusive(&old_slot->bcb_chainLock);
-				}
-				else //	(old_slot == new_slot)
-					old_slot = nullptr;
+#if defined HASH_USE_BCB_SYNC
+				SyncLockGuard bcbSync(&bcb->bcb_syncObject, SYNC_SHARED, FB_FUNCTION);
+#elif defined HASH_USE_SRW_LOCK
+				AcquireSRWLockShared(&new_slot->bcb_chainLock);
+#endif
+				bdb = find_buffer(bcb, page);
+#if defined HASH_USE_SRW_LOCK
+				ReleaseSRWLockShared(&new_slot->bcb_chainLock);
+#endif
 			}
 
-			if (!old_slot)
-				AcquireSRWLockExclusive(&new_slot->bcb_chainLock);
+			if (bdb)
+			{
+				if (!bdb->addRef(tdbb, syncType, wait))
+				{
+					fb_assert(wait <= 0);
+					return nullptr;
+				}
+
+				if (bdb->bdb_page == page)
+				{
+					recentlyUsed(bdb);
+					tdbb->bumpStats(RuntimeStatistics::PAGE_FETCHES);
+					return bdb;
+				}
+
+				bdb->release(tdbb, true);
+				bdb = nullptr;
+				continue;
+			}
+
+			// try empty list
+			if (QUE_NOT_EMPTY(bcb->bcb_empty))
+			{
+				SyncLockGuard bcbSync(&bcb->bcb_syncEmpty, SYNC_EXCLUSIVE, FB_FUNCTION);
+				if (QUE_NOT_EMPTY(bcb->bcb_empty))
+				{
+					QUE que_inst = bcb->bcb_empty.que_forward;
+					QUE_DELETE(*que_inst);
+					bdb = BLOCK(que_inst, BufferDesc, bdb_que);
+
+					bcb->bcb_inuse++;
+					is_empty = true;
+				}
+			}
+
+			if (bdb)
+				bdb->addRef(tdbb, SYNC_EXCLUSIVE);
+			else
+			{
+				bdb = get_oldest_buffer(tdbb, bcb);
+				if (!bdb)
+				{
+					Thread::yield();
+				}
+				else if (bdb->bdb_page == page)
+				{
+					bdb->downgrade(syncType);
+					recentlyUsed(bdb);
+					tdbb->bumpStats(RuntimeStatistics::PAGE_FETCHES);
+					return bdb;
+				}
+			}
+		}
+
+		fb_assert(bdb->ourExclusiveLock());
+
+		// we have either empty buffer or candidate for preemption
+		// try to put it into target hash chain
+		while (true)
+		{
+			BufferDesc* bdb2 = nullptr;
+
+#ifndef HASH_USE_CDS_LIST
+			{
+#if defined HASH_USE_BCB_SYNC
+				SyncLockGuard bcbSync(&bcb->bcb_syncObject, SYNC_EXCLUSIVE, FB_FUNCTION);
+#elif defined HASH_USE_SRW_LOCK
+				bcb_repeat* old_slot = nullptr;
+				if (!is_empty)
+				{
+					old_slot = &bcb->bcb_rpt[bdb->bdb_page.getPageNum() % bcb->bcb_count];
+
+					if (old_slot < new_slot)
+					{
+						AcquireSRWLockExclusive(&old_slot->bcb_chainLock);
+						AcquireSRWLockExclusive(&new_slot->bcb_chainLock);
+					}
+					else if (old_slot > new_slot)
+					{
+						AcquireSRWLockExclusive(&new_slot->bcb_chainLock);
+						AcquireSRWLockExclusive(&old_slot->bcb_chainLock);
+					}
+					else //	(old_slot == new_slot)
+						old_slot = nullptr;
+				}
+
+				if (!old_slot)
+					AcquireSRWLockExclusive(&new_slot->bcb_chainLock);
 
 #endif
-			bdb2 = find_buffer(bcb, page);
-			if (!bdb2)
+				bdb2 = find_buffer(bcb, page);
+				if (!bdb2)
+				{
+					fb_assert(bdb->ourExclusiveLock());
+
+					if (!is_empty)
+						QUE_DELETE(bdb->bdb_que);
+
+					QUE mod_que = &bcb->bcb_rpt[page.getPageNum() % bcb->bcb_count].bcb_page_mod;
+					QUE_INSERT((*mod_que), bdb->bdb_que);
+
+					bdb->bdb_page = page;
+					bdb->bdb_flags &= BDB_lru_chained; // yes, clear all except BDB_lru_chained
+					bdb->bdb_flags |= BDB_read_pending;
+					bdb->bdb_scan_count = 0;
+					bdb->bdb_lock->lck_logical = LCK_none;
+
+#if defined HASH_USE_BCB_SYNC
+					bcbSync.unlock();
+#elif defined HASH_USE_SRW_LOCK
+					if (old_slot)
+						ReleaseSRWLockExclusive(&old_slot->bcb_chainLock);
+					ReleaseSRWLockExclusive(&new_slot->bcb_chainLock);
+#endif
+
+					if (!(bdb->bdb_flags & BDB_lru_chained))
+					{
+						Sync syncLRU(&bcb->bcb_syncLRU, FB_FUNCTION);
+						if (syncLRU.lockConditional(SYNC_EXCLUSIVE))
+						{
+							QUE_DELETE(bdb->bdb_in_use);
+							QUE_INSERT(bcb->bcb_in_use, bdb->bdb_in_use);
+						}
+						else
+							recentlyUsed(bdb);
+					}
+					tdbb->bumpStats(RuntimeStatistics::PAGE_FETCHES);
+					return bdb;
+				}
+
+#if defined HASH_USE_SRW_LOCK
+				if (old_slot)
+					ReleaseSRWLockExclusive(&old_slot->bcb_chainLock);
+				ReleaseSRWLockExclusive(&new_slot->bcb_chainLock);
+#endif
+			}
+
+#else // HASH_USE_CDS_LIST
+
+			BdbList& list = bcb->bcb_rpt[page.getPageNum() % bcb->bcb_count].bcb_hash_chain;
+/*
+			// Original libcds have no update(key, value), use this code with it
+
+			auto ret = list.update(page,
+									[bdb, &bdb2](bool bNew, BdbList::value_type& val)
+									{
+										if (bNew)
+											val.second = bdb;
+										else
+											while (!(bdb2 = val.second))
+												cds::backoff::pause();
+									},
+									true);
+*/
+			auto ret = list.update(page, bdb,
+				[&bdb2](bool bNew, BdbList::value_type& val)
 			{
-				fb_assert(bdb->ourExclusiveLock());
+				if (!bNew)
+					bdb2 = val.second;
+			},
+				true);
+			fb_assert(ret.first);
+
+			if (bdb2 == nullptr)
+			{
+				fb_assert(ret.second);
+#ifdef DEV_BUILD
+				auto p1 = list.get(page);
+				fb_assert(!p1.empty() && p1->first == page && p1->second == bdb);
+#endif
 
 				if (!is_empty)
-					QUE_DELETE(bdb->bdb_que);
+				{
+					const PageNumber oldPage = bdb->bdb_page;
+					BdbList& oldList = bcb->bcb_rpt[oldPage.getPageNum() % bcb->bcb_count].bcb_hash_chain;
 
-				QUE mod_que = &bcb->bcb_rpt[page.getPageNum() % bcb->bcb_count].bcb_page_mod;
-				QUE_INSERT((*mod_que), bdb->bdb_que);
+#ifdef DEV_BUILD
+					p1 = oldList.get(oldPage);
+					fb_assert(!p1.empty() && p1->first == oldPage && p1->second == bdb);
+#endif
+
+					bool ok = oldList.erase(oldPage);
+					fb_assert(ok);
+
+#ifdef DEV_BUILD
+					p1 = oldList.get(oldPage);
+					fb_assert(p1.empty() || p1->second != bdb);
+#endif
+				}
+
+#ifdef DEV_BUILD
+				p1 = list.get(page);
+				fb_assert(!p1.empty() && p1->first == page && p1->second == bdb);
+#endif
 
 				bdb->bdb_page = page;
 				bdb->bdb_flags &= BDB_lru_chained; // yes, clear all except BDB_lru_chained
 				bdb->bdb_flags |= BDB_read_pending;
 				bdb->bdb_scan_count = 0;
 				bdb->bdb_lock->lck_logical = LCK_none;
-
-#if defined HASH_USE_BCB_SYNC
-				bcbSync.unlock();
-#elif defined HASH_USE_SRW_LOCK
-				if (old_slot)
-					ReleaseSRWLockExclusive(&old_slot->bcb_chainLock);
-				ReleaseSRWLockExclusive(&new_slot->bcb_chainLock);
-#endif
 
 				if (!(bdb->bdb_flags & BDB_lru_chained))
 				{
@@ -4012,129 +4102,42 @@ static BufferDesc* get_buffer(thread_db* tdbb, const PageNumber page, SyncType s
 				tdbb->bumpStats(RuntimeStatistics::PAGE_FETCHES);
 				return bdb;
 			}
-
-#if defined HASH_USE_SRW_LOCK
-			if (old_slot)
-				ReleaseSRWLockExclusive(&old_slot->bcb_chainLock);
-			ReleaseSRWLockExclusive(&new_slot->bcb_chainLock);
-#endif
-		}
-
-#else // HASH_USE_CDS_LIST
-
-		BdbList& list = bcb->bcb_rpt[page.getPageNum() % bcb->bcb_count].bcb_hash_chain;
-/*
-		auto ret = list.update(page, 
-								[bdb, &bdb2](bool bNew, BdbList::value_type& val) 
-								{
-									if (bNew)
-										val.second = bdb;
-									else
-										while (!(bdb2 = val.second))
-											cds::backoff::pause();
-								},
-								true);
-*/
-		auto ret = list.update(page, bdb,
-#ifdef DEV_BUILD
-								[bdb, &bdb2](bool bNew, BdbList::value_type& val)
-								{
-									fb_assert(val.second != nullptr);
-									if (bNew)
-										fb_assert(val.second == bdb);
-									else
-									{
-										while (!(bdb2 = val.second))
-											cds::backoff::pause();
-									}
-								},
-#else
-								[&bdb2](bool bNew, BdbList::value_type& val)
-								{
-									if (!bNew)
-										bdb2 = val.second;
-								},
-#endif
-								true);
-		fb_assert(ret.first);
-
-		if (bdb2 == nullptr)
-		{
-			fb_assert(ret.second);
-#ifdef DEV_BUILD
-			auto p1 = list.get(page);
-			fb_assert(!p1.empty() && p1->first == page && p1->second == bdb);
 #endif
 
-			if (!is_empty)
+			// here we hold lock on bdb and ask for lock on bdb2
+			// to avoid deadlock, don't wait for bdb2 unless bdb was empty
+
+			const int wait2 = is_empty ? wait : 0;
+			if (bdb2->addRef(tdbb, syncType, wait2))
 			{
-				const PageNumber oldPage = bdb->bdb_page;
-				BdbList& oldList = bcb->bcb_rpt[oldPage.getPageNum() % bcb->bcb_count].bcb_hash_chain;
-
-#ifdef DEV_BUILD
-				p1 = oldList.get(oldPage);
-				fb_assert(!p1.empty() && p1->first == oldPage && p1->second == bdb);
-#endif
-
-				bool ok = oldList.erase(oldPage);
-				fb_assert(ok);
-
-#ifdef DEV_BUILD
-				p1 = oldList.get(oldPage);
-				fb_assert(p1.empty() || p1->second != bdb);
-#endif
-			}
-
-#ifdef DEV_BUILD
-			p1 = list.get(page);
-			fb_assert(!p1.empty() && p1->first == page && p1->second == bdb);
-#endif
-
-			bdb->bdb_page = page;
-			bdb->bdb_flags &= BDB_lru_chained; // yes, clear all except BDB_lru_chained
-			bdb->bdb_flags |= BDB_read_pending;
-			bdb->bdb_scan_count = 0;
-			bdb->bdb_lock->lck_logical = LCK_none;
-
-			if (!(bdb->bdb_flags & BDB_lru_chained))
-			{
-				Sync syncLRU(&bcb->bcb_syncLRU, FB_FUNCTION);
-				if (syncLRU.lockConditional(SYNC_EXCLUSIVE))
+				if (bdb2->bdb_page != page)
 				{
-					QUE_DELETE(bdb->bdb_in_use);
-					QUE_INSERT(bcb->bcb_in_use, bdb->bdb_in_use);
+					bdb2->release(tdbb, true);
+					continue;
 				}
-				else
-					recentlyUsed(bdb);
+				recentlyUsed(bdb2);
+				tdbb->bumpStats(RuntimeStatistics::PAGE_FETCHES);
 			}
-			tdbb->bumpStats(RuntimeStatistics::PAGE_FETCHES);
-			return bdb;
-		}
-#endif
+			else
+				bdb2 = nullptr;
 
-		if (bdb2->addRef(tdbb, syncType, wait))
-		{
-			if (bdb2->bdb_page != page)
+			bdb->release(tdbb, true);
+			if (is_empty)
 			{
-				bdb2->release(tdbb, true);
-				continue;
+				SyncLockGuard syncEmpty(&bcb->bcb_syncEmpty, SYNC_EXCLUSIVE, FB_FUNCTION);
+				QUE_INSERT(bcb->bcb_empty, bdb->bdb_que);
+				bcb->bcb_inuse--;
 			}
-			recentlyUsed(bdb2);
-			tdbb->bumpStats(RuntimeStatistics::PAGE_FETCHES);
-		}
-		else
-			bdb2 = nullptr;
 
-		bdb->release(tdbb, true);
-		if (is_empty)
-		{
-			SyncLockGuard syncEmpty(&bcb->bcb_syncEmpty, SYNC_EXCLUSIVE, FB_FUNCTION);
-			QUE_INSERT(bcb->bcb_empty, bdb->bdb_que);
-			bcb->bcb_inuse--;
+			if (!bdb2 && wait > 0)
+				break;
+
+			return bdb2;
 		}
-		
-		return bdb2;
 	}
+	
+	// never get here
+	fb_assert(false);
 }
 
 static ULONG get_prec_walk_mark(BufferControl* bcb)
