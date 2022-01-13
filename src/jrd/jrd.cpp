@@ -144,9 +144,6 @@
 #include "../common/dllinst.h"
 #endif
 
-#include <cds/init.h>		//cds::Initialize, cds::Terminate
-#include <cds/gc/dhp.h>		//cds::gc::DHP (Hazard Pointer)
-
 using namespace Jrd;
 using namespace Firebird;
 
@@ -162,89 +159,6 @@ extern void CCH_thread_detach();
 
 namespace Jrd
 {
-
-class InitCDS
-{
-public:
-
-	explicit InitCDS(MemoryPool&)
-	{
-		m_pool = MemoryPool::createPool(nullptr, m_stats);
-
-		cds::Initialize();
-		cds::gc::dhp::smr::set_memory_allocator(alloc, free);
-		cds::gc::dhp::smr::construct();
-	}
-
-	~InitCDS()
-	{
-		cds::gc::dhp::smr::destruct(true);
-
-		char str[512];
-
-#ifdef CDS_ENABLE_HPSTAT
-		cds::gc::DHP::stat const& st = cds::gc::DHP::postmortem_statistics();
-
-		sprintf(str, "DHP statistics:\n"
-			"  thread count              = %llu\n"
-			"  guard allocated           = %llu\n"
-			"  guard freed               = %llu\n"
-			"  retired data count        = %llu\n"
-			"  free data count           = %llu\n"
-			"  HP blocks allocated       = %llu\n"
-			"  retired blocks allocated  = %llu\n"
-			"  hp array extend() calls   = %llu\n"
-			"  retired array extend()    = %llu\n"
-			"  scan() call count         = %llu\n"
-			"  help_scan() call count    = %llu\n"
-			"\n",
-			st.thread_rec_count,
-			st.guard_allocated, st.guard_freed,
-			st.retired_count, st.free_count,
-			st.hp_block_count, st.retired_block_count,
-			st.hp_extend_count, st.retired_extend_count,
-			st.scan_count, st.help_scan_count
-		);
-		gds__log(str);
-#endif
-		cds::Terminate();
-
-		MemoryPool::deletePool(m_pool);
-#ifdef DEV_BUILD
-		sprintf(str, "DHP pool stats:\n"
-			"  usage         = %llu\n"
-			"  mapping       = %llu\n"
-			"  max usage     = %llu\n"
-			"  max mapping   = %llu\n"
-			"\n",
-			m_stats.getCurrentUsage(),
-			m_stats.getCurrentMapping(),
-			m_stats.getMaximumUsage(),
-			m_stats.getMaximumMapping()
-		);
-		gds__log(str);
-#endif
-	}
-
-private:
-	static void* alloc(size_t size)
-	{
-		return m_pool->allocate(size ALLOC_ARGS);
-	}
-
-	static void free(void* p)
-	{
-		m_pool->deallocate(p);
-	}
-
-	static MemoryPool* m_pool;
-	static MemoryStats m_stats;
-};
-
-static GlobalPtr<InitCDS, InstanceControl::PRIORITY_TLS_KEY> initCDS;
-MemoryPool* InitCDS::m_pool = nullptr;
-MemoryStats InitCDS::m_stats;
-
 
 int JBlob::release()
 {

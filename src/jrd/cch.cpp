@@ -63,6 +63,7 @@
 #include "../jrd/CryptoManager.h"
 #include "../common/utils_proto.h"
 #include "../common/classes/fb_tls.h"
+#include "../jrd/InitCDSLib.h"
 
 using namespace Jrd;
 using namespace Ods;
@@ -5521,12 +5522,15 @@ class InitPool
 public:
 	explicit InitPool(MemoryPool&)
 	{
-		m_pool = MemoryPool::createPool(nullptr, m_stats);
+		m_pool = InitCDS::createPool();
+		m_pool->setStatsGroup(m_stats);
 	}
 
 	~InitPool()
 	{
-		MemoryPool::deletePool(m_pool);
+		// m_pool will be deleted by InitCDS dtor after cds termination
+		// some memory could still be not freed until that moment
+
 #ifdef DEV_BUILD
 		char str[256];
 		sprintf(str, "CCH list's common pool stats:\n"
@@ -5544,36 +5548,30 @@ public:
 #endif
 	}
 
-	static void* alloc(size_t size)
+	void* alloc(size_t size)
 	{
 		return m_pool->allocate(size ALLOC_ARGS);
 	}
 
-	static void free(void* p)
-	{
-		m_pool->deallocate(p);
-	}
-
 private:
-	static MemoryPool* m_pool;
-	static MemoryStats m_stats;
+	MemoryPool* m_pool;
+	MemoryStats m_stats;
 };
 
-GlobalPtr<InitPool> initPool;
-MemoryPool* InitPool::m_pool = nullptr;
-MemoryStats InitPool::m_stats;
+static InitInstance<InitPool> initPool;
 
 
 template <typename T>
 T* FBAllocator<T>::allocate(std::size_t n)
 {
-	return static_cast<T*>(InitPool::alloc(n * sizeof(T)));
+	return static_cast<T*>(initPool().alloc(n * sizeof(T)));
 }
 
 template <typename T>
 void FBAllocator<T>::deallocate(T* p, std::size_t /* n */)
 {
-	InitPool::free(p);
+	// It uses the correct pool stored within memory block itself
+	MemoryPool::globalFree(p);
 }
 
 void CCH_thread_detach()

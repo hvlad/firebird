@@ -86,6 +86,7 @@
     <ClCompile Include="..\..\..\src\jrd\GlobalRWLock.cpp" />
     <ClCompile Include="..\..\..\src\jrd\idx.cpp" />
     <ClCompile Include="..\..\..\src\jrd\inf.cpp" />
+    <ClCompile Include="..\..\..\src\jrd\InitCDSLib.cpp" />
     <ClCompile Include="..\..\..\src\jrd\intl.cpp" />
     <ClCompile Include="..\..\..\src\jrd\IntlManager.cpp" />
     <ClCompile Include="..\..\..\src\jrd\intl_builtin.cpp" />
@@ -267,6 +268,7 @@
     <ClInclude Include="..\..\..\src\jrd\inf_proto.h" />
     <ClInclude Include="..\..\..\src\jrd\inf_pub.h" />
     <ClInclude Include="..\..\..\src\jrd\ini.h" />
+    <ClInclude Include="..\..\..\src\jrd\InitCDSLib.h" />
     <ClInclude Include="..\..\..\src\jrd\ini_proto.h" />
     <ClInclude Include="..\..\..\src\jrd\intl.h" />
     <ClInclude Include="..\..\..\src\jrd\IntlManager.h" />

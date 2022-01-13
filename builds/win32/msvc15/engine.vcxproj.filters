@@ -501,6 +501,9 @@
     <ClCompile Include="..\..\..\src\jrd\MetaName.cpp">
       <Filter>JRD files</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\jrd\InitCDSLib.cpp">
+      <Filter>JRD files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\..\..\src\jrd\recsrc\RecordSource.h">
@@ -1041,6 +1044,9 @@
       <Filter>Header files</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\jrd\QualifiedName.h">
+      <Filter>Header files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\jrd\InitCDSLib.h">
       <Filter>Header files</Filter>
     </ClInclude>
   </ItemGroup>
