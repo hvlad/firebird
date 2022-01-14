@@ -629,7 +629,7 @@ pag* CCH_fake(thread_db* tdbb, WIN* window, int wait)
  *			0 => If the latch can't be acquired immediately,
  *				or an IO would be necessary, then give
  *				up and return 0.
- *	      		<negative number> => Latch timeout interval in seconds.
+ *			<negative number> => Latch timeout interval in seconds.
  *
  * return
  *	pag pointer if successful.
@@ -3183,7 +3183,7 @@ static void check_precedence(thread_db* tdbb, WIN* window, PageNumber page)
 
 	// If already related, there's nothing more to do. If the precedence
 	// search was too complex to complete, just write the high page and
-	// forget about about establishing the relationship.
+	// forget about establishing the relationship.
 
 	Sync precSync(&bcb->bcb_syncPrecedence, "check_precedence");
 	precSync.lock(SYNC_EXCLUSIVE);
@@ -3598,6 +3598,10 @@ static bool expand_buffers(thread_db* tdbb, ULONG number)
 #else
 		auto& old_chain = old_tail->bcb_hash_chain;
 		auto& new_chain = new_tail->bcb_hash_chain;
+
+		// here we can't insert into the hash_chain at the same hash slot.
+		// new slot is bdb_pageNum % number
+		// But new chaines are changing right now under heavy load as get_buffer ignores bcb_syncObject :(
 		while (!old_chain.empty())
 		{
 			auto n = old_chain.begin();
@@ -3691,9 +3695,14 @@ static BufferDesc* get_dirty_buffer(thread_db* tdbb)
 }
 
 
-// get candidate for preemption
 static BufferDesc* get_oldest_buffer(thread_db* tdbb, BufferControl* bcb)
 {
+	/********************************
+	* Function description:
+	*       Get candidate for preemption
+	*       Found page buffer must have SYNC_EXCLUSIVE lock.
+	*********************************/
+
 	int walk = bcb->bcb_free_minimum;
 	BufferDesc* bdb = nullptr;
 
@@ -3708,7 +3717,7 @@ static BufferDesc* get_oldest_buffer(thread_db* tdbb, BufferControl* bcb)
 		lruSync.lock(SYNC_SHARED);
 
 	for (QUE que_inst = bcb->bcb_in_use.que_backward;
-		 que_inst != &bcb->bcb_in_use; 
+		 que_inst != &bcb->bcb_in_use;
 		 que_inst = que_inst->que_backward)
 	{
 		bdb = nullptr;
@@ -3853,12 +3862,12 @@ static BufferDesc* get_buffer(thread_db* tdbb, const PageNumber page, SyncType s
  *				This can cause deadlocks of course.
  *			0 => If the lock can't be acquired immediately,
  *				give up and return 0;
- *	      		<negative number> => Latch timeout interval in seconds.
+ *			<negative number> => Latch timeout interval in seconds.
  *
  * return
  *	BufferDesc pointer if successful.
  *	NULL pointer if timeout occurred (only possible is wait <> 1).
- *		     if cache manager doesn't have any pages to write anymore.
+ *		if cache manager doesn't have any pages to write anymore.
  *
  **************************************/
 	SET_TDBB(tdbb);
@@ -3883,12 +3892,14 @@ static BufferDesc* get_buffer(thread_db* tdbb, const PageNumber page, SyncType s
 
 			if (bdb)
 			{
+				// latch page buffer if it's been found
 				if (!bdb->addRef(tdbb, syncType, wait))
 				{
 					fb_assert(wait <= 0);
 					return nullptr;
 				}
 
+				// ensure the found page buffer is still for the same page after latch
 				if (bdb->bdb_page == page)
 				{
 					recentlyUsed(bdb);
@@ -3896,6 +3907,7 @@ static BufferDesc* get_buffer(thread_db* tdbb, const PageNumber page, SyncType s
 					return bdb;
 				}
 
+				// leave the found page buffer and try another one
 				bdb->release(tdbb, true);
 				bdb = nullptr;
 				continue;
@@ -4004,13 +4016,16 @@ static BufferDesc* get_buffer(thread_db* tdbb, const PageNumber page, SyncType s
 */
 			auto ret = list.update(page, bdb,
 				[&bdb2](bool bNew, BdbList::value_type& val)
-			{
-				if (!bNew)
-					bdb2 = val.second;
-			},
+				{
+					// someone might have put a page buffer in the chain concurrently, so
+					// we store it for the further investigation
+					if (!bNew)
+						bdb2 = val.second;
+				},
 				true);
 			fb_assert(ret.first);
 
+			// if we have inserted the page buffer that we found (empty or oldest)
 			if (bdb2 == nullptr)
 			{
 				fb_assert(ret.second);
@@ -4021,6 +4036,7 @@ static BufferDesc* get_buffer(thread_db* tdbb, const PageNumber page, SyncType s
 
 				if (!is_empty)
 				{
+					// remove the old page buffer from old hash slot
 					const PageNumber oldPage = bdb->bdb_page;
 					BdbList& oldList = bcb->bcb_rpt[oldPage.getPageNum() % bcb->bcb_count].bcb_hash_chain;
 
