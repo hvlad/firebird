@@ -4029,7 +4029,7 @@ static BufferDesc* get_buffer(thread_db* tdbb, const PageNumber page, SyncType s
 					fb_assert(!p1.empty() && p1->first == oldPage && p1->second == bdb);
 #endif
 
-					bool ok = oldList.erase(oldPage);
+					const bool ok = oldList.erase(oldPage);
 					fb_assert(ok);
 
 #ifdef DEV_BUILD
