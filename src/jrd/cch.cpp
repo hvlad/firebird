@@ -3879,13 +3879,8 @@ static BufferDesc* get_buffer(thread_db* tdbb, const PageNumber page, SyncType s
 			{
 #if defined HASH_USE_BCB_SYNC
 				SyncLockGuard bcbSync(&bcb->bcb_syncObject, SYNC_SHARED, FB_FUNCTION);
-#elif defined HASH_USE_SRW_LOCK
-				AcquireSRWLockShared(&new_slot->bcb_chainLock);
 #endif
 				bdb = find_buffer(bcb, page);
-#if defined HASH_USE_SRW_LOCK
-				ReleaseSRWLockShared(&new_slot->bcb_chainLock);
-#endif
 			}
 
 			if (bdb)
@@ -3954,29 +3949,6 @@ static BufferDesc* get_buffer(thread_db* tdbb, const PageNumber page, SyncType s
 			{
 #if defined HASH_USE_BCB_SYNC
 				SyncLockGuard bcbSync(&bcb->bcb_syncObject, SYNC_EXCLUSIVE, FB_FUNCTION);
-#elif defined HASH_USE_SRW_LOCK
-				bcb_repeat* old_slot = nullptr;
-				if (!is_empty)
-				{
-					old_slot = &bcb->bcb_rpt[bdb->bdb_page.getPageNum() % bcb->bcb_count];
-
-					if (old_slot < new_slot)
-					{
-						AcquireSRWLockExclusive(&old_slot->bcb_chainLock);
-						AcquireSRWLockExclusive(&new_slot->bcb_chainLock);
-					}
-					else if (old_slot > new_slot)
-					{
-						AcquireSRWLockExclusive(&new_slot->bcb_chainLock);
-						AcquireSRWLockExclusive(&old_slot->bcb_chainLock);
-					}
-					else //	(old_slot == new_slot)
-						old_slot = nullptr;
-				}
-
-				if (!old_slot)
-					AcquireSRWLockExclusive(&new_slot->bcb_chainLock);
-
 #endif
 				bdb2 = find_buffer(bcb, page);
 				if (!bdb2)
@@ -3997,10 +3969,6 @@ static BufferDesc* get_buffer(thread_db* tdbb, const PageNumber page, SyncType s
 
 #if defined HASH_USE_BCB_SYNC
 					bcbSync.unlock();
-#elif defined HASH_USE_SRW_LOCK
-					if (old_slot)
-						ReleaseSRWLockExclusive(&old_slot->bcb_chainLock);
-					ReleaseSRWLockExclusive(&new_slot->bcb_chainLock);
 #endif
 
 					if (!(bdb->bdb_flags & BDB_lru_chained))
@@ -4017,12 +3985,6 @@ static BufferDesc* get_buffer(thread_db* tdbb, const PageNumber page, SyncType s
 					tdbb->bumpStats(RuntimeStatistics::PAGE_FETCHES);
 					return bdb;
 				}
-
-#if defined HASH_USE_SRW_LOCK
-				if (old_slot)
-					ReleaseSRWLockExclusive(&old_slot->bcb_chainLock);
-				ReleaseSRWLockExclusive(&new_slot->bcb_chainLock);
-#endif
 			}
 
 #else // HASH_USE_CDS_LIST
@@ -4438,9 +4400,6 @@ static ULONG memory_init(thread_db* tdbb, BufferControl* bcb, SLONG number)
 
 #ifndef HASH_USE_CDS_LIST
 		QUE_INIT(tail->bcb_page_mod);
-#if defined HASH_USE_SRW_LOCK
-		tail->bcb_chainLock = SRWLOCK_INIT;
-#endif
 #endif
 
 		try

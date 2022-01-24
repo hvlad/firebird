@@ -51,7 +51,6 @@ DEFINE_TRACE_ROUTINE(cch_trace);
 #endif
 
 //#define HASH_USE_BCB_SYNC
-//#define HASH_USE_SRW_LOCK
 #define HASH_USE_CDS_LIST
 
 #ifdef HASH_USE_CDS_LIST
@@ -118,10 +117,6 @@ struct bcb_repeat
 
 #ifndef HASH_USE_CDS_LIST
 	que			bcb_page_mod;	// Que of buffers with page mod n
-#ifdef HASH_USE_SRW_LOCK
-	SRWLOCK		bcb_chainLock;
-#endif
-
 #else // HASH_USE_CDS_LIST
 	BdbList		bcb_hash_chain;
 #endif
