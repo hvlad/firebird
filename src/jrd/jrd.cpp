@@ -153,9 +153,6 @@ const SSHORT WAIT_PERIOD	= -1;
 #define unlink PIO_unlink
 #endif
 
-// hack
-extern void CCH_thread_detach();
-
 
 namespace Jrd
 {
@@ -383,8 +380,6 @@ int JService::release()
 
 static void threadDetach()
 {
-	CCH_thread_detach();
-
 	ThreadSync* thd = ThreadSync::findThread();
 	delete thd;
 

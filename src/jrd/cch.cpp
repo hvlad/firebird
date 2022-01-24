@@ -5428,95 +5428,6 @@ void BufferDesc::unLockIO(thread_db* tdbb)
 
 ///	 class FBAllocator<T>
 
-// Uncomment define below to use per-thread memory pools for Michael List nodes.
-// Else single common pool will be used.
-//#define LIST_PER_THREAD_POOL
-
-#ifdef LIST_PER_THREAD_POOL
-
-class PerThreadPool
-{
-public:
-	static MemoryPool* getThreadPool();
-	void freeThreadPool();
-
-private:
-	PerThreadPool(MemoryPool* aPool) :
-		pool(aPool)
-	{
-		pool->setStatsGroup(stats);
-	}
-
-	MemoryPool* pool;
-	MemoryStats stats;
-	std::atomic<PerThreadPool*> next;	// detached pools list
-
-	static std::atomic<PerThreadPool*> list;
-};
-
-
-std::atomic<PerThreadPool*> PerThreadPool::list = nullptr;
-TLS_DECLARE(PerThreadPool*, threadPool);
-
-
-MemoryPool* PerThreadPool::getThreadPool()
-{
-	PerThreadPool* thdPool = TLS_GET(threadPool);
-	if (!thdPool)
-	{
-		thdPool = list.load(std::memory_order_acquire);
-		while (thdPool)
-			if (list.compare_exchange_strong(thdPool, thdPool->next))
-			{
-				TLS_SET(threadPool, thdPool);
-				break;
-			}
-	}
-	if (!thdPool)
-	{
-		MemoryPool* pool = getDefaultMemoryPool()->createPool();
-		thdPool = FB_NEW_POOL(*pool) PerThreadPool(pool);
-		TLS_SET(threadPool, thdPool);
-	}
-	return thdPool->pool;
-}
-
-void PerThreadPool::freeThreadPool()
-{
-	PerThreadPool* head = list.load();
-	do 
-	{
-		this->next = head;
-	} 
-	while (!list.compare_exchange_strong(head, this));
-}
-
-
-void CCH_thread_detach()
-{
-	PerThreadPool* thdPool = TLS_GET(threadPool);
-	if (thdPool)
-	{
-		thdPool->freeThreadPool();
-		TLS_SET(threadPool, nullptr);
-	}
-}
-
-template <typename T>
-T* FBAllocator<T>::allocate(std::size_t n)
-{
-	MemoryPool* pool = PerThreadPool::getThreadPool();
-	return static_cast<T*>(pool->allocate(n * sizeof(T) ALLOC_ARGS));
-}
-
-template <typename T>
-void FBAllocator<T>::deallocate(T* p, std::size_t /* n */)
-{
-	MemoryPool::globalFree(p);
-}
-
-#else
-
 class InitPool
 {
 public:
@@ -5573,11 +5484,5 @@ void FBAllocator<T>::deallocate(T* p, std::size_t /* n */)
 	// It uses the correct pool stored within memory block itself
 	MemoryPool::globalFree(p);
 }
-
-void CCH_thread_detach()
-{
-}
-
-#endif // LIST_PER_THREAD_POOL
 
 #endif // HASH_USE_CDS_LIST
