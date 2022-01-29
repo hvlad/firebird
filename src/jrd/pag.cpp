@@ -2609,7 +2609,7 @@ ULONG PAG_page_count(thread_db* tdbb)
 		if (!PIO_read(tdbb, pageSpace->file, &temp_bdb, temp_bdb.bdb_buffer, &status))
 			status_exception::raise(&status);
 
-		// After PIO_extend the tail of the file might have thousends of zero pages.
+		// After PIO_extend the tail of the file might have thousands of zero pages.
 		// Recently last PIP might be marked as fully used but the new PIP is not initialized.
 		// If nbackup state becomes nbak_stalled in this moment we'll find zero pip in the tail of the file.
 		// Fortunatelly it must be the last valuable page and we can rely on its number.
@@ -2621,7 +2621,7 @@ ULONG PAG_page_count(thread_db* tdbb)
 			continue;
 		}
 
-		return pip->pip_used + pageNo + (sequence ? 1 : -1);
+		return pip->pip_used + pageNo - (sequence ? 0  : pageSpace->pipFirst) + 1;
 	}
 
 	// compiler warnings silencer
