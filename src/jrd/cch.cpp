@@ -63,7 +63,16 @@
 #include "../jrd/CryptoManager.h"
 #include "../common/utils_proto.h"
 #include "../common/classes/fb_tls.h"
+
+// Use lock-free lists in hash table implementation
+#define HASH_USE_CDS_LIST
+
+
+#ifdef HASH_USE_CDS_LIST
+#include <cds/container/michael_kvlist_dhp.h>
 #include "../jrd/InitCDSLib.h"
+#endif
+
 
 using namespace Jrd;
 using namespace Ods;
@@ -108,8 +117,6 @@ static inline void PAGE_LOCK_RE_POST(thread_db* tdbb, BufferControl* bcb, Lock* 
 	}
 }
 
-#define PAGE_OVERHEAD	(sizeof(bcb_repeat) + sizeof(BufferDesc) + sizeof(Lock) + (int) bcb->bcb_page_size)
-
 enum LatchState
 {
 	lsOk,
@@ -118,7 +125,6 @@ enum LatchState
 };
 
 static void adjust_scan_count(WIN* window, bool mustRead);
-static BufferDesc* alloc_bdb(thread_db*, BufferControl*, UCHAR **);
 static Lock* alloc_page_lock(Jrd::thread_db*, BufferDesc*);
 static int blocking_ast_bdb(void*);
 #ifdef CACHE_READER
@@ -129,15 +135,13 @@ static void prefetch_prologue(Prefetch*, SLONG *);
 #endif
 static void check_precedence(thread_db*, WIN*, PageNumber);
 static void clear_precedence(thread_db*, BufferDesc*);
-static BufferDesc* dealloc_bdb(BufferDesc*);
 static void down_grade(thread_db*, BufferDesc*, int high = 0);
 static bool expand_buffers(thread_db*, ULONG);
-static BufferDesc* find_buffer(BufferControl* bcb, const PageNumber& page);
 static BufferDesc* get_buffer(thread_db*, const PageNumber, SyncType, int);
 static int get_related(BufferDesc*, PagesArray&, int, const ULONG);
 static ULONG get_prec_walk_mark(BufferControl*);
 static LockState lock_buffer(thread_db*, BufferDesc*, const SSHORT, const SCHAR);
-static ULONG memory_init(thread_db*, BufferControl*, SLONG);
+static ULONG memory_init(thread_db*, BufferControl*, ULONG);
 static void page_validation_error(thread_db*, win*, SSHORT);
 static void purgePrecedence(BufferControl*, BufferDesc*);
 static SSHORT related(BufferDesc*, const BufferDesc*, SSHORT, const ULONG);
@@ -203,6 +207,84 @@ const int PRE_SEARCH_LIMIT	= 256;
 const int PRE_EXISTS		= -1;
 const int PRE_UNKNOWN		= -2;
 
+namespace Jrd
+{
+
+#ifdef HASH_USE_CDS_LIST
+
+template <typename T>
+class ListNodeAllocator
+{
+public:
+	typedef T value_type;
+
+	ListNodeAllocator() {};
+
+	template <class U>
+	constexpr ListNodeAllocator(const ListNodeAllocator<U>&) noexcept {}
+
+	T* allocate(std::size_t n);
+	void deallocate(T* p, std::size_t n);
+
+private:
+};
+
+struct BdbTraits : public cds::container::michael_list::traits
+{
+	typedef ListNodeAllocator<int> allocator;
+	//typedef std::less<PageNumber> compare;
+};
+
+typedef cds::container::MichaelKVList<cds::gc::DHP, PageNumber, BufferDesc*, BdbTraits> BdbList;
+
+#endif // HASH_USE_CDS_LIST
+
+
+class BCBHashTable
+{
+#ifdef HASH_USE_CDS_LIST
+	using chain_type = BdbList;
+#else
+	using chain_type = que;
+#endif
+
+public:
+	BCBHashTable(MemoryPool& pool, ULONG count) :
+		m_pool(pool),
+		m_count(0),
+		m_chains(nullptr)
+	{
+		resize(count);
+	}
+
+	~BCBHashTable()
+	{
+		clear();
+	}
+
+	void resize(ULONG count);
+	void clear();
+
+	BufferDesc* find(const PageNumber& page) const;
+
+	// tries to put bdb into hash slot by page
+	// if succeed, removes bdb from old slot, if necessary, and returns NULL
+	// else, returns BufferDesc that is currently occupies target slot
+	BufferDesc* emplace(BufferDesc* bdb, const PageNumber& page, bool remove);
+
+private:
+	ULONG hash(const PageNumber& pageno) const
+	{
+		return pageno.getPageNum() % m_count;
+	}
+
+	MemoryPool& m_pool;
+	ULONG m_count;
+	chain_type* m_chains;
+};
+
+}
+
 
 void CCH_clean_page(thread_db* tdbb, PageNumber page)
 {
@@ -232,7 +314,7 @@ void CCH_clean_page(thread_db* tdbb, PageNumber page)
 		bcbSync.lock(SYNC_SHARED);
 #endif
 
-		bdb = find_buffer(bcb, page);
+		bdb = bcb->bcb_hashTable->find(page);
 		if (!bdb)
 			return;
 
@@ -310,7 +392,7 @@ int CCH_down_grade_dbb(void* ast_object)
 		if (SHUT_blocking_ast(tdbb, true))
 			return 0;
 
-		SyncLockGuard dsGuard(&dbb->dbb_sync, SYNC_EXCLUSIVE, "CCH_down_grade_dbb");
+		SyncLockGuard dsGuard(&dbb->dbb_sync, SYNC_EXCLUSIVE, FB_FUNCTION);
 
 		// If we are already shared, there is nothing more we can do.
 		// If any case, the other guy probably wants exclusive access,
@@ -343,21 +425,13 @@ int CCH_down_grade_dbb(void* ast_object)
 		BufferControl* bcb = dbb->dbb_bcb;
 		if (bcb)
 		{
-			SyncLockGuard bcbSync(&bcb->bcb_syncObject, SYNC_EXCLUSIVE, "CCH_down_grade_dbb");
+			SyncLockGuard bcbSync(&bcb->bcb_syncObject, SYNC_EXCLUSIVE, FB_FUNCTION);
 			bcb->bcb_flags &= ~BCB_exclusive;
 
-			bool done = (bcb->bcb_count == 0);
-			while (!done)
+			for (auto blk : bcb->bcb_bdbBlocks)
 			{
-				done = true;
-				const bcb_repeat* const head = bcb->bcb_rpt;
-				const bcb_repeat* tail = bcb->bcb_rpt;
-				fb_assert(tail);			// once I've got here with NULL. AP.
-
-				for (const bcb_repeat* const end = tail + bcb->bcb_count; tail < end; ++tail)
+				for (BufferDesc* bdb = blk.m_bdbs; bdb < blk.m_bdbs + blk.m_count; bdb++)
 				{
-					BufferDesc* bdb = tail->bcb_bdb;
-
 					// Acquire EX latch to avoid races with LCK_release (called by CCH_release)
 					// or LCK_lock (by lock_buffer) in main thread. Take extra care to avoid
 					// deadlock with CCH_handoff. See CORE-5436.
@@ -368,13 +442,6 @@ int CCH_down_grade_dbb(void* ast_object)
 					{
 						SyncUnlockGuard bcbUnlock(bcbSync);
 						Thread::sleep(1);
-					}
-
-					if (head != bcb->bcb_rpt)
-					{
-						// expand_buffers or CCH_fini was called, consider to start all over again
-						done = (bcb->bcb_count == 0);
-						break;
 					}
 
 					PAGE_LOCK_ASSERT(tdbb, bcb, bdb->bdb_lock);
@@ -1033,8 +1100,13 @@ void CCH_forget_page(thread_db* tdbb, WIN* window)
 	removeDirty(bcb, bdb);
 
 	QUE_DELETE(bdb->bdb_in_use);
-	QUE_DELETE(bdb->bdb_que);					// TODO: fixme, bcb_hash_chain
-	QUE_INSERT(bcb->bcb_empty, bdb->bdb_que);
+	QUE_DELETE(bdb->bdb_que);
+
+	{
+		SyncLockGuard syncEmpty(&bcb->bcb_syncEmpty, SYNC_EXCLUSIVE, FB_FUNCTION);
+		QUE_INSERT(bcb->bcb_empty, bdb->bdb_que);
+		bcb->bcb_inuse--;
+	}
 
 	if (tdbb->tdbb_flags & TDBB_no_cache_unwind)
 		bdb->release(tdbb, true);
@@ -1055,28 +1127,23 @@ void CCH_fini(thread_db* tdbb)
  **************************************/
 	SET_TDBB(tdbb);
 	Database* const dbb = tdbb->getDatabase();
+
+	SyncLockGuard dsGuard(&dbb->dbb_sync, SYNC_EXCLUSIVE, FB_FUNCTION);
+
 	BufferControl* const bcb = dbb->dbb_bcb;
 
 	if (!bcb)
 		return;
 
-	bcb_repeat* tail = bcb->bcb_rpt;
-	const bcb_repeat* const end = tail + bcb->bcb_count;
+	delete bcb->bcb_hashTable;
 
-	for (; tail < end; tail++)
+	for (auto blk : bcb->bcb_bdbBlocks)
 	{
-		if (tail->bcb_bdb)
-		{
-			delete tail->bcb_bdb;
-			tail->bcb_bdb = NULL;
-#ifdef HASH_USE_CDS_LIST
-			tail->bcb_hash_chain.clear();
-#endif
-		}
+		for (ULONG i = 0; i < blk.m_count; i++)
+			delete blk.m_bdbs[i].bdb_lock;
 	}
 
-	delete[] bcb->bcb_rpt;
-	bcb->bcb_rpt = NULL;
+	bcb->bcb_bdbBlocks.clear();
 	bcb->bcb_count = 0;
 
 	while (bcb->bcb_memory.hasData())
@@ -1155,7 +1222,7 @@ void CCH_flush(thread_db* tdbb, USHORT flush_flag, TraNumber tra_number)
 	{
 		const time_t now = time(0);
 
-		SyncLockGuard guard(&dbb->dbb_flush_count_mutex, SYNC_EXCLUSIVE, "CCH_flush");
+		SyncLockGuard guard(&dbb->dbb_flush_count_mutex, SYNC_EXCLUSIVE, FB_FUNCTION);
 
 		// If this is the first commit set last_flushed_write to now
 		if (!dbb->last_flushed_write)
@@ -1225,18 +1292,18 @@ void CCH_flush_ast(thread_db* tdbb)
 		CCH_flush(tdbb, FLUSH_ALL, 0);
 	else
 	{
+		SyncLockGuard bcbSync(&bcb->bcb_syncObject, SYNC_SHARED, FB_FUNCTION);
+
 		// Do some fancy footwork to make sure that pages are
 		// not removed from the btc tree at AST level.  Then
 		// restore the flag to whatever it was before.
 		const bool keep_pages = bcb->bcb_flags & BCB_keep_pages;
 		bcb->bcb_flags |= BCB_keep_pages;
 
-		for (ULONG i = 0; (bcb = dbb->dbb_bcb) && i < bcb->bcb_count; i++)
-		{
-			BufferDesc* bdb = bcb->bcb_rpt[i].bcb_bdb;
-			if (bdb->bdb_flags & (BDB_dirty | BDB_db_dirty))
-				down_grade(tdbb, bdb, 1);
-		}
+		for (auto blk : bcb->bcb_bdbBlocks)
+			for (BufferDesc* bdb = blk.m_bdbs; bdb < blk.m_bdbs + blk.m_count; bdb++)
+				if (bdb->bdb_flags & (BDB_dirty | BDB_db_dirty))
+					down_grade(tdbb, bdb, 1);
 
 		if (!keep_pages)
 			bcb->bcb_flags &= ~BCB_keep_pages;
@@ -1319,7 +1386,7 @@ void CCH_get_related(thread_db* tdbb, PageNumber page, PagesArray &lowPages)
 	bcbSync.lock(SYNC_SHARED);
 #endif
 
-	BufferDesc* bdb = find_buffer(bcb, page);
+	BufferDesc* bdb = bcb->bcb_hashTable->find(page);
 #ifndef HASH_USE_CDS_LIST
 	bcbSync.unlock();
 #endif
@@ -1475,7 +1542,7 @@ void CCH_init(thread_db* tdbb, ULONG number)
 	if (number > MAX_PAGE_BUFFERS)
 		number = MAX_PAGE_BUFFERS;
 
-	const SLONG count = number;
+	const ULONG count = number;
 
 	// Allocate and initialize buffers control block
 	BufferControl* bcb = BufferControl::create(dbb);
@@ -1483,17 +1550,14 @@ void CCH_init(thread_db* tdbb, ULONG number)
 	{
 		try
 		{
-			bcb->bcb_rpt = FB_NEW_POOL(*bcb->bcb_bufferpool) bcb_repeat[number];
+			bcb->bcb_hashTable = FB_NEW_POOL(*bcb->bcb_bufferpool)
+				BCBHashTable(*bcb->bcb_bufferpool, number);
 			break;
 		}
 		catch (const Firebird::Exception& ex)
 		{
 			ex.stuffException(tdbb->tdbb_status_vector);
-			// If the buffer control block can't be allocated, memory is
-			// very low. Recalculate the number of buffers to account for
-			// page buffer overhead and reduce that number by a 25% fudge factor.
 
-			number = (sizeof(bcb_repeat) * number) / PAGE_OVERHEAD;
 			number -= number >> 2;
 
 			if (number < MIN_PAGE_BUFFERS)
@@ -1514,7 +1578,7 @@ void CCH_init(thread_db* tdbb, ULONG number)
 
 	// initialization of memory is system-specific
 
-	bcb->bcb_count = memory_init(tdbb, bcb, static_cast<SLONG>(number));
+	bcb->bcb_count = memory_init(tdbb, bcb, number);
 	bcb->bcb_free_minimum = (SSHORT) MIN(bcb->bcb_count / 4, 128);
 
 	if (bcb->bcb_count < MIN_PAGE_BUFFERS)
@@ -1522,7 +1586,7 @@ void CCH_init(thread_db* tdbb, ULONG number)
 
 	// Log if requested number of page buffers could not be allocated.
 
-	if (count != (SLONG) bcb->bcb_count)
+	if (count != bcb->bcb_count)
 	{
 		gds__log("Database: %s\n\tAllocated %ld page buffers of %ld requested",
 			 tdbb->getAttachment()->att_filename.c_str(), bcb->bcb_count, count);
@@ -2147,14 +2211,11 @@ void CCH_shutdown(thread_db* tdbb)
 		bcb->bcb_writer_fini.waitForCompletion();
 	}
 
-	SyncLockGuard bcbSync(&bcb->bcb_syncObject, SYNC_EXCLUSIVE, "CCH_shutdown");
+	SyncLockGuard bcbSync(&bcb->bcb_syncObject, SYNC_EXCLUSIVE, FB_FUNCTION);
 
 	// Flush and release page buffers
 
-	bcb_repeat* tail = bcb->bcb_rpt;
-	const bcb_repeat* const end = tail + bcb->bcb_count;
-
-	if (tail && tail->bcb_bdb)
+	if (bcb->bcb_count)
 	{
 		try
 		{
@@ -2165,17 +2226,21 @@ void CCH_shutdown(thread_db* tdbb)
 		}
 		catch (const Exception&)
 		{
-			for (; tail < end; tail++)
+			for (auto blk : bcb->bcb_bdbBlocks)
 			{
-				BufferDesc* const bdb = tail->bcb_bdb;
-
-				if (dbb->dbb_flags & DBB_bugcheck)
+				BufferDesc* bdb = blk.m_bdbs;
+				const BufferDesc* const end = blk.m_bdbs + blk.m_count;
+				for (; bdb < end; bdb++)
 				{
-					bdb->bdb_flags &= ~BDB_db_dirty;
-					clear_dirty_flag_and_nbak_state(tdbb, bdb);
-				}
 
-				PAGE_LOCK_RELEASE(tdbb, bcb, bdb->bdb_lock);
+					if (dbb->dbb_flags & DBB_bugcheck)
+					{
+						bdb->bdb_flags &= ~BDB_db_dirty;
+						clear_dirty_flag_and_nbak_state(tdbb, bdb);
+					}
+
+					PAGE_LOCK_RELEASE(tdbb, bcb, bdb->bdb_lock);
+				}
 			}
 		}
 	}
@@ -2485,40 +2550,6 @@ static void adjust_scan_count(WIN* window, bool mustRead)
 }
 
 
-static BufferDesc* alloc_bdb(thread_db* tdbb, BufferControl* bcb, UCHAR** memory)
-{
-/**************************************
- *
- *	a l l o c _ b d b
- *
- **************************************
- *
- * Functional description
- *	Allocate buffer descriptor block.
- *
- **************************************/
-	SET_TDBB(tdbb);
-
-	BufferDesc* bdb = FB_NEW_POOL(*bcb->bcb_bufferpool) BufferDesc(bcb);
-
-	try {
-		bdb->bdb_lock = alloc_page_lock(tdbb, bdb);
-	}
-	catch (const Firebird::Exception&)
-	{
-		delete bdb;
-		throw;
-	}
-
-	bdb->bdb_buffer = (pag*) *memory;
-	*memory += bcb->bcb_page_size;
-
-	QUE_INSERT(bcb->bcb_empty, bdb->bdb_que);
-
-	return bdb;
-}
-
-
 static Lock* alloc_page_lock(thread_db* tdbb, BufferDesc* bdb)
 {
 /**************************************
@@ -2676,32 +2707,41 @@ static void flushAll(thread_db* tdbb, USHORT flush_flag)
 	const bool release_flag = (flush_flag & FLUSH_RLSE) != 0;
 	const bool write_thru = release_flag;
 
-	for (ULONG i = 0; i < bcb->bcb_count; i++)
 	{
-		BufferDesc* bdb = bcb->bcb_rpt[i].bcb_bdb;
+		Sync bcbSync(&bcb->bcb_syncObject, FB_FUNCTION);
+		if (!bcb->bcb_syncObject.ourExclusiveLock())
+			bcbSync.lock(SYNC_SHARED);
 
-		if (bdb->bdb_flags & (BDB_db_dirty | BDB_dirty))
+		for (auto blk : bcb->bcb_bdbBlocks)
 		{
-			if (bdb->bdb_flags & BDB_dirty)
-				flush.add(bdb);
-			else if (bdb->bdb_flags & BDB_db_dirty)
+			for (ULONG i = 0; i < blk.m_count; i++)
 			{
-				// pages modified by sweep\garbage collector are not in dirty list
-				const bool dirty_list = (bdb->bdb_dirty.que_forward != &bdb->bdb_dirty);
+				BufferDesc* bdb = &blk.m_bdbs[i];
 
-				if (all_flag || (sweep_flag && !dirty_list))
-					flush.add(bdb);
+				if (bdb->bdb_flags & (BDB_db_dirty | BDB_dirty))
+				{
+					if (bdb->bdb_flags & BDB_dirty)
+						flush.add(bdb);
+					else if (bdb->bdb_flags & BDB_db_dirty)
+					{
+						// pages modified by sweep\garbage collector are not in dirty list
+						const bool dirty_list = (bdb->bdb_dirty.que_forward != &bdb->bdb_dirty);
+
+						if (all_flag || (sweep_flag && !dirty_list))
+							flush.add(bdb);
+					}
+				}
+				else if (release_flag)
+				{
+					bdb->addRef(tdbb, SYNC_EXCLUSIVE);
+
+					if (bdb->bdb_use_count > 1)
+						BUGCHECK(210);	// msg 210 page in use during flush
+
+					PAGE_LOCK_RELEASE(tdbb, bcb, bdb->bdb_lock);
+					bdb->release(tdbb, false);
+				}
 			}
-		}
-		else if (release_flag)
-		{
-			bdb->addRef(tdbb, SYNC_EXCLUSIVE);
-
-			if (bdb->bdb_use_count > 1)
-				BUGCHECK(210);	// msg 210 page in use during flush
-
-			PAGE_LOCK_RELEASE(tdbb, bcb, bdb->bdb_lock);
-			bdb->release(tdbb, false);
 		}
 	}
 
@@ -3162,7 +3202,7 @@ static void check_precedence(thread_db* tdbb, WIN* window, PageNumber page)
 	bcbSync.lock(SYNC_SHARED);
 #endif
 
-	BufferDesc* high = find_buffer(bcb, page);
+	BufferDesc* high = bcb->bcb_hashTable->find(page);
 #ifndef HASH_USE_CDS_LIST
 	bcbSync.unlock();
 #endif
@@ -3291,30 +3331,6 @@ static void clear_precedence(thread_db* tdbb, BufferDesc* bdb)
 				PAGE_LOCK_RE_POST(tdbb, bcb, low_bdb->bdb_lock);
 		}
 	}
-}
-
-
-static BufferDesc* dealloc_bdb(BufferDesc* bdb)
-{
-/**************************************
- *
- *	d e a l l o c _ b d b
- *
- **************************************
- *
- * Functional description
- *	Deallocate buffer descriptor block.
- *
- **************************************/
-	if (bdb)
-	{
-		delete bdb->bdb_lock;
-		QUE_DELETE(bdb->bdb_que);		// // TODO: fixme, bcb_hash_chain ?
-
-		delete bdb;
-	}
-
-	return NULL;
 }
 
 
@@ -3537,10 +3553,6 @@ static bool expand_buffers(thread_db* tdbb, ULONG number)
  *	Expand the cache to at least a given number of buffers.  If
  *	it's already that big, don't do anything.
  *
- * Nickolay Samofatov, 08-Mar-2004.
- *  This function does not handle exceptions correctly,
- *  it looks like good handling requires rewrite.
- *
  **************************************/
 	SET_TDBB(tdbb);
 	Database* const dbb = tdbb->getDatabase();
@@ -3549,95 +3561,19 @@ static bool expand_buffers(thread_db* tdbb, ULONG number)
 	if (number <= bcb->bcb_count || number > MAX_PAGE_BUFFERS)
 		return false;
 
-	Sync syncBcb(&bcb->bcb_syncObject, "expand_buffers");
-	syncBcb.lock(SYNC_EXCLUSIVE);
+	SyncLockGuard syncBcb(&bcb->bcb_syncObject, SYNC_EXCLUSIVE, FB_FUNCTION);
 
-	// for Win16 platform, we want to ensure that no cache buffer ever ends on a segment boundary
-	// CVC: Is this code obsolete or only the comment?
+	if (number <= bcb->bcb_count)
+		return false;
 
-	ULONG num_per_seg = number - bcb->bcb_count;
-	ULONG left_to_do = num_per_seg;
+	// Expand hash table only if there is no concurrent attachments
+	if (tdbb->getAttachment()->att_flags & ATT_exclusive)
+		bcb->bcb_hashTable->resize(number);
 
-	// Allocate and initialize buffers control block
-	Jrd::ContextPoolHolder context(tdbb, bcb->bcb_bufferpool);
+	ULONG allocated = memory_init(tdbb, bcb, number - bcb->bcb_count);
 
-	const bcb_repeat* const old_end = bcb->bcb_rpt + bcb->bcb_count;
-
-	bcb_repeat* const new_rpt = FB_NEW_POOL(*bcb->bcb_bufferpool) bcb_repeat[number];
-	bcb_repeat* const old_rpt = bcb->bcb_rpt;
-	bcb->bcb_rpt = new_rpt;
-
-	bcb->bcb_count = number;
-	bcb->bcb_free_minimum = (SSHORT) MIN(number / 4, 128);	/* 25% clean page reserve */
-
-	const bcb_repeat* const new_end = bcb->bcb_rpt + number;
-
-	// Initialize tail of new buffer control block
-	bcb_repeat* new_tail;
-#ifndef HASH_USE_CDS_LIST
-	for (new_tail = bcb->bcb_rpt; new_tail < new_end; new_tail++)
-		QUE_INIT(new_tail->bcb_page_mod);
-#endif
-
-	// Move any active buffers from old block to new
-
-	new_tail = bcb->bcb_rpt;
-
-	for (bcb_repeat* old_tail = old_rpt; old_tail < old_end; old_tail++, new_tail++)
-	{
-		new_tail->bcb_bdb = old_tail->bcb_bdb;
-#ifndef HASH_USE_CDS_LIST
-		while (QUE_NOT_EMPTY(old_tail->bcb_page_mod))
-		{
-			QUE que_inst = old_tail->bcb_page_mod.que_forward;
-			BufferDesc* bdb = BLOCK(que_inst, BufferDesc, bdb_que);
-			QUE_DELETE(*que_inst);
-			QUE mod_que = &bcb->bcb_rpt[bdb->bdb_page.getPageNum() % bcb->bcb_count].bcb_page_mod;
-			QUE_INSERT(*mod_que, *que_inst);
-		}
-#else
-		auto& old_chain = old_tail->bcb_hash_chain;
-		auto& new_chain = new_tail->bcb_hash_chain;
-
-		// here we can't insert into the hash_chain at the same hash slot.
-		// new slot is bdb_pageNum % number
-		// But new chaines are changing right now under heavy load as get_buffer ignores bcb_syncObject :(
-		while (!old_chain.empty())
-		{
-			auto n = old_chain.begin();
-			old_chain.erase(n->first);				// bdb_page
-			new_chain.insert(n->first, n->second);	// bdb
-		}
-#endif
-	}
-
-	// Allocate new buffer descriptor blocks
-
-	ULONG num_in_seg = 0;
-	UCHAR* memory = NULL;
-	for (; new_tail < new_end; new_tail++)
-	{
-		// if current segment is exhausted, allocate another
-
-		if (!num_in_seg)
-		{
-			const size_t alloc_size = ((size_t) dbb->dbb_page_size) * (num_per_seg + 1);
-			memory = (UCHAR*) bcb->bcb_bufferpool->allocate(alloc_size ALLOC_ARGS);
-			bcb->bcb_memory.push(memory);
-			memory = FB_ALIGN(memory, dbb->dbb_page_size);
-
-			num_in_seg = num_per_seg;
-			left_to_do -= num_per_seg;
-			if (num_per_seg > left_to_do)
-				num_per_seg = left_to_do;
-		}
-		new_tail->bcb_bdb = alloc_bdb(tdbb, bcb, &memory);
-		num_in_seg--;
-	}
-
-	// Set up new buffer control, release old buffer control, and clean up
-
-	delete[] old_rpt;
+	bcb->bcb_count += allocated;
+	bcb->bcb_free_minimum = (SSHORT)MIN(bcb->bcb_count / 4, 128);	/* 25% clean page reserve */
 
 	return true;
 }
@@ -3697,11 +3633,11 @@ static BufferDesc* get_dirty_buffer(thread_db* tdbb)
 
 static BufferDesc* get_oldest_buffer(thread_db* tdbb, BufferControl* bcb)
 {
-	/********************************
-	* Function description:
-	*       Get candidate for preemption
-	*       Found page buffer must have SYNC_EXCLUSIVE lock.
-	*********************************/
+/**************************************
+ * Function description:
+ *       Get candidate for preemption
+ *       Found page buffer must have SYNC_EXCLUSIVE lock.
+ **************************************/
 
 	int walk = bcb->bcb_free_minimum;
 	BufferDesc* bdb = nullptr;
@@ -3810,37 +3746,6 @@ static BufferDesc* get_oldest_buffer(thread_db* tdbb, BufferControl* bcb)
 	return bdb;
 }
 
-static inline BufferDesc* find_buffer(BufferControl* bcb, const PageNumber& page)
-{
-#ifndef HASH_USE_CDS_LIST
-	QUE mod_que = &bcb->bcb_rpt[page.getPageNum() % bcb->bcb_count].bcb_page_mod;
-	QUE que_inst = mod_que->que_forward;
-	for (; que_inst != mod_que; que_inst = que_inst->que_forward)
-	{
-		BufferDesc* bdb = BLOCK(que_inst, BufferDesc, bdb_que);
-		if (bdb->bdb_page == page)
-			return bdb;
-	}
-#else // HASH_USE_CDS_LIST
-	auto& list = bcb->bcb_rpt[page.getPageNum() % bcb->bcb_count].bcb_hash_chain;
-
-	auto ptr = list.get(page);
-	if (!ptr.empty())
-	{
-		fb_assert(ptr->second != nullptr);
-#ifdef DEV_BUILD
-		// Original libcds have no update(key, value), use this code with it, 
-		// see also comment in get_buffer()
-		while (ptr->second == nullptr)
-			cds::backoff::pause();
-#endif
-		if (ptr->second->bdb_page == page)
-			return ptr->second;
-	}
-#endif
-
-	return nullptr;
-}
 
 static BufferDesc* get_buffer(thread_db* tdbb, const PageNumber page, SyncType syncType, int wait)
 {
@@ -3874,8 +3779,6 @@ static BufferDesc* get_buffer(thread_db* tdbb, const PageNumber page, SyncType s
 	Database* dbb = tdbb->getDatabase();
 	BufferControl* bcb = dbb->dbb_bcb;
 
-	bcb_repeat* new_slot = &bcb->bcb_rpt[page.getPageNum() % bcb->bcb_count];
-
 	while (true)
 	{
 		BufferDesc* bdb = nullptr;
@@ -3884,10 +3787,10 @@ static BufferDesc* get_buffer(thread_db* tdbb, const PageNumber page, SyncType s
 		{
 			// try to get already existing buffer
 			{
-#if defined HASH_USE_BCB_SYNC
+#ifndef HASH_USE_CDS_LIST
 				SyncLockGuard bcbSync(&bcb->bcb_syncObject, SYNC_SHARED, FB_FUNCTION);
 #endif
-				bdb = find_buffer(bcb, page);
+				bdb = bcb->bcb_hashTable->find(page);
 			}
 
 			if (bdb)
@@ -3921,6 +3824,7 @@ static BufferDesc* get_buffer(thread_db* tdbb, const PageNumber page, SyncType s
 				{
 					QUE que_inst = bcb->bcb_empty.que_forward;
 					QUE_DELETE(*que_inst);
+					QUE_INIT(*que_inst);
 					bdb = BLOCK(que_inst, BufferDesc, bdb_que);
 
 					bcb->bcb_inuse++;
@@ -3955,29 +3859,20 @@ static BufferDesc* get_buffer(thread_db* tdbb, const PageNumber page, SyncType s
 		{
 			BufferDesc* bdb2 = nullptr;
 
-#ifndef HASH_USE_CDS_LIST
 			{
-#if defined HASH_USE_BCB_SYNC
+#ifndef HASH_USE_CDS_LIST
 				SyncLockGuard bcbSync(&bcb->bcb_syncObject, SYNC_EXCLUSIVE, FB_FUNCTION);
 #endif
-				bdb2 = find_buffer(bcb, page);
+				bdb2 = bcb->bcb_hashTable->emplace(bdb, page, !is_empty);
 				if (!bdb2)
 				{
-					fb_assert(bdb->ourExclusiveLock());
-
-					if (!is_empty)
-						QUE_DELETE(bdb->bdb_que);
-
-					QUE mod_que = &bcb->bcb_rpt[page.getPageNum() % bcb->bcb_count].bcb_page_mod;
-					QUE_INSERT((*mod_que), bdb->bdb_que);
-
 					bdb->bdb_page = page;
 					bdb->bdb_flags &= BDB_lru_chained; // yes, clear all except BDB_lru_chained
 					bdb->bdb_flags |= BDB_read_pending;
 					bdb->bdb_scan_count = 0;
 					bdb->bdb_lock->lck_logical = LCK_none;
 
-#if defined HASH_USE_BCB_SYNC
+#ifndef HASH_USE_CDS_LIST
 					bcbSync.unlock();
 #endif
 
@@ -3996,90 +3891,6 @@ static BufferDesc* get_buffer(thread_db* tdbb, const PageNumber page, SyncType s
 					return bdb;
 				}
 			}
-
-#else // HASH_USE_CDS_LIST
-
-			BdbList& list = bcb->bcb_rpt[page.getPageNum() % bcb->bcb_count].bcb_hash_chain;
-/*
-			// Original libcds have no update(key, value), use this code with it
-
-			auto ret = list.update(page,
-									[bdb, &bdb2](bool bNew, BdbList::value_type& val)
-									{
-										if (bNew)
-											val.second = bdb;
-										else
-											while (!(bdb2 = val.second))
-												cds::backoff::pause();
-									},
-									true);
-*/
-			auto ret = list.update(page, bdb,
-				[&bdb2](bool bNew, BdbList::value_type& val)
-				{
-					// someone might have put a page buffer in the chain concurrently, so
-					// we store it for the further investigation
-					if (!bNew)
-						bdb2 = val.second;
-				},
-				true);
-			fb_assert(ret.first);
-
-			// if we have inserted the page buffer that we found (empty or oldest)
-			if (bdb2 == nullptr)
-			{
-				fb_assert(ret.second);
-#ifdef DEV_BUILD
-				auto p1 = list.get(page);
-				fb_assert(!p1.empty() && p1->first == page && p1->second == bdb);
-#endif
-
-				if (!is_empty)
-				{
-					// remove the old page buffer from old hash slot
-					const PageNumber oldPage = bdb->bdb_page;
-					BdbList& oldList = bcb->bcb_rpt[oldPage.getPageNum() % bcb->bcb_count].bcb_hash_chain;
-
-#ifdef DEV_BUILD
-					p1 = oldList.get(oldPage);
-					fb_assert(!p1.empty() && p1->first == oldPage && p1->second == bdb);
-#endif
-
-					const bool ok = oldList.erase(oldPage);
-					fb_assert(ok);
-
-#ifdef DEV_BUILD
-					p1 = oldList.get(oldPage);
-					fb_assert(p1.empty() || p1->second != bdb);
-#endif
-				}
-
-#ifdef DEV_BUILD
-				p1 = list.get(page);
-				fb_assert(!p1.empty() && p1->first == page && p1->second == bdb);
-#endif
-
-				bdb->bdb_page = page;
-				bdb->bdb_flags &= BDB_lru_chained; // yes, clear all except BDB_lru_chained
-				bdb->bdb_flags |= BDB_read_pending;
-				bdb->bdb_scan_count = 0;
-				bdb->bdb_lock->lck_logical = LCK_none;
-
-				if (!(bdb->bdb_flags & BDB_lru_chained))
-				{
-					Sync syncLRU(&bcb->bcb_syncLRU, FB_FUNCTION);
-					if (syncLRU.lockConditional(SYNC_EXCLUSIVE))
-					{
-						QUE_DELETE(bdb->bdb_in_use);
-						QUE_INSERT(bcb->bcb_in_use, bdb->bdb_in_use);
-					}
-					else
-						recentlyUsed(bdb);
-				}
-				tdbb->bumpStats(RuntimeStatistics::PAGE_FETCHES);
-				return bdb;
-			}
-#endif
 
 			// here we hold lock on bdb and ask for lock on bdb2
 			// to avoid deadlock, don't wait for bdb2 unless bdb was empty
@@ -4133,8 +3944,11 @@ static ULONG get_prec_walk_mark(BufferControl* bcb)
 
 	if (++bcb->bcb_prec_walk_mark == 0)
 	{
-		for (ULONG i = 0; i < bcb->bcb_count; i++)
-			bcb->bcb_rpt[i].bcb_bdb->bdb_prec_walk_mark = 0;
+		SyncLockGuard bcbSync(&bcb->bcb_syncObject, SYNC_SHARED, FB_FUNCTION);
+
+		for (auto blk : bcb->bcb_bdbBlocks)
+			for (ULONG i = 0; i < blk.m_count; i++)
+				blk.m_bdbs[i].bdb_prec_walk_mark = 0;
 
 		bcb->bcb_prec_walk_mark = 1;
 	}
@@ -4344,7 +4158,7 @@ static LockState lock_buffer(thread_db* tdbb, BufferDesc* bdb, const SSHORT wait
 }
 
 
-static ULONG memory_init(thread_db* tdbb, BufferControl* bcb, SLONG number)
+static ULONG memory_init(thread_db* tdbb, BufferControl* bcb, ULONG number)
 {
 /**************************************
  *
@@ -4360,30 +4174,34 @@ static ULONG memory_init(thread_db* tdbb, BufferControl* bcb, SLONG number)
 	SET_TDBB(tdbb);
 	Database* const dbb = tdbb->getDatabase();
 
-	UCHAR* memory = NULL;
-	SLONG buffers = 0;
+	ULONG buffers = 0;
 	const size_t page_size = dbb->dbb_page_size;
-	size_t memory_size = page_size * (number + 1);
-	fb_assert(memory_size > 0);
+	UCHAR* memory = nullptr;
+	const UCHAR* memory_end = nullptr;
+	BufferDesc* tail = nullptr;
 
-	SLONG old_buffers = 0;
-	bcb_repeat* old_tail = NULL;
-	const UCHAR* memory_end = NULL;
-	bcb_repeat* tail = bcb->bcb_rpt;
-	// "end" is changed inside the loop
-	for (const bcb_repeat* end = tail + number; tail < end; tail++)
+	while (number)
 	{
 		if (!memory)
 		{
-			// Allocate only what is required for remaining buffers.
+			// Allocate memory block big enough to accomodate BufferDesc's and page buffers. 
 
-			if (memory_size > (page_size * (number + 1)))
-				memory_size = page_size * (number + 1);
+			ULONG to_alloc = number;
 
 			while (true)
 			{
-				try {
+				const size_t memory_size = sizeof(BufferDesc) * (to_alloc + 1) + page_size * (to_alloc + 1);
+				fb_assert(memory_size > 0);
+				if (memory_size < MIN_BUFFER_SEGMENT)
+				{
+					// Diminishing returns
+					return buffers;
+				}
+
+				try
+				{
 					memory = (UCHAR*) bcb->bcb_bufferpool->allocate(memory_size ALLOC_ARGS);
+					memory_end = memory + memory_size;
 					break;
 				}
 				catch (Firebird::BadAlloc&)
@@ -4392,54 +4210,36 @@ static ULONG memory_init(thread_db* tdbb, BufferControl* bcb, SLONG number)
 					// but it's not virtually contiguous. Let's find out by
 					// cutting the size in half to see if the buffers can be
 					// scattered over the remaining virtual address space.
-					memory_size >>= 1;
-					if (memory_size < MIN_BUFFER_SEGMENT)
-					{
-						// Diminishing returns
-						return buffers;
-					}
+					to_alloc >>= 1;
 				}
 			}
-
 			bcb->bcb_memory.push(memory);
-			memory_end = memory + memory_size;
+
+			tail = (BufferDesc*) FB_ALIGN(memory, alignof(BufferDesc));
+
+			BufferControl::BDBBlock blk;
+			blk.m_bdbs = tail;
+			blk.m_count = to_alloc;
+			bcb->bcb_bdbBlocks.push(blk);
 
 			// Allocate buffers on an address that is an even multiple
 			// of the page size (rather the physical sector size.) This
 			// is a necessary condition to support raw I/O interfaces.
+			memory = (UCHAR*) (blk.m_bdbs + to_alloc);
 			memory = FB_ALIGN(memory, page_size);
-			old_tail = tail;
-			old_buffers = buffers;
+
+			fb_assert(memory_end >= memory + page_size * to_alloc);
 		}
 
-#ifndef HASH_USE_CDS_LIST
-		QUE_INIT(tail->bcb_page_mod);
-#endif
-
-		try
-		{
-			tail->bcb_bdb = alloc_bdb(tdbb, bcb, &memory);
+		tail = ::new(tail) BufferDesc(bcb);
+		if (!(bcb->bcb_flags & BCB_exclusive)) {
+			tail->bdb_lock = alloc_page_lock(tdbb, tail);
 		}
-		catch (Firebird::BadAlloc&)
-		{
-			// Whoops! Time to reset our expectations. Release the buffer memory
-			// but use that memory size to calculate a new number that takes into account
-			// the page buffer overhead. Reduce this number by a 25% fudge factor to
-			// leave some memory for useful work.
+		tail->bdb_buffer = (pag*)memory;
+		memory += bcb->bcb_page_size;
 
-			bcb->bcb_bufferpool->deallocate(bcb->bcb_memory.pop());
-			memory = NULL;
-
-			for (bcb_repeat* tail2 = old_tail; tail2 < tail; tail2++)
-				tail2->bcb_bdb = dealloc_bdb(tail2->bcb_bdb);
-
-			number = static_cast<SLONG>(memory_size / PAGE_OVERHEAD);
-			number -= number >> 2;
-			end = old_tail + number;
-			tail = --old_tail;	// For loop continue pops tail above
-			buffers = old_buffers;
-			continue;
-		}
+		QUE_INSERT(bcb->bcb_empty, tail->bdb_que);
+		tail++;
 
 		buffers++;				// Allocated buffers
 		number--;				// Remaining buffers
@@ -4447,7 +4247,7 @@ static ULONG memory_init(thread_db* tdbb, BufferControl* bcb, SLONG number)
 		// Check if memory segment has been exhausted.
 
 		if (memory + page_size > memory_end)
-			memory = 0;
+			memory = nullptr;
 	}
 
 	return buffers;
@@ -5397,9 +5197,195 @@ void BufferDesc::unLockIO(thread_db* tdbb)
 }
 
 
+namespace Jrd {
+
+/// class BCBHashTable
+
+void BCBHashTable::resize(ULONG count)
+{
+	const ULONG old_count = m_count;
+	chain_type* const old_chains = m_chains;
+
+	chain_type* new_chains = FB_NEW_POOL(m_pool) chain_type[count];
+	m_count = count;
+	m_chains = new_chains;
+
+	chain_type* new_tail;
+
+#ifndef HASH_USE_CDS_LIST
+	// Initialize all new new_chains
+	for (new_tail = new_chains; new_tail < new_chains + count; new_tail++)
+		QUE_INIT(*new_tail);
+#endif
+
+	if (!old_chains)
+		return;
+
+	const chain_type* const old_end = old_chains + old_count;
+	new_tail = new_chains;
+
+	// Move any active buffers from old hash table to new
+	for (chain_type* old_tail = old_chains; old_tail < old_end; old_tail++, new_tail++)
+	{
+#ifndef HASH_USE_CDS_LIST
+		while (QUE_NOT_EMPTY(*old_tail))
+		{
+			QUE que_inst = old_tail->que_forward;
+			BufferDesc* bdb = BLOCK(que_inst, BufferDesc, bdb_que);
+			QUE_DELETE(*que_inst);
+			QUE mod_que = &new_chains[hash(bdb->bdb_page)];
+			QUE_INSERT(*mod_que, *que_inst);
+		}
+#else
+		while (!old_tail->empty())
+		{
+			auto n = old_tail->begin();
+			old_tail->erase(n->first);				// bdb_page
+			new_tail->insert(n->first, n->second);	// bdb
+		}
+#endif
+	}
+
+	delete[] old_chains;
+}
+
+void BCBHashTable::clear()
+{
+	if (!m_chains)
+		return;
+
+#ifdef HASH_USE_CDS_LIST
+	const chain_type* const end = m_chains + m_count;
+	for (chain_type* tail = m_chains; tail < end; tail++)
+		tail->clear();
+#endif
+
+	delete[] m_chains;
+	m_chains = nullptr;
+	m_count = 0;
+}
+
+inline BufferDesc* BCBHashTable::find(const PageNumber& page) const
+{
+	auto& list = m_chains[hash(page)];
+
+#ifndef HASH_USE_CDS_LIST
+	QUE que_inst = list.que_forward;
+	for (; que_inst != &list; que_inst = que_inst->que_forward)
+	{
+		BufferDesc* bdb = BLOCK(que_inst, BufferDesc, bdb_que);
+		if (bdb->bdb_page == page)
+			return bdb;
+	}
+
+#else // HASH_USE_CDS_LIST
+	auto ptr = list.get(page);
+	if (!ptr.empty())
+	{
+		fb_assert(ptr->second != nullptr);
+#ifdef DEV_BUILD
+		// Original libcds have no update(key, value), use this code with it, 
+		// see also comment in get_buffer()
+		while (ptr->second == nullptr)
+			cds::backoff::pause();
+#endif
+		if (ptr->second->bdb_page == page)
+			return ptr->second;
+	}
+#endif
+
+	return nullptr;
+}
+
+inline BufferDesc* BCBHashTable::emplace(BufferDesc* bdb, const PageNumber& page, bool remove)
+{
+#ifndef HASH_USE_CDS_LIST
+	// bcb_syncObject should be locked in EX mode
+
+	BufferDesc* bdb2 = find(page);
+	if (!bdb2)
+	{
+		if (remove)
+			QUE_DELETE(bdb->bdb_que);
+
+		que& mod_que = m_chains[hash(page)];
+		QUE_INSERT(mod_que, bdb->bdb_que);
+	}
+	return bdb2;
+#else // HASH_USE_CDS_LIST
+
+	BufferDesc* bdb2 = nullptr;
+	BdbList& list = m_chains[hash(page)];
+
+/*
+	// Original libcds have no update(key, value), use this code with it
+
+	auto ret = list.update(page, [bdb, &bdb2](bool bNew, BdbList::value_type& val)
+		{
+			if (bNew)
+				val.second = bdb;
+			else
+				while (!(bdb2 = val.second))
+					cds::backoff::pause();
+		},
+		true);
+*/
+
+	auto ret = list.update(page, bdb, [&bdb2](bool bNew, BdbList::value_type& val)
+		{
+			// someone might have put a page buffer in the chain concurrently, so
+			// we store it for the further investigation
+			if (!bNew)
+				bdb2 = val.second;
+		},
+		true);
+	fb_assert(ret.first);
+
+	// if we have inserted the page buffer that we found (empty or oldest)
+	if (bdb2 == nullptr)
+	{
+		fb_assert(ret.second);
+#ifdef DEV_BUILD
+		auto p1 = list.get(page);
+		fb_assert(!p1.empty() && p1->first == page && p1->second == bdb);
+#endif
+
+		if (remove)
+		{
+			// remove the page buffer from old hash slot
+			const PageNumber oldPage = bdb->bdb_page;
+			BdbList& oldList = m_chains[hash(oldPage)];
+
+#ifdef DEV_BUILD
+			p1 = oldList.get(oldPage);
+			fb_assert(!p1.empty() && p1->first == oldPage && p1->second == bdb);
+#endif
+
+			const bool ok = oldList.erase(oldPage);
+			fb_assert(ok);
+
+#ifdef DEV_BUILD
+			p1 = oldList.get(oldPage);
+			fb_assert(p1.empty() || p1->second != bdb);
+#endif
+		}
+
+#ifdef DEV_BUILD
+		p1 = list.get(page);
+		fb_assert(!p1.empty() && p1->first == page && p1->second == bdb);
+#endif
+	}
+	return bdb2;
+#endif
+}
+
+
+}; // namespace Jrd
+
+
 #ifdef HASH_USE_CDS_LIST
 
-///	 class FBAllocator<T>
+///	 class ListNodeAllocator<T>
 
 class InitPool
 {
@@ -5446,13 +5432,13 @@ static InitInstance<InitPool> initPool;
 
 
 template <typename T>
-T* FBAllocator<T>::allocate(std::size_t n)
+T* ListNodeAllocator<T>::allocate(std::size_t n)
 {
 	return static_cast<T*>(initPool().alloc(n * sizeof(T)));
 }
 
 template <typename T>
-void FBAllocator<T>::deallocate(T* p, std::size_t /* n */)
+void ListNodeAllocator<T>::deallocate(T* p, std::size_t /* n */)
 {
 	// It uses the correct pool stored within memory block itself
 	MemoryPool::globalFree(p);

@@ -50,14 +50,6 @@ DEFINE_TRACE_ROUTINE(cch_trace);
 #define CCH_TRACEE_AST(message) // nothing
 #endif
 
-//#define HASH_USE_BCB_SYNC
-#define HASH_USE_CDS_LIST
-
-#ifdef HASH_USE_CDS_LIST
-//#include <cds/container/michael_list_hp.h>
-#include <cds/container/michael_kvlist_dhp.h>
-#endif
-
 namespace Ods {
 	struct pag;
 }
@@ -70,6 +62,7 @@ class thread_db;
 struct que;
 class BufferDesc;
 class Database;
+class BCBHashTable;
 
 // Page buffer cache size constraints.
 
@@ -82,53 +75,14 @@ const ULONG MAX_PAGE_BUFFERS = MAX_SLONG - 1;
 
 // BufferControl -- Buffer control block -- one per system
 
-#ifdef HASH_USE_CDS_LIST
-
-template <typename T>
-class FBAllocator
-{
-public:
-	typedef T value_type;
-
-	FBAllocator() {};
-
-	template <class U> 
-	constexpr FBAllocator(const FBAllocator<U>&) noexcept {}
-
-	T* allocate(std::size_t n);
-	void deallocate(T* p, std::size_t n);
-
-private:
-};
-
-struct BdbTraits : public cds::container::michael_list::traits
-{
-	typedef FBAllocator<int> allocator;
-	//typedef std::less<PageNumber> compare;
-};
-
-typedef cds::container::MichaelKVList<cds::gc::DHP, PageNumber, BufferDesc*, BdbTraits> BdbList;
-
-#endif // HASH_USE_CDS_LIST
-
-struct bcb_repeat
-{
-	BufferDesc*	bcb_bdb;		// Buffer descriptor block
-
-#ifndef HASH_USE_CDS_LIST
-	que			bcb_page_mod;	// Que of buffers with page mod n
-#else // HASH_USE_CDS_LIST
-	BdbList		bcb_hash_chain;
-#endif
-};
-
 class BufferControl : public pool_alloc<type_bcb>
 {
 	BufferControl(MemoryPool& p, Firebird::MemoryStats& parentStats)
 		: bcb_bufferpool(&p),
 		  bcb_memory_stats(&parentStats),
 		  bcb_memory(p),
-		  bcb_writer_fini(p, cache_writer, THREAD_medium)
+		  bcb_writer_fini(p, cache_writer, THREAD_medium),
+		  bcb_bdbBlocks(p)
 	{
 		bcb_database = NULL;
 		QUE_INIT(bcb_in_use);
@@ -144,6 +98,7 @@ class BufferControl : public pool_alloc<type_bcb>
 		bcb_prec_walk_mark = 0;
 		bcb_page_size = 0;
 		bcb_page_incarnation = 0;
+		bcb_hashTable = nullptr;
 #ifdef SUPERSERVER_V2
 		bcb_prefetch = NULL;
 #endif
@@ -186,7 +141,6 @@ public:
 	Firebird::SyncObject	bcb_syncEmpty;
 	Firebird::SyncObject	bcb_syncPrecedence;
 	Firebird::SyncObject	bcb_syncLRU;
-	//Firebird::SyncObject	bcb_syncPageWrite;
 
 	typedef ThreadFinishSync<BufferControl*> BcbThreadSync;
 
@@ -206,7 +160,15 @@ public:
 
 	void exceptionHandler(const Firebird::Exception& ex, BcbThreadSync::ThreadRoutine* routine);
 
-	bcb_repeat*	bcb_rpt;
+	BCBHashTable* bcb_hashTable;
+
+	// block of allocated BufferDesc's
+	struct BDBBlock
+	{
+		BufferDesc* m_bdbs;
+		ULONG m_count;
+	};
+	Firebird::Array<BDBBlock>	bcb_bdbBlocks;		// all allocated BufferDesc's
 };
 
 const int BCB_keep_pages	= 1;	// set during btc_flush(), pages not removed from dirty binary tree
@@ -228,13 +190,13 @@ class BufferDesc : public pool_alloc<type_bdb>
 public:
 	explicit BufferDesc(BufferControl* bcb)
 		: bdb_bcb(bcb),
-		  bdb_page(0, 0),
-		  bdb_pending_page(0, 0)
+		  bdb_page(0, 0)
 	{
 		bdb_lock = NULL;
 		QUE_INIT(bdb_que);
 		QUE_INIT(bdb_in_use);
 		QUE_INIT(bdb_dirty);
+		bdb_lru_chain = NULL;
 		bdb_buffer = NULL;
 		bdb_incarnation = 0;
 		bdb_transactions = 0;
@@ -244,6 +206,7 @@ public:
 		bdb_exclusive = NULL;
 		bdb_io = NULL;
 		bdb_writers = 0;
+		bdb_io_locks = 0;
 		bdb_scan_count = 0;
 		bdb_difference_page = 0;
 		bdb_prec_walk_mark = 0;
@@ -275,13 +238,12 @@ public:
 	BufferControl*	bdb_bcb;
 	Firebird::SyncObject	bdb_syncPage;
 	Lock*		bdb_lock;				// Lock block for buffer
-	que			bdb_que;				// Either mod que in hash table or bcb_pending que if BDB_free_pending flag is set
+	que			bdb_que;				// Either mod que in hash table or bcb_empty que if never used
 	que			bdb_in_use;				// queue of buffers in use
 	que			bdb_dirty;				// dirty pages LRU queue
 	BufferDesc*	bdb_lru_chain;			// pending LRU chain
 	Ods::pag*	bdb_buffer;				// Actual buffer
 	PageNumber	bdb_page;				// Database page number in buffer
-	PageNumber	bdb_pending_page;		// Database page number to be
 	ULONG		bdb_incarnation;
 	ULONG		bdb_transactions;		// vector of dirty flags to reduce commit overhead
 	TraNumber	bdb_mark_transaction;	// hi-water mark transaction to defer header page I/O
