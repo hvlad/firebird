@@ -1137,11 +1137,10 @@ void CCH_fini(thread_db* tdbb)
 
 	delete bcb->bcb_hashTable;
 
-	for (auto blk : bcb->bcb_bdbBlocks)
-	{
-		for (ULONG i = 0; i < blk.m_count; i++)
-			delete blk.m_bdbs[i].bdb_lock;
-	}
+	if (!(bcb->bcb_flags & BCB_exclusive))
+		for (auto blk : bcb->bcb_bdbBlocks)
+			for (ULONG i = 0; i < blk.m_count; i++)
+				delete blk.m_bdbs[i].bdb_lock;
 
 	bcb->bcb_bdbBlocks.clear();
 	bcb->bcb_count = 0;
@@ -2051,6 +2050,7 @@ void CCH_release(thread_db* tdbb, WIN* window, const bool release_tail)
 					// Reassert blocking AST after write failure with dummy lock convert
 					// to same level. This will re-enable blocking AST notification.
 
+					if (!(bcb->bcb_flags & BCB_exclusive))
 					{ // scope
 						ThreadStatusGuard temp_status(tdbb);
 						LCK_convert_opt(tdbb, bdb->bdb_lock, bdb->bdb_lock->lck_logical);
@@ -3870,7 +3870,8 @@ static BufferDesc* get_buffer(thread_db* tdbb, const PageNumber page, SyncType s
 					bdb->bdb_flags &= BDB_lru_chained; // yes, clear all except BDB_lru_chained
 					bdb->bdb_flags |= BDB_read_pending;
 					bdb->bdb_scan_count = 0;
-					bdb->bdb_lock->lck_logical = LCK_none;
+					if (bdb->bdb_lock)
+						bdb->bdb_lock->lck_logical = LCK_none;
 
 #ifndef HASH_USE_CDS_LIST
 					bcbSync.unlock();
