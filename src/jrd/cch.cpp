@@ -881,7 +881,7 @@ LockState CCH_fetch_lock(thread_db* tdbb, WIN* window, int lock_type, int wait, 
 	if (!(bdb->bdb_flags & BDB_read_pending))
 		fb_assert(bdb->bdb_buffer->pag_pageno == window->win_page.getPageNum());
 	else
-		fb_assert(bdb->ourExclusiveLock());
+		fb_assert(bdb->ourExclusiveLock() || bdb->bdb_lock && bdb->bdb_lock->lck_logical == LCK_none);
 
 	if (lock_type >= LCK_write)
 		bdb->bdb_flags |= BDB_writer;
@@ -1461,17 +1461,22 @@ pag* CCH_handoff(thread_db*	tdbb, WIN* window, ULONG page, int lock, SCHAR page_
 	WIN temp = *window;
 	window->win_page = PageNumber(window->win_page.getPageSpaceID(), page);
 
-	// This prevents a deadlock with the precedence queue, as shown by
-	// mwrite mwrite1 2 mwrite2 2 test.fdb
-
-	const int wait2 = bdb->ourExclusiveLock() ? LCK_NO_WAIT : wait;
-	LockState must_read = CCH_fetch_lock(tdbb, window, lock, wait2, page_type);
-
-	if ((must_read == lsLatchTimeout || must_read == lsLockTimeout) && wait2 == LCK_NO_WAIT)
+	LockState must_read;
+	if (bdb->bdb_bcb->bcb_flags & BCB_exclusive)
 	{
-		temp.win_bdb->downgrade(SYNC_SHARED);
-		must_read = CCH_fetch_lock(tdbb, window, lock, wait, page_type);
+		// This prevents a deadlock with the precedence queue, as shown by
+		// mwrite mwrite1 2 mwrite2 2 test.fdb
+
+		const int wait2 = bdb->ourExclusiveLock() ? LCK_NO_WAIT : wait;
+		must_read = CCH_fetch_lock(tdbb, window, lock, wait2, page_type);
+		if (must_read == lsLatchTimeout && wait2 == LCK_NO_WAIT)
+		{
+			bdb->downgrade(SYNC_SHARED);
+			must_read = CCH_fetch_lock(tdbb, window, lock, wait, page_type);
+		}
 	}
+	else
+		must_read = CCH_fetch_lock(tdbb, window, lock, wait, page_type);
 
 	// Latch or lock timeout, return failure.
 
@@ -3570,6 +3575,7 @@ static bool expand_buffers(thread_db* tdbb, ULONG number)
 	if (tdbb->getAttachment()->att_flags & ATT_exclusive)
 		bcb->bcb_hashTable->resize(number);
 
+	SyncLockGuard syncEmpty(&bcb->bcb_syncEmpty, SYNC_EXCLUSIVE, FB_FUNCTION);
 	ULONG allocated = memory_init(tdbb, bcb, number - bcb->bcb_count);
 
 	bcb->bcb_count += allocated;
