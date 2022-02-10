@@ -272,6 +272,7 @@ public:
 	// else, returns BufferDesc that is currently occupies target slot
 	BufferDesc* emplace(BufferDesc* bdb, const PageNumber& page, bool remove);
 
+	void remove(BufferDesc* bdb);
 private:
 	ULONG hash(const PageNumber& pageno) const
 	{
@@ -1099,14 +1100,30 @@ void CCH_forget_page(thread_db* tdbb, WIN* window)
 
 	removeDirty(bcb, bdb);
 
-	QUE_DELETE(bdb->bdb_in_use);
-	QUE_DELETE(bdb->bdb_que);
+	// remove from LRU list
+	{
+		SyncLockGuard lruSync(&bcb->bcb_syncLRU, SYNC_EXCLUSIVE, FB_FUNCTION);
+		requeueRecentlyUsed(bcb);
+		QUE_DELETE(bdb->bdb_in_use);
+	}
+
+	// remove from hash table and put into empty list
+#ifndef HASH_USE_CDS_LIST
+	{
+		SyncLockGuard bcbSync(&bcb->bcb_syncObject, SYNC_EXCLUSIVE, FB_FUNCTION);
+		bcb->bcb_hashTable->remove(bdb);
+		QUE_INSERT(bcb->bcb_empty, bdb->bdb_que);
+		bcb->bcb_inuse--;
+	}
+#else
+	bcb->bcb_hashTable->remove(bdb);
 
 	{
 		SyncLockGuard syncEmpty(&bcb->bcb_syncEmpty, SYNC_EXCLUSIVE, FB_FUNCTION);
 		QUE_INSERT(bcb->bcb_empty, bdb->bdb_que);
 		bcb->bcb_inuse--;
 	}
+#endif
 
 	if (tdbb->tdbb_flags & TDBB_no_cache_unwind)
 		bdb->release(tdbb, true);
@@ -5383,6 +5400,23 @@ inline BufferDesc* BCBHashTable::emplace(BufferDesc* bdb, const PageNumber& page
 #endif
 	}
 	return bdb2;
+#endif
+}
+
+
+void BCBHashTable::remove(BufferDesc* bdb)
+{
+#ifndef HASH_USE_CDS_LIST
+	QUE_DELETE(bdb->bdb_que);
+#else
+	BdbList& list = m_chains[hash(bdb->bdb_page)];
+
+#ifdef DEV_BUILD
+	auto p = list.get(bdb->bdb_page);
+	fb_assert(!p.empty() && p->first == bdb->bdb_page && p->second == bdb);
+#endif
+
+	list.erase(bdb->bdb_page);
 #endif
 }
 
