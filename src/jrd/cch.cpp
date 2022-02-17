@@ -1095,7 +1095,6 @@ void CCH_forget_page(thread_db* tdbb, WIN* window)
 		dbb->dbb_flags &= ~DBB_suspend_bgio;
 
 	clear_dirty_flag_and_nbak_state(tdbb, bdb);
-	bdb->bdb_flags = 0; // ?
 	BufferControl* bcb = dbb->dbb_bcb;
 
 	removeDirty(bcb, bdb);
@@ -1124,6 +1123,8 @@ void CCH_forget_page(thread_db* tdbb, WIN* window)
 		bcb->bcb_inuse--;
 	}
 #endif
+
+	bdb->bdb_flags = 0;
 
 	if (tdbb->tdbb_flags & TDBB_no_cache_unwind)
 		bdb->release(tdbb, true);
