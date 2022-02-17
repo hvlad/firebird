@@ -230,6 +230,10 @@
 #ifdef ARM
 #define FB_CPU CpuArm
 #endif /* ARM */
+#ifdef ARM64
+#define DARWIN64
+#define FB_CPU CpuArm64
+#endif /* ARM64 */
 #ifdef __ppc__
 #define powerpc
 #define FB_CPU CpuPowerPc
@@ -252,8 +256,6 @@
 
 #define API_ROUTINE __attribute__((visibility("default")))
 #define API_ROUTINE_VARARG API_ROUTINE
-#define INTERNAL_API_ROUTINE API_ROUTINE
-#define FB_EXPORTED __attribute__((visibility("default")))
 
 #define O_DIRECT F_NOCACHE
 #endif /* Darwin Platforms */
@@ -601,10 +603,6 @@ extern "C" int remove(const char* path);
 
 #ifndef CLIB_ROUTINE
 #define CLIB_ROUTINE
-#endif
-
-#ifndef FB_EXPORTED
-#define FB_EXPORTED
 #endif
 
 #ifdef HAS_NOEXCEPT

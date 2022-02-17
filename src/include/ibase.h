@@ -64,6 +64,18 @@
 #define FB_API_DEPRECATED
 #endif
 
+#if defined(WIN32) || defined(_WIN32) || defined(__WIN32__)
+#define FB_DLL_EXPORT __declspec(dllexport)
+#elif defined __has_attribute
+#if __has_attribute (visibility)
+#define FB_DLL_EXPORT __attribute__ ((visibility("default")))
+#else
+#define FB_DLL_EXPORT
+#endif
+#else
+#define FB_DLL_EXPORT
+#endif
+
 #include "./firebird/impl/types_pub.h"
 
 /***********************/

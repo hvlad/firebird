@@ -905,7 +905,7 @@ Data source : @4', NULL, NULL)
 ('no_cursor', 'DSQL_open', 'dsql.cpp', NULL, 0, 795, NULL, 'Cannot open cursor for non-SELECT statement', NULL, NULL);
 ('dsql_window_incompat_frames', NULL, 'ExprNodes.cpp', NULL, 0, 796, NULL, 'If <window frame bound 1> specifies @1, then <window frame bound 2> shall not specify @2', NULL, NULL);
 ('dsql_window_range_multi_key', NULL, 'ExprNodes.cpp', NULL, 0, 797, NULL, 'RANGE based window with <expr> {PRECEDING | FOLLOWING} cannot have ORDER BY with more than one value', NULL, NULL);
-('dsql_window_range_inv_key_type', NULL, 'ExprNodes.cpp', NULL, 0, 798, NULL, 'RANGE based window must have an ORDER BY key of numerical, date, time or timestamp types', NULL, NULL);
+('dsql_window_range_inv_key_type', NULL, 'ExprNodes.cpp', NULL, 0, 798, NULL, 'RANGE based window with <offset> PRECEDING/FOLLOWING must have a single ORDER BY key of numerical, date, time or timestamp types', NULL, NULL);
 ('dsql_window_frame_value_inv_type', NULL, 'ExprNodes.cpp', NULL, 0, 799, NULL, 'Window RANGE/ROWS PRECEDING/FOLLOWING value must be of a numerical type', NULL, NULL);
 ('window_frame_value_invalid', NULL, 'ExprNodes.cpp', NULL, 0, 800, NULL, 'Invalid PRECEDING or FOLLOWING offset in window function: cannot be negative', NULL, NULL);
 ('dsql_window_not_found', NULL, 'ExprNodes.cpp', NULL, 0, 801, NULL, 'Window @1 not found', NULL, NULL);
@@ -965,7 +965,7 @@ Data source : @4', NULL, NULL)
 ('big_segment', NULL, NULL, NULL, 0, 855, NULL, 'Segment size (@1) should not exceed 65535 (64K - 1) when using segmented blob', NULL, NULL);
 ('batch_policy', NULL, NULL, NULL, 0, 856, NULL, 'Invalid blob policy in the batch for @1() call', NULL, NULL);
 ('batch_defbpb', NULL, NULL, NULL, 0, 857, NULL, 'Can''t change default BPB after adding any data to batch', NULL, NULL);
-('batch_align', NULL, 'interface.cpp', NULL, 0, 858, NULL, 'Unexpected info buffer structure querying for default blob alignment', NULL, NULL);
+('batch_align', NULL, 'interface.cpp', NULL, 0, 858, NULL, 'Unexpected info buffer structure querying for server batch parameters', NULL, NULL);
 ('multi_segment_dup', 'getMultiPartConnectParameter', 'server.cpp', NULL, 0, 859, NULL, 'Duplicated segment @1 in multisegment connect block parameter', NULL, NULL);
 ('non_plugin_protocol', NULL, 'server.cpp', NULL, 0, 860, NULL, 'Plugin not supported by network protocol', NULL, NULL);
 ('message_format', NULL, 'server.cpp', NULL, 0, 861, NULL, 'Error parsing message format', NULL, NULL);
@@ -1060,6 +1060,10 @@ Data source : @4', NULL, NULL)
 ('wrong_page', 'get_header', 'dpm.epp', NULL, 0, 950, NULL, 'RDB$PAGES written by non-system transaction, DB appears to be damaged', NULL, NULL);
 ('repl_error', 'checkStatus', 'Publisher.cpp', NULL, 0, 951, NULL, 'Replication error', NULL, NULL);
 ('ses_reset_failed', NULL, 'Attachment.cpp', NULL, 0, 952, NULL, 'Reset of user session failed. Connection is shut down.', NULL, NULL);
+('block_size', NULL, 'unix.cpp', NULL, 0, 953, NULL, 'File size is less than expected', NULL, NULL);
+('tom_key_length', NULL, 'SysFunction.cpp', NULL, 0, 954, NULL, 'Invalid key length @1, need >@2', NULL, NULL);
+('inf_invalid_args', NULL, NULL, NULL, 0, 955, NULL, 'Invalid information arguments', NULL, NULL);
+('sysf_invalid_null_empty', NULL, 'SysFunction.cpp', NULL, 0, 956, NULL, 'Empty or NULL parameter @1 is not accepted', NULL, NULL);
 -- QLI
 (NULL, NULL, NULL, NULL, 1, 0, NULL, 'expected type', NULL, NULL);
 (NULL, NULL, NULL, NULL, 1, 1, NULL, 'bad block type', NULL, NULL);
@@ -2576,6 +2580,7 @@ ERROR: Backup incomplete', NULL, NULL);
 (NULL, 'get_pub_table', 'restore.epp', NULL, 12, 402, NULL, 'publication for table', NULL, NULL);
 ('gbak_opt_replica', 'burp_usage', 'burp.c', NULL, 12, 403, NULL, '    @1REPLICA <mode>      "none", "read_only" or "read_write" replica mode', NULL, NULL);
 ('gbak_replica_req', 'BURP_gbak', 'burp.c', NULL, 12, 404, NULL, '"none", "read_only" or "read_write" required', NULL, NULL);
+(NULL, 'get_blob', 'restore.epp', NULL, 12, 405, NULL, 'could not access batch parameters', NULL, NULL);
 -- SQLERR
 (NULL, NULL, NULL, NULL, 13, 1, NULL, 'Firebird error', NULL, NULL);
 (NULL, NULL, NULL, NULL, 13, 74, NULL, 'Rollback not performed', NULL, NULL);

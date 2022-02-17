@@ -468,7 +468,7 @@ void registerEngine(IPluginManager* iPlugin)
 
 } // namespace Jrd
 
-extern "C" void FB_EXPORTED FB_PLUGIN_ENTRY_POINT(IMaster* master)
+extern "C" FB_DLL_EXPORT void FB_PLUGIN_ENTRY_POINT(IMaster* master)
 {
 	CachedMasterInterface::set(master);
 	registerEngine(PluginManagerInterfacePtr());
@@ -705,12 +705,12 @@ namespace
 		validateHandle(tdbb, batch->getAttachment());
 	}
 
-	inline void validateHandle(thread_db* tdbb, JReplicator* const replicator)
+	inline void validateHandle(thread_db* tdbb, Applier* const applier)
 	{
-		if (!replicator)
+		if (!applier)
 			status_exception::raise(Arg::Gds(isc_bad_repl_handle));
 
-		validateHandle(tdbb, replicator->getAttachment()->getHandle());
+		validateHandle(tdbb, applier->getAttachment());
 	}
 
 	class AttachmentHolder
@@ -962,7 +962,15 @@ void Trigger::release(thread_db* tdbb)
 		extTrigger = NULL;
 	}
 
-	if (blr.isEmpty() || !statement || statement->isActive() || releaseInProgress)
+	// dimitr:	We should never release triggers created by MET_parse_sys_trigger().
+	//			System triggers do have BLR, but it's not stored inside the trigger object.
+	//			However, triggers backing RI constraints are also marked as system,
+	//			but they are loaded in a regular way and their BLR is present here.
+	//			This is why we cannot simply check for sysTrigger, sigh.
+
+	const bool sysTableTrigger = (blr.isEmpty() && engine.isEmpty());
+
+	if (sysTableTrigger || !statement || statement->isActive() || releaseInProgress)
 		return;
 
 	AutoSetRestore<bool> autoProgressFlag(&releaseInProgress, true);
@@ -1044,7 +1052,7 @@ namespace Jrd
 		USHORT	dpb_verify;
 		USHORT	dpb_sweep;
 		USHORT	dpb_dbkey_scope;
-		USHORT	dpb_page_size;
+		SLONG	dpb_page_size;
 		bool	dpb_activate_shadow;
 		bool	dpb_delete_shadow;
 		bool	dpb_no_garbage;
@@ -1080,6 +1088,7 @@ namespace Jrd
 		ULONG	dpb_remote_flags;
 		ReplicaMode	dpb_replica_mode;
 		bool	dpb_set_db_replica;
+		bool	dpb_clear_map;
 
 		// here begin compound objects
 		// for constructor to work properly dpb_user_name
@@ -1787,8 +1796,8 @@ JAttachment* JProvider::internalAttach(CheckStatusWrapper* user_status, const ch
 				PageSpace* pageSpace = dbb->dbb_page_manager.findPageSpace(DB_PAGE_SPACE);
 				pageSpace->file = PIO_open(tdbb, expanded_name, org_filename);
 
-				// Initialize the global object holder
-				dbb->initGlobalObjectHolder(tdbb);
+				// Initialize the global objects
+				dbb->initGlobalObjects();
 
 				// Initialize locks
 				LCK_init(tdbb, LCK_OWNER_database);
@@ -1929,6 +1938,12 @@ JAttachment* JProvider::internalAttach(CheckStatusWrapper* user_status, const ch
 				break;
 			}
 
+			// Clear old mapping cache data on request.
+			// Unfortunately have to do it w/o access rights check - to check access rights engine
+			// needs correct mapping which sometimes can't be guaranteed before cleaning cache.
+			if (options.dpb_clear_map)
+				Mapping::clearCache(dbb->dbb_filename.c_str(), Mapping::ALL_CACHE);
+
 			// Check for correct credentials supplied
 			UserId userId;
 
@@ -2038,8 +2053,10 @@ JAttachment* JProvider::internalAttach(CheckStatusWrapper* user_status, const ch
 
 			if (!options.dpb_session_tz.isEmpty())
 			{
-				attachment->att_current_timezone = attachment->att_original_timezone = TimeZoneUtil::parse(
-					options.dpb_session_tz.c_str(), options.dpb_session_tz.length());
+				attachment->att_timestamp.time_zone = attachment->att_current_timezone =
+					attachment->att_original_timezone = TimeZoneUtil::parse(
+						options.dpb_session_tz.c_str(), options.dpb_session_tz.length());
+
 			}
 
 			// if the attachment is through gbak and this attachment is not by owner
@@ -2063,6 +2080,7 @@ JAttachment* JProvider::internalAttach(CheckStatusWrapper* user_status, const ch
 
 				// Can't allow garbage collection during database validation.
 
+				AutoSetRestoreFlag<ULONG> noCleanup(&attachment->att_flags, ATT_no_cleanup, true);
 				VIO_fini(tdbb);
 
 				if (!VAL_validate(tdbb, options.dpb_verify))
@@ -2308,7 +2326,7 @@ void JBlob::getInfo(CheckStatusWrapper* user_status,
 }
 
 
-void JBlob::cancel(CheckStatusWrapper* user_status)
+void JBlob::deprecatedCancel(CheckStatusWrapper* user_status)
 {
 /**************************************
  *
@@ -2321,6 +2339,14 @@ void JBlob::cancel(CheckStatusWrapper* user_status)
  *
  **************************************/
 	freeEngineData(user_status);
+}
+
+
+void JBlob::cancel(CheckStatusWrapper* user_status)
+{
+	freeEngineData(user_status);
+	if (user_status->isEmpty())
+		release();
 }
 
 
@@ -2362,7 +2388,7 @@ void JBlob::freeEngineData(CheckStatusWrapper* user_status)
 }
 
 
-void JEvents::cancel(CheckStatusWrapper* user_status)
+void JEvents::deprecatedCancel(CheckStatusWrapper* user_status)
 {
 /**************************************
  *
@@ -2375,6 +2401,14 @@ void JEvents::cancel(CheckStatusWrapper* user_status)
  *
  **************************************/
 	freeEngineData(user_status);
+}
+
+
+void JEvents::cancel(CheckStatusWrapper* user_status)
+{
+	freeEngineData(user_status);
+	if (user_status->isEmpty())
+		release();
 }
 
 
@@ -2460,6 +2494,20 @@ void JAttachment::cancelOperation(CheckStatusWrapper* user_status, int option)
 
 void JBlob::close(CheckStatusWrapper* user_status)
 {
+	internalClose(user_status);
+	if (user_status->isEmpty())
+		release();
+}
+
+
+void JBlob::deprecatedClose(CheckStatusWrapper* user_status)
+{
+	internalClose(user_status);
+}
+
+
+void JBlob::internalClose(CheckStatusWrapper* user_status)
+{
 /**************************************
  *
  *	g d s _ $ c l o s e _ b l o b
@@ -2498,6 +2546,20 @@ void JBlob::close(CheckStatusWrapper* user_status)
 
 
 void JTransaction::commit(CheckStatusWrapper* user_status)
+{
+	internalCommit(user_status);
+	if (user_status->isEmpty())
+		release();
+}
+
+
+void JTransaction::deprecatedCommit(CheckStatusWrapper* user_status)
+{
+	internalCommit(user_status);
+}
+
+
+void JTransaction::internalCommit(CheckStatusWrapper* user_status)
 {
 /**************************************
  *
@@ -2888,11 +2950,11 @@ JAttachment* JProvider::createDatabase(CheckStatusWrapper* user_status, const ch
 
 			attachment->att_client_charset = attachment->att_charset = options.dpb_interp;
 
-			if (!options.dpb_page_size) {
+			if (options.dpb_page_size <= 0) {
 				options.dpb_page_size = DEFAULT_PAGE_SIZE;
 			}
 
-			USHORT page_size = MIN_PAGE_SIZE;
+			SLONG page_size = MIN_PAGE_SIZE;
 			for (; page_size < MAX_PAGE_SIZE; page_size <<= 1)
 			{
 				if (options.dpb_page_size < page_size << 1)
@@ -2968,8 +3030,8 @@ JAttachment* JProvider::createDatabase(CheckStatusWrapper* user_status, const ch
 			os_utils::getUniqueFileId(dbb->dbb_filename.c_str(), dbb->dbb_id);
 #endif
 
-			// Initialize the global object holder
-			dbb->initGlobalObjectHolder(tdbb);
+			// Initialize the global objects
+			dbb->initGlobalObjects();
 
 			// Initialize locks
 			LCK_init(tdbb, LCK_OWNER_database);
@@ -3000,6 +3062,9 @@ JAttachment* JProvider::createDatabase(CheckStatusWrapper* user_status, const ch
 			else
 				dbb->dbb_database_name = dbb->dbb_filename;
 
+			// Clear old mapping cache data (if present)
+			Mapping::clearCache(dbb->dbb_filename.c_str(), Mapping::ALL_CACHE);
+
 			// Initialize backup difference subsystem. This must be done before WAL and shadowing
 			// is enabled because nbackup it is a lower level subsystem
 			dbb->dbb_backup_manager = FB_NEW_POOL(*dbb->dbb_permanent) BackupManager(tdbb,
@@ -3024,8 +3089,7 @@ JAttachment* JProvider::createDatabase(CheckStatusWrapper* user_status, const ch
 				PAG_set_no_reserve(tdbb, options.dpb_no_reserve);
 
 			fb_assert(attachment->att_user);	// set by UserId::sclInit()
-			INI_format(attachment->att_user->getUserName().c_str(),
-				options.dpb_set_db_charset.c_str());
+			INI_format(attachment->getUserName().c_str(), options.dpb_set_db_charset.c_str());
 
 			// If we have not allocated first TIP page, do it now.
 			if (!dbb->dbb_t_pages || !dbb->dbb_t_pages->count())
@@ -3093,8 +3157,9 @@ JAttachment* JProvider::createDatabase(CheckStatusWrapper* user_status, const ch
 
 			if (!options.dpb_session_tz.isEmpty())
 			{
-				attachment->att_current_timezone = attachment->att_original_timezone = TimeZoneUtil::parse(
-					options.dpb_session_tz.c_str(), options.dpb_session_tz.length());
+				attachment->att_timestamp.time_zone = attachment->att_current_timezone =
+					attachment->att_original_timezone = TimeZoneUtil::parse(
+						options.dpb_session_tz.c_str(), options.dpb_session_tz.length());
 			}
 
 			CCH_flush(tdbb, FLUSH_FINI, 0);
@@ -3114,6 +3179,8 @@ JAttachment* JProvider::createDatabase(CheckStatusWrapper* user_status, const ch
 			// Init complete - we can release dbInitMutex
 			dbb->dbb_flags &= ~(DBB_new | DBB_creating);
 			guardDbInit.leave();
+
+			REPL_attach(tdbb, false);
 
 			// Report that we created attachment to Trace API
 			attachment->att_trace_manager->activate();
@@ -3201,22 +3268,26 @@ void JAttachment::executeDyn(CheckStatusWrapper* status, ITransaction* /*tra*/, 
 }
 
 
-void JAttachment::detach(CheckStatusWrapper* user_status)
+void JAttachment::internalDetach(CheckStatusWrapper* user_status)
 {
-/**************************************
- *
- *	g d s _ $ d e t a c h
- *
- **************************************
- *
- * Functional description
- *	Close down a database.
- *
- **************************************/
 	if (!att->getHandle())
 		return;				// already detached
 
 	freeEngineData(user_status, false);
+}
+
+
+void JAttachment::deprecatedDetach(CheckStatusWrapper* user_status)
+{
+	internalDetach(user_status);
+}
+
+
+void JAttachment::detach(CheckStatusWrapper* user_status)
+{
+	internalDetach(user_status);
+	if (user_status->isEmpty())
+		release();
 }
 
 
@@ -3225,6 +3296,7 @@ void JAttachment::freeEngineData(CheckStatusWrapper* user_status, bool forceFree
 /**************************************
  *
  *	f r e e E n g i n e D a t a
+ *	former g d s _ $ d e t a c h
  *
  **************************************
  *
@@ -3295,6 +3367,20 @@ void JAttachment::freeEngineData(CheckStatusWrapper* user_status, bool forceFree
 
 
 void JAttachment::dropDatabase(CheckStatusWrapper* user_status)
+{
+	internalDropDatabase(user_status);
+	if (user_status->isEmpty())
+		release();
+}
+
+
+void JAttachment::deprecatedDropDatabase(CheckStatusWrapper* user_status)
+{
+	internalDropDatabase(user_status);
+}
+
+
+void JAttachment::internalDropDatabase(CheckStatusWrapper* user_status)
 {
 /**************************************
  *
@@ -3867,19 +3953,17 @@ JTransaction* JAttachment::reconnectTransaction(CheckStatusWrapper* user_status,
 }
 
 
+void JRequest::deprecatedFree(CheckStatusWrapper* user_status)
+{
+	freeEngineData(user_status);
+}
+
+
 void JRequest::free(CheckStatusWrapper* user_status)
 {
-/**************************************
- *
- *	g d s _ $ r e l e a s e _ r e q u e s t
- *
- **************************************
- *
- * Functional description
- *	Release a request.
- *
- **************************************/
 	freeEngineData(user_status);
+	if (user_status->isEmpty())
+		release();
 }
 
 
@@ -4000,6 +4084,20 @@ void JTransaction::rollbackRetaining(CheckStatusWrapper* user_status)
 
 void JTransaction::rollback(CheckStatusWrapper* user_status)
 {
+	internalRollback(user_status);
+	if (user_status->isEmpty())
+		release();
+}
+
+
+void JTransaction::deprecatedRollback(CheckStatusWrapper* user_status)
+{
+	internalRollback(user_status);
+}
+
+
+void JTransaction::internalRollback(CheckStatusWrapper* user_status)
+{
 /**************************************
  *
  *	g d s _ $ r o l l b a c k
@@ -4037,6 +4135,20 @@ void JTransaction::rollback(CheckStatusWrapper* user_status)
 
 
 void JTransaction::disconnect(CheckStatusWrapper* user_status)
+{
+	internalDisconnect(user_status);
+	if (user_status->isEmpty())
+		release();
+}
+
+
+void JTransaction::deprecatedDisconnect(CheckStatusWrapper* user_status)
+{
+	internalDisconnect(user_status);
+}
+
+
+void JTransaction::internalDisconnect(CheckStatusWrapper* user_status)
 {
 	try
 	{
@@ -4171,19 +4283,17 @@ JService* JProvider::attachServiceManager(CheckStatusWrapper* user_status, const
 }
 
 
+void JService::deprecatedDetach(CheckStatusWrapper* user_status)
+{
+	freeEngineData(user_status);
+}
+
+
 void JService::detach(CheckStatusWrapper* user_status)
 {
-/**************************************
- *
- *	g d s _ $ s e r v i c e _ d e t a c h
- *
- **************************************
- *
- * Functional description
- *	Close down a service.
- *
- **************************************/
 	freeEngineData(user_status);
+	if (user_status->isEmpty())
+		release();
 }
 
 
@@ -5092,22 +5202,22 @@ IReplicator* JAttachment::createReplicator(CheckStatusWrapper* user_status)
 
 		try
 		{
-			const auto att = tdbb->getAttachment();
+			const auto applier = Applier::create(tdbb);
 
-			if (!att->att_repl_applier)
-				att->att_repl_applier = Applier::create(tdbb);
-
-			jr = FB_NEW JReplicator(getStable());
+			jr = FB_NEW JReplicator(applier, getStable());
 			jr->addRef();
+			applier->setInterfacePtr(jr);
 		}
 		catch (const Exception& ex)
 		{
-			transliterateException(tdbb, ex, user_status, "JResultSet::fetchNext");
+			transliterateException(tdbb, ex, user_status, "JAttachment::createReplicator");
+			return nullptr;
 		}
 	}
 	catch (const Exception& ex)
 	{
 		ex.stuffException(user_status);
+		return nullptr;
 	}
 
 	successful_completion(user_status);
@@ -5354,10 +5464,12 @@ void JResultSet::freeEngineData(CheckStatusWrapper* user_status)
 	successful_completion(user_status);
 }
 
+
 StableAttachmentPart* JResultSet::getAttachment()
 {
 	return statement->getAttachment();
 }
+
 
 IMessageMetadata* JResultSet::getMetadata(CheckStatusWrapper* user_status)
 {
@@ -5365,9 +5477,17 @@ IMessageMetadata* JResultSet::getMetadata(CheckStatusWrapper* user_status)
 }
 
 
+void JResultSet::deprecatedClose(CheckStatusWrapper* user_status)
+{
+	freeEngineData(user_status);
+}
+
+
 void JResultSet::close(CheckStatusWrapper* user_status)
 {
 	freeEngineData(user_status);
+	if (user_status->isEmpty())
+		release();
 }
 
 
@@ -5399,9 +5519,17 @@ void JStatement::freeEngineData(CheckStatusWrapper* user_status)
 }
 
 
+void JStatement::deprecatedFree(CheckStatusWrapper* user_status)
+{
+	freeEngineData(user_status);
+}
+
+
 void JStatement::free(CheckStatusWrapper* user_status)
 {
 	freeEngineData(user_status);
+	if (user_status->isEmpty())
+		release();
 }
 
 
@@ -5436,7 +5564,7 @@ JStatement* JAttachment::prepare(CheckStatusWrapper* user_status, ITransaction* 
 			// observation for now.
 			StatementMetadata::buildInfoItems(items, flags);
 
-			statement = DSQL_prepare(tdbb, getHandle(), tra, stmtLength, sqlStmt, dialect,
+			statement = DSQL_prepare(tdbb, getHandle(), tra, stmtLength, sqlStmt, dialect, flags,
 				&items, &buffer, false);
 			rc = FB_NEW JStatement(statement, getStable(), buffer);
 			rc->addRef();
@@ -5882,6 +6010,21 @@ int JBatch::release()
 	return 0;
 }
 
+
+void JBatch::deprecatedClose(CheckStatusWrapper* user_status)
+{
+	freeEngineData(user_status);
+}
+
+
+void JBatch::close(CheckStatusWrapper* user_status)
+{
+	freeEngineData(user_status);
+	if (user_status->isEmpty())
+		release();
+}
+
+
 void JBatch::freeEngineData(Firebird::CheckStatusWrapper* user_status)
 {
 	try
@@ -5895,6 +6038,7 @@ void JBatch::freeEngineData(Firebird::CheckStatusWrapper* user_status)
 			if (att)
 				att->deregisterBatch(this);
 			delete batch;
+			batch = nullptr;
 		}
 		catch (const Exception& ex)
 		{
@@ -6199,8 +6343,50 @@ void JBatch::cancel(CheckStatusWrapper* status)
 }
 
 
-JReplicator::JReplicator(StableAttachmentPart* sa)
-	: sAtt(sa)
+void JBatch::getInfo(CheckStatusWrapper* user_status,
+					 unsigned int itemsLength, const unsigned char* items,
+					 unsigned int bufferLength, unsigned char* buffer)
+{
+/**************************************
+ *
+ *	g d s _ $ b l o b _ i n f o
+ *
+ **************************************
+ *
+ * Functional description
+ *	Provide information on blob object.
+ *
+ **************************************/
+	try
+	{
+		EngineContextHolder tdbb(user_status, this, FB_FUNCTION);
+		check_database(tdbb);
+
+		try
+		{
+			DsqlBatch* b = getHandle();
+			b->info(tdbb, itemsLength, items, bufferLength, buffer);
+		}
+		catch (const Exception& ex)
+		{
+			transliterateException(tdbb, ex, user_status, "JBatch::getInfo");
+			return;
+		}
+	}
+	catch (const Exception& ex)
+	{
+		ex.stuffException(user_status);
+		return;
+	}
+
+	successful_completion(user_status);
+}
+
+
+
+
+JReplicator::JReplicator(Applier* appl, StableAttachmentPart* sa)
+	: applier(appl), sAtt(sa)
 { }
 
 
@@ -6210,10 +6396,13 @@ int JReplicator::release()
 	if (rc != 0)
 		return rc;
 
-	LocalStatus status;
-	CheckStatusWrapper statusWrapper(&status);
+	if (applier)
+	{
+		LocalStatus status;
+		CheckStatusWrapper statusWrapper(&status);
 
-	freeEngineData(&statusWrapper);
+		freeEngineData(&statusWrapper);
+	}
 
 	delete this;
 	return 0;
@@ -6229,9 +6418,9 @@ void JReplicator::freeEngineData(Firebird::CheckStatusWrapper* user_status)
 
 		try
 		{
-			const auto att = sAtt->getHandle();
-			if (att)
-				att->att_repl_applier.reset();
+			AutoPtr<Applier> cleanupApplier(applier);
+			cleanupApplier->shutdown(tdbb);
+			fb_assert(!applier);
 		}
 		catch (const Exception& ex)
 		{
@@ -6258,8 +6447,7 @@ void JReplicator::process(CheckStatusWrapper* status, unsigned length, const UCH
 
 		try
 		{
-			const auto att = sAtt->getHandle();
-			att->att_repl_applier->process(tdbb, length, data);
+			applier->process(tdbb, length, data);
 		}
 		catch (const Exception& ex)
 		{
@@ -6279,34 +6467,17 @@ void JReplicator::process(CheckStatusWrapper* status, unsigned length, const UCH
 }
 
 
-void JReplicator::close(CheckStatusWrapper* status)
+void JReplicator::deprecatedClose(CheckStatusWrapper* user_status)
 {
-	try
-	{
-		EngineContextHolder tdbb(status, this, FB_FUNCTION);
-		check_database(tdbb);
+	freeEngineData(user_status);
+}
 
-		try
-		{
-			const auto att = sAtt->getHandle();
-			att->att_repl_applier->shutdown(tdbb);
-			att->att_repl_applier.reset();
-		}
-		catch (const Exception& ex)
-		{
-			transliterateException(tdbb, ex, status, "JReplicator::close");
-			return;
-		}
 
-		trace_warning(tdbb, status, "JReplicator::close");
-	}
-	catch (const Exception& ex)
-	{
-		ex.stuffException(status);
-		return;
-	}
-
-	successful_completion(status);
+void JReplicator::close(CheckStatusWrapper* user_status)
+{
+	freeEngineData(user_status);
+	if (user_status->isEmpty())
+		release();
 }
 
 
@@ -6671,7 +6842,7 @@ void DatabaseOptions::get(const UCHAR* dpb, USHORT dpb_length, bool& invalid_cli
 			break;
 
 		case isc_dpb_page_size:
-			dpb_page_size = (USHORT) rdr.getInt();
+			dpb_page_size = rdr.getInt();
 			break;
 
 		case isc_dpb_debug:
@@ -7000,6 +7171,10 @@ void DatabaseOptions::get(const UCHAR* dpb, USHORT dpb_length, bool& invalid_cli
 
 		case isc_dpb_decfloat_traps:
 			rdr.getString(dpb_decfloat_traps);
+			break;
+
+		case isc_dpb_clear_map:
+			dpb_clear_map = rdr.getBoolean();
 			break;
 
 		default:
@@ -7383,8 +7558,11 @@ void release_attachment(thread_db* tdbb, Jrd::Attachment* attachment)
 
 	attachment->att_replicator = nullptr;
 
-	if (attachment->att_repl_applier)
-		attachment->att_repl_applier->shutdown(tdbb);
+	while (attachment->att_repl_appliers.hasData())
+	{
+		AutoPtr<Applier> cleanupApplier(attachment->att_repl_appliers.pop());
+		cleanupApplier->shutdown(tdbb);
+	}
 
 	if (dbb->dbb_crypto_manager)
 		dbb->dbb_crypto_manager->detach(tdbb, attachment);
@@ -7878,6 +8056,12 @@ static void purge_transactions(thread_db* tdbb, Jrd::Attachment* attachment, con
  **************************************/
 	Database* const dbb = attachment->att_database;
 	jrd_tra* const trans_dbk = attachment->att_dbkey_trans;
+
+	if (force_flag)
+	{
+		for (auto applier : attachment->att_repl_appliers)
+			applier->cleanupTransactions(tdbb);
+	}
 
 	unsigned int count = 0;
 	jrd_tra* next;
@@ -8659,7 +8843,7 @@ bool TimeoutTimer::expired() const
 		return false;
 
 	const SINT64 t = currTime();
-	return t > m_start + m_value;
+	return t >= m_start + m_value;
 }
 
 unsigned int TimeoutTimer::timeToExpire() const
@@ -8838,6 +9022,22 @@ void thread_db::reschedule()
 
 	if (tdbb_quantum <= 0)
 		tdbb_quantum = (tdbb_flags & TDBB_sweeper) ? SWEEP_QUANTUM : QUANTUM;
+}
+
+ULONG thread_db::adjustWait(ULONG wait) const
+{
+	if ((wait == 0) || (tdbb_flags & TDBB_wait_cancel_disable) || !tdbb_reqTimer)
+		return wait;
+
+	// This limit corresponds to the lock manager restriction (wait time is signed short)
+	static const ULONG MAX_WAIT_TIME = MAX_SSHORT; // seconds
+
+	const unsigned int timeout = tdbb_reqTimer->timeToExpire(); // milliseconds
+
+	const ULONG adjustedTimeout =
+		(timeout < MAX_WAIT_TIME * 1000) ? (timeout + 999) / 1000 : MAX_WAIT_TIME;
+
+	return MIN(wait, adjustedTimeout);
 }
 
 // end thread_db methods
@@ -9196,19 +9396,13 @@ void JRD_compile(thread_db* tdbb,
 
 	JrdStatement* statement = request->getStatement();
 
-	if (!ref_str)
-	{
-		fb_assert(statement->blr.isEmpty());
-
-		// hvlad: if\when we implement request's cache in the future and
-		// CMP_compile2 will return us previously compiled request with
-		// non-empty req_blr, then we must replace assertion by the line below
-		// if (!statement->req_blr.isEmpty())
-
-		statement->blr.insert(0, blr, blr_length);
-	}
-	else
+	if (ref_str)
 		statement->sqlText = ref_str;
+
+	fb_assert(statement->blr.isEmpty());
+
+	if (attachment->getDebugOptions().getDsqlKeepBlr())
+		statement->blr.insert(0, blr, blr_length);
 
 	*req_handle = request;
 }

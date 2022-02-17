@@ -48,6 +48,8 @@
 #include "../jrd/EngineInterface.h"
 #include "../jrd/sbm.h"
 
+#include <atomic>
+
 #define DEBUG_LCK_LIST
 
 namespace EDS {
@@ -347,7 +349,7 @@ public:
 
 		bool lookup(SLONG id, MetaName& name)
 		{
-			if (id < (int) m_objects.getCount())
+			if (id < (int) m_objects.getCount() && m_objects[id].hasData())
 			{
 				name = m_objects[id];
 				return true;
@@ -399,6 +401,23 @@ public:
 		USHORT originalTimeZone = Firebird::TimeZoneUtil::GMT_ZONE;
 	};
 
+	class DebugOptions
+	{
+	public:
+		bool getDsqlKeepBlr() const
+		{
+			return dsqlKeepBlr;
+		}
+
+		void setDsqlKeepBlr(bool value)
+		{
+			dsqlKeepBlr = value;
+		}
+
+	private:
+		bool dsqlKeepBlr = false;
+	};
+
 public:
 	static Attachment* create(Database* dbb, JProvider* provider);
 	static void destroy(Attachment* const attachment);
@@ -442,12 +461,12 @@ public:
 #ifdef DEBUG_LCK_LIST
 	UCHAR		att_long_locks_type;		// Lock type of the first lock in list
 #endif
-	Lock*		att_wait_lock;				// lock at which attachment waits currently
+	std::atomic<SLONG>	att_wait_owner_handle;	// lock owner with which attachment waits currently
 	vec<Lock*>*	att_compatibility_table;	// hash table of compatible locks
 	Validation*	att_validation;
 	Firebird::PathName	att_working_directory;	// Current working directory is cached
 	Firebird::PathName	att_filename;			// alias used to attach the database
-	const ISC_TIMESTAMP_TZ	att_timestamp;	// Connection date and time
+	ISC_TIMESTAMP_TZ	att_timestamp;	    // Connection date and time
 	Firebird::StringMap att_context_vars;	// Context variables for the connection
 	Firebird::Stack<DdlTriggerContext*> ddlTriggersContext;	// Context variables for DDL trigger event
 	Firebird::string att_network_protocol;	// Network protocol used by client for connection
@@ -481,7 +500,7 @@ public:
 
 	Firebird::RefPtr<Firebird::IReplicatedSession> att_replicator;
 	Firebird::AutoPtr<Replication::TableMatcher> att_repl_matcher;
-	Firebird::AutoPtr<Applier> att_repl_applier;
+	Firebird::Array<Applier*> att_repl_appliers;
 
 	enum UtilType { UTIL_NONE, UTIL_GBAK, UTIL_GFIX, UTIL_GSTAT };
 
@@ -634,6 +653,16 @@ public:
 
 	UserId* getUserId(const Firebird::MetaString& userName);
 
+	const Firebird::MetaString& getUserName(const Firebird::MetaString& emptyName = "") const
+	{
+		return att_user ? att_user->getUserName() : emptyName;
+	}
+
+	const Firebird::MetaString& getSqlRole(const Firebird::MetaString& emptyName = "") const
+	{
+		return att_user ? att_user->getSqlRole() : emptyName;
+	}
+
 	const UserId* getEffectiveUserId() const
 	{
 		if (att_ss_user)
@@ -641,17 +670,21 @@ public:
 		return att_user;
 	}
 
-	UserId* getEffectiveUserId()
+	const Firebird::MetaString& getEffectiveUserName(const Firebird::MetaString& emptyName = "") const
 	{
-		if (att_ss_user)
-			return att_ss_user;
-		return att_user;
+		const auto user = getEffectiveUserId();
+		return user ? user->getUserName() : emptyName;
 	}
 
 	void setInitialOptions(thread_db* tdbb, DatabaseOptions& options, bool newDb);
 	const CoercionArray* getInitialBindings() const
 	{
 		return att_initial_options.getBindings();
+	}
+
+	DebugOptions& getDebugOptions()
+	{
+		return att_debug_options;
 	}
 
 	void checkReplSetLock(thread_db* tdbb);
@@ -675,6 +708,7 @@ private:
 
 	Firebird::Array<JBatch*> att_batches;
 	InitialOptions att_initial_options;	// Initial session options
+	DebugOptions att_debug_options;
 
 	Lock* att_repl_lock;				// Replication set lock
 	JProvider* att_provider;	// Provider which created this attachment
@@ -683,8 +717,8 @@ private:
 
 inline bool Attachment::locksmith(thread_db* tdbb, SystemPrivilege sp) const
 {
-	return (att_user && att_user->locksmith(tdbb, sp)) ||
-			(att_ss_user && att_ss_user->locksmith(tdbb, sp));
+	const auto user = getEffectiveUserId();
+	return (user && user->locksmith(tdbb, sp));
 }
 
 inline jrd_tra* Attachment::getSysTransaction()

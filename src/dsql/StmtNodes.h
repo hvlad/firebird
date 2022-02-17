@@ -1725,6 +1725,30 @@ private:
 };
 
 
+class SetDebugOptionNode : public SessionManagementNode
+{
+public:
+	SetDebugOptionNode(MemoryPool& pool, MetaName* aName, ExprNode* aValue);
+
+public:
+	virtual Firebird::string internalPrint(NodePrinter& printer) const
+	{
+		SessionManagementNode::internalPrint(printer);
+
+		NODE_PRINT(printer, name);
+		NODE_PRINT(printer, value);
+
+		return "SetDebugOptionNode";
+	}
+
+	virtual void execute(thread_db* tdbb, dsql_req* request, jrd_tra** traHandle) const;
+
+private:
+	MetaName name;
+	ExprNode* value;
+};
+
+
 class SetDecFloatRoundNode : public SessionManagementNode
 {
 public:

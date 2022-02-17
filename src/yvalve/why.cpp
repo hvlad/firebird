@@ -28,7 +28,10 @@
  */
 
 #include "firebird.h"
+
+#define FB_UsedInYValve true
 #include "firebird/Interface.h"
+
 #include "memory_routines.h"
 #include "gen/iberror.h"
 #include "gen/msg_facs.h"
@@ -74,6 +77,8 @@
 #ifdef HAVE_SIGNAL_H
 #include <signal.h>
 #endif
+
+#include <functional>
 
 using namespace Firebird;
 using namespace Why;
@@ -1324,6 +1329,27 @@ namespace Why
 		bool shutdownMode;
 	};
 
+
+	template <class Y>
+	void done(CheckStatusWrapper* status, YEntry<Y>& entry, Y* y, std::function<void()> newClose, std::function<void()> oldClose)
+	{
+		if (entry.next())
+			newClose();
+
+		if (!(status->getState() & IStatus::STATE_ERRORS))
+			y->destroy(Y::DF_RELEASE | Y::DF_KEEP_NEXT);
+
+		else if (status->getErrors()[1] == isc_interface_version_too_old)
+		{
+			status->init();
+			if (entry.next())
+				oldClose();
+
+			if (!(status->getState() & IStatus::STATE_ERRORS))
+				y->destroy(Y::DF_RELEASE);
+		}
+	}
+
 }	// namespace Why
 
 struct TEB
@@ -2306,9 +2332,6 @@ ISC_STATUS API_ROUTINE isc_dsql_exec_immed2(ISC_STATUS* userStatus, isc_db_handl
 
 	try
 	{
-		if (!sqlStmt)
-			Arg::Gds(isc_command_end_err).raise();
-
 		FB_BOOLEAN stmtIsCrDb = FB_FALSE;
 		YAttachment* att = utilInterface.executeCreateDatabase(&statusWrapper, stmtLength,
 			sqlStmt, dialect, &stmtIsCrDb);
@@ -3892,19 +3915,21 @@ void YEvents::cancel(CheckStatusWrapper* status)
 	{
 		YEntry<YEvents> entry(status, this, CHECK_WARN_ZERO_HANDLE);
 
-		if (entry.next())
-			entry.next()->cancel(status);
-
-		if (status->getErrors()[1] == isc_att_shutdown)
-			status->init();
-
-		if (!(status->getState() & IStatus::STATE_ERRORS))
-			destroy(DF_RELEASE);
+		done(status, entry, this, [&]{
+				entry.next()->cancel(status);
+				if (status->getErrors()[1] == isc_att_shutdown)
+					status->init();
+			}, [&]{entry.next()->deprecatedCancel(status);});
 	}
 	catch (const Exception& e)
 	{
 		e.stuffException(status);
 	}
+}
+
+void YEvents::deprecatedCancel(CheckStatusWrapper* status)
+{
+	cancel(status);
 }
 
 
@@ -4037,16 +4062,17 @@ void YRequest::free(CheckStatusWrapper* status)
 	{
 		YEntry<YRequest> entry(status, this, CHECK_WARN_ZERO_HANDLE);
 
-		if (entry.next())
-			entry.next()->free(status);
-
-		if (!(status->getState() & IStatus::STATE_ERRORS))
-			destroy(DF_RELEASE);
+		done(status, entry, this, [&]{entry.next()->free(status);}, [&]{entry.next()->deprecatedFree(status);});
 	}
 	catch (const Exception& e)
 	{
 		e.stuffException(status);
 	}
+}
+
+void YRequest::deprecatedFree(CheckStatusWrapper* status)
+{
+	free(status);
 }
 
 
@@ -4132,16 +4158,17 @@ void YBlob::cancel(CheckStatusWrapper* status)
 	{
 		YEntry<YBlob> entry(status, this, CHECK_WARN_ZERO_HANDLE);
 
-		if (entry.next())
-			entry.next()->cancel(status);
-
-		if (!(status->getState() & IStatus::STATE_ERRORS))
-			destroy(DF_RELEASE);
+		done(status, entry, this, [&]{entry.next()->cancel(status);}, [&]{entry.next()->deprecatedCancel(status);});
 	}
 	catch (const Exception& e)
 	{
 		e.stuffException(status);
 	}
+}
+
+void YBlob::deprecatedCancel(CheckStatusWrapper* status)
+{
+	cancel(status);
 }
 
 void YBlob::close(CheckStatusWrapper* status)
@@ -4150,16 +4177,17 @@ void YBlob::close(CheckStatusWrapper* status)
 	{
 		YEntry<YBlob> entry(status, this, CHECK_WARN_ZERO_HANDLE);
 
-		if (entry.next())
-			entry.next()->close(status);
-
-		if (!(status->getState() & IStatus::STATE_ERRORS))
-			destroy(DF_RELEASE);
+		done(status, entry, this, [&]{entry.next()->close(status);}, [&]{entry.next()->deprecatedClose(status);});
 	}
 	catch (const Exception& e)
 	{
 		e.stuffException(status);
 	}
+}
+
+void YBlob::deprecatedClose(CheckStatusWrapper* status)
+{
+	close(status);
 }
 
 int YBlob::seek(CheckStatusWrapper* status, int mode, int offset)
@@ -4429,17 +4457,19 @@ void YStatement::free(CheckStatusWrapper* status)
 	{
 		YEntry<YStatement> entry(status, this, CHECK_WARN_ZERO_HANDLE);
 
-		if (entry.next())
-			entry.next()->free(status);
-
-		if (!(status->getState() & IStatus::STATE_ERRORS))
-			destroy(DF_RELEASE);
+		done(status, entry, this, [&]{entry.next()->free(status);}, [&]{entry.next()->deprecatedFree(status);});
 	}
 	catch (const Exception& e)
 	{
 		e.stuffException(status);
 	}
 }
+
+void YStatement::deprecatedFree(CheckStatusWrapper* status)
+{
+	free(status);
+}
+
 
 YBatch* YStatement::createBatch(CheckStatusWrapper* status, IMessageMetadata* inMetadata, unsigned parLength,
 	const unsigned char* par)
@@ -4838,23 +4868,26 @@ IMessageMetadata* YResultSet::getMetadata(CheckStatusWrapper* status)
 	return NULL;
 }
 
+
 void YResultSet::close(CheckStatusWrapper* status)
 {
 	try
 	{
 		YEntry<YResultSet> entry(status, this, CHECK_WARN_ZERO_HANDLE);
 
-		if (entry.next())
-			entry.next()->close(status);
-
-		if (!(status->getState() & IStatus::STATE_ERRORS))
-			destroy(DF_RELEASE);
+		done(status, entry, this, [&]{entry.next()->close(status);}, [&]{entry.next()->deprecatedClose(status);});
 	}
 	catch (const Exception& e)
 	{
 		e.stuffException(status);
 	}
 }
+
+void YResultSet::deprecatedClose(CheckStatusWrapper* status)
+{
+	close(status);
+}
+
 
 //-------------------------------------
 
@@ -5028,6 +5061,43 @@ void YBatch::cancel(CheckStatusWrapper* status)
 }
 
 
+void YBatch::close(CheckStatusWrapper* status)
+{
+	try
+	{
+		YEntry<YBatch> entry(status, this, CHECK_WARN_ZERO_HANDLE);
+
+		done(status, entry, this, [&]{entry.next()->close(status);}, [&]{entry.next()->deprecatedClose(status);});
+	}
+	catch (const Exception& e)
+	{
+		e.stuffException(status);
+	}
+}
+
+
+void YBatch::deprecatedClose(CheckStatusWrapper* status)
+{
+	close(status);
+}
+
+
+void YBatch::getInfo(CheckStatusWrapper* status, unsigned int itemsLength, const unsigned char* items,
+	unsigned int bufferLength, unsigned char* buffer)
+{
+	try
+	{
+		YEntry<YBatch> entry(status, this);
+
+		entry.next()->getInfo(status, itemsLength, items, bufferLength, buffer);
+	}
+	catch (const Exception& e)
+	{
+		e.stuffException(status);
+	}
+}
+
+
 //-------------------------------------
 
 
@@ -5061,13 +5131,20 @@ void YReplicator::close(CheckStatusWrapper* status)
 {
 	try
 	{
-		YEntry<YReplicator> entry(status, this);
-		entry.next()->close(status);
+		YEntry<YReplicator> entry(status, this, CHECK_WARN_ZERO_HANDLE);
+
+		done(status, entry, this, [&]{entry.next()->close(status);}, [&]{entry.next()->deprecatedClose(status);});
 	}
 	catch (const Exception& e)
 	{
 		e.stuffException(status);
 	}
+}
+
+
+void YReplicator::deprecatedClose(CheckStatusWrapper* status)
+{
+	close(status);
 }
 
 
@@ -5109,8 +5186,8 @@ void YTransaction::destroy(unsigned dstrFlags)
 	// can't release cursors by itself. See also CORE-6067.
 	const bool releaseCursors = handle;
 
-	childBlobs.destroy(dstrFlags & ~DF_RELEASE);
-	childCursors.destroy(releaseCursors ? dstrFlags : dstrFlags & ~DF_RELEASE);
+	childBlobs.destroy(dstrFlags & ~(DF_RELEASE | DF_KEEP_NEXT));
+	childCursors.destroy((releaseCursors ? dstrFlags : dstrFlags & ~DF_RELEASE) & ~DF_KEEP_NEXT);
 
 	YAttachment* att = attachment.release();
 	if (att)
@@ -5162,10 +5239,7 @@ void YTransaction::commit(CheckStatusWrapper* status)
 	{
 		YEntry<YTransaction> entry(status, this);
 
-		entry.next()->commit(status);
-
-		if (!(status->getState() & IStatus::STATE_ERRORS))
-			destroy(DF_RELEASE);
+		done(status, entry, this, [&]{entry.next()->commit(status);}, [&]{entry.next()->deprecatedCommit(status);});
 	}
 	catch (const Exception& e)
 	{
@@ -5193,13 +5267,11 @@ void YTransaction::rollback(CheckStatusWrapper* status)
 	{
 		YEntry<YTransaction> entry(status, this, CHECK_WARN_ZERO_HANDLE);
 
-		if (entry.next())
-			entry.next()->rollback(status);
-		if (isNetworkError(status))
-			status->init();
-
-		if (!(status->getState() & IStatus::STATE_ERRORS))
-			destroy(DF_RELEASE);
+		done(status, entry, this, [&]{
+				entry.next()->rollback(status);
+				if (isNetworkError(status))
+					status->init();
+			}, [&]{entry.next()->deprecatedRollback(status);});
 	}
 	catch (const Exception& e)
 	{
@@ -5249,6 +5321,22 @@ void YTransaction::disconnect(CheckStatusWrapper* status)
 		e.stuffException(status);
 	}
 }
+
+void YTransaction::deprecatedCommit(CheckStatusWrapper* status)
+{
+	commit(status);
+}
+
+void YTransaction::deprecatedRollback(CheckStatusWrapper* status)
+{
+	rollback(status);
+}
+
+void YTransaction::deprecatedDisconnect(CheckStatusWrapper* status)
+{
+	disconnect(status);
+}
+
 
 void YTransaction::addCleanupHandler(CheckStatusWrapper* status, CleanupCallback* callback)
 {
@@ -5379,12 +5467,13 @@ void YAttachment::destroy(unsigned dstrFlags)
 
 	cleanupHandlers.clear();
 
-	childRequests.destroy(dstrFlags & ~DF_RELEASE);
-	childStatements.destroy(dstrFlags & ~DF_RELEASE);
-	childIscStatements.destroy(dstrFlags & ~DF_RELEASE);
-	childBlobs.destroy(dstrFlags & ~DF_RELEASE);
-	childEvents.destroy(dstrFlags & ~DF_RELEASE);
-	childTransactions.destroy(dstrFlags & ~DF_RELEASE);
+	unsigned childFlags = dstrFlags & ~(DF_KEEP_NEXT | DF_RELEASE);
+	childRequests.destroy(childFlags);
+	childStatements.destroy(childFlags);
+	childIscStatements.destroy(childFlags);
+	childBlobs.destroy(childFlags);
+	childEvents.destroy(childFlags);
+	childTransactions.destroy(childFlags);
 
 	removeHandle(&attachments, handle);
 
@@ -5421,9 +5510,6 @@ YStatement* YAttachment::prepare(CheckStatusWrapper* status, ITransaction* trans
 	try
 	{
 		YEntry<YAttachment> entry(status, this);
-
-		if (!sqlStmt)
-			Arg::Gds(isc_command_end_err).raise();
 
 		NextTransaction trans;
 		if (transaction)
@@ -5839,19 +5925,21 @@ void YAttachment::detach(CheckStatusWrapper* status)
 	{
 		YEntry<YAttachment> entry(status, this, CHECK_NONE);
 
-		if (entry.next())
-			entry.next()->detach(status);
-
-		if (isNetworkError(status))
-			status->init();
-
-		if (!(status->getState() & IStatus::STATE_ERRORS))
-			destroy(DF_RELEASE);
+		done(status, entry, this, [&]{
+				entry.next()->detach(status);
+				if (isNetworkError(status))
+					status->init();
+			}, [&]{entry.next()->deprecatedDetach(status);});
 	}
 	catch (const Exception& e)
 	{
 		e.stuffException(status);
 	}
+}
+
+void YAttachment::deprecatedDetach(CheckStatusWrapper* status)
+{
+	detach(status);
 }
 
 void YAttachment::dropDatabase(CheckStatusWrapper* status)
@@ -5860,15 +5948,17 @@ void YAttachment::dropDatabase(CheckStatusWrapper* status)
 	{
 		YEntry<YAttachment> entry(status, this);
 
-		entry.next()->dropDatabase(status);
-
-		if (!(status->getState() & IStatus::STATE_ERRORS))
-			destroy(DF_RELEASE);
+		done(status, entry, this, [&]{entry.next()->dropDatabase(status);}, [&]{entry.next()->deprecatedDropDatabase(status);});
 	}
 	catch (const Exception& e)
 	{
 		e.stuffException(status);
 	}
+}
+
+void YAttachment::deprecatedDropDatabase(CheckStatusWrapper* status)
+{
+	dropDatabase(status);
 }
 
 void YAttachment::addCleanupHandler(CheckStatusWrapper* status, CleanupCallback* callback)
@@ -6077,15 +6167,17 @@ void YService::detach(CheckStatusWrapper* status)
 	{
 		YEntry<YService> entry(status, this, CHECK_WARN_ZERO_HANDLE);
 
-		if (entry.next())
-			entry.next()->detach(status);
-
-		destroy(DF_RELEASE);
+		done(status, entry, this, [&]{entry.next()->detach(status);}, [&]{entry.next()->deprecatedDetach(status);});
 	}
 	catch (const Exception& e)
 	{
 		e.stuffException(status);
 	}
+}
+
+void YService::deprecatedDetach(CheckStatusWrapper* status)
+{
+	detach(status);
 }
 
 void YService::query(CheckStatusWrapper* status, unsigned int sendLength, const unsigned char* sendItems,
@@ -6159,10 +6251,17 @@ YAttachment* Dispatcher::attachOrCreateDatabase(CheckStatusWrapper* status, bool
 
 		// Take care about DPB
 		setLogin(newDpb, false);
-		if (!utfData)
+
+		if (!newDpb.find(isc_dpb_session_time_zone))
 		{
-			IntlDpb().toUtf8(newDpb);
+			const char* defaultTimeZone = Config::getDefaultTimeZone();
+
+			if (defaultTimeZone && defaultTimeZone[0])
+				newDpb.insertString(isc_dpb_session_time_zone, defaultTimeZone);
 		}
+
+		if (!utfData)
+			IntlDpb().toUtf8(newDpb);
 
 		// Take care about filename
 		PathName orgFilename(filename);
@@ -6382,6 +6481,10 @@ YService* Dispatcher::attachServiceManager(CheckStatusWrapper* status, const cha
 
 void Dispatcher::shutdown(CheckStatusWrapper* userStatus, unsigned int timeout, const int reason)
 {
+	// set "process exiting" state
+	if (reason == fb_shutrsn_emergency)
+		abortShutdown();
+
 	// can't syncronize with already killed threads, just exit
 	if (MasterInterfacePtr()->getProcessExiting())
 		return;

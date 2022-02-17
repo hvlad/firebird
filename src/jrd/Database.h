@@ -658,7 +658,8 @@ public:
 
 	const CoercionArray *getBindings() const;
 
-	void initGlobalObjectHolder(thread_db* tdbb);
+	void initGlobalObjects();
+	void shutdownGlobalObjects();
 
 	LockManager* lockManager()
 	{

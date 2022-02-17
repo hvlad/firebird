@@ -64,7 +64,8 @@ void Replicator::flush(BatchBlock& block, FlushReason reason, ULONG flags)
 	// Pass the buffer to the replication manager and setup the new one
 
 	const auto sync = (reason == FLUSH_SYNC);
-	m_manager->flush(block.buffer, sync);
+	const auto prepare = (reason == FLUSH_PREPARE);
+	m_manager->flush(block.buffer, sync, prepare);
 
 	memset(&block.header, 0, sizeof(Block));
 	block.header.traNumber = traNumber;
@@ -136,8 +137,6 @@ void Replicator::releaseTransaction(Transaction* transaction)
 {
 	try
 	{
-		MutexLockGuard guard(m_mutex, FB_FUNCTION);
-
 		auto& txnData = transaction->getData();
 		m_manager->releaseBuffer(txnData.buffer);
 
@@ -157,8 +156,6 @@ IReplicatedTransaction* Replicator::startTransaction(CheckStatusWrapper* status,
 
 	try
 	{
-		MutexLockGuard guard(m_mutex, FB_FUNCTION);
-
 		MemoryPool& pool = getPool();
 		transaction = FB_NEW_POOL(pool) Transaction(this, trans);
 		m_transactions.add(transaction);
@@ -185,8 +182,6 @@ void Replicator::prepareTransaction(CheckStatusWrapper* status, Transaction* tra
 {
 	try
 	{
-		MutexLockGuard guard(m_mutex, FB_FUNCTION);
-
 		auto& txnData = transaction->getData();
 
 		txnData.putTag(opPrepareTransaction);
@@ -203,8 +198,6 @@ void Replicator::commitTransaction(CheckStatusWrapper* status, Transaction* tran
 {
 	try
 	{
-		MutexLockGuard guard(m_mutex, FB_FUNCTION);
-
 		auto& txnData = transaction->getData();
 
 		// Assert this transaction being de-facto dirty
@@ -237,8 +230,6 @@ void Replicator::rollbackTransaction(CheckStatusWrapper* status, Transaction* tr
 {
 	try
 	{
-		MutexLockGuard guard(m_mutex, FB_FUNCTION);
-
 		auto& txnData = transaction->getData();
 
 		if (txnData.flushes)
@@ -257,8 +248,6 @@ void Replicator::startSavepoint(CheckStatusWrapper* status, Transaction* transac
 {
 	try
 	{
-		MutexLockGuard guard(m_mutex, FB_FUNCTION);
-
 		auto& txnData = transaction->getData();
 
 		txnData.putTag(opStartSavepoint);
@@ -276,8 +265,6 @@ void Replicator::releaseSavepoint(CheckStatusWrapper* status, Transaction* trans
 {
 	try
 	{
-		MutexLockGuard guard(m_mutex, FB_FUNCTION);
-
 		auto& txnData = transaction->getData();
 
 		txnData.putTag(opReleaseSavepoint);
@@ -295,8 +282,6 @@ void Replicator::rollbackSavepoint(CheckStatusWrapper* status, Transaction* tran
 {
 	try
 	{
-		MutexLockGuard guard(m_mutex, FB_FUNCTION);
-
 		auto& txnData = transaction->getData();
 
 		txnData.putTag(opRollbackSavepoint);
@@ -331,8 +316,6 @@ void Replicator::insertRecord(CheckStatusWrapper* status,
 				}
 			}
 		}
-
-		MutexLockGuard guard(m_mutex, FB_FUNCTION);
 
 		const auto length = record->getRawLength();
 		const auto data = record->getRawData();
@@ -379,8 +362,6 @@ void Replicator::updateRecord(CheckStatusWrapper* status,
 			}
 		}
 
-		MutexLockGuard guard(m_mutex, FB_FUNCTION);
-
 		const auto orgLength = orgRecord->getRawLength();
 		const auto orgData = orgRecord->getRawData();
 
@@ -414,8 +395,6 @@ void Replicator::deleteRecord(CheckStatusWrapper* status,
 {
 	try
 	{
-		MutexLockGuard guard(m_mutex, FB_FUNCTION);
-
 		const auto length = record->getRawLength();
 		const auto data = record->getRawData();
 
@@ -444,8 +423,6 @@ void Replicator::executeSqlIntl(CheckStatusWrapper* status,
 {
 	try
 	{
-		MutexLockGuard guard(m_mutex, FB_FUNCTION);
-
 		auto& txnData = transaction->getData();
 
 		const auto atom = txnData.defineAtom(m_user);
@@ -469,8 +446,6 @@ void Replicator::cleanupTransaction(CheckStatusWrapper* status,
 {
 	try
 	{
-		MutexLockGuard guard(m_mutex, FB_FUNCTION);
-
 		BatchBlock block(getPool());
 		block.header.traNumber = number;
 		block.buffer = m_manager->getBuffer();
@@ -490,8 +465,6 @@ void Replicator::setSequence(CheckStatusWrapper* status,
 {
 	try
 	{
-		MutexLockGuard guard(m_mutex, FB_FUNCTION);
-
 		for (auto& generator : m_generators)
 		{
 			if (generator.name == genName)

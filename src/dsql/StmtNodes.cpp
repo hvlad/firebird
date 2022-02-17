@@ -2064,8 +2064,10 @@ DeclareSubProcNode* DeclareSubProcNode::dsqlPass(DsqlCompilerScratch* dsqlScratc
 	blockScratch = FB_NEW_POOL(pool) DsqlCompilerScratch(pool,
 		dsqlScratch->getAttachment(), dsqlScratch->getTransaction(), statement, dsqlScratch);
 	blockScratch->clientDialect = dsqlScratch->clientDialect;
-	blockScratch->flags |= DsqlCompilerScratch::FLAG_PROCEDURE | DsqlCompilerScratch::FLAG_SUB_ROUTINE;
-	blockScratch->flags |= dsqlScratch->flags & DsqlCompilerScratch::FLAG_DDL;
+	blockScratch->flags |=
+		DsqlCompilerScratch::FLAG_PROCEDURE |
+		DsqlCompilerScratch::FLAG_SUB_ROUTINE |
+		(dsqlScratch->flags & DsqlCompilerScratch::FLAG_DDL);
 
 	dsqlBlock = dsqlBlock->dsqlPass(blockScratch);
 
@@ -2594,9 +2596,6 @@ const StmtNode* EraseNode::erase(thread_db* tdbb, jrd_req* request, WhichTrigger
 	record_param* rpb = &request->req_rpb[stream];
 	jrd_rel* relation = rpb->rpb_relation;
 
-	if (rpb->rpb_number.isBof() || (!relation->rel_view_rse && !rpb->rpb_number.isValid()))
-		ERR_post(Arg::Gds(isc_no_cur_rec));
-
 	switch (request->req_operation)
 	{
 		case jrd_req::req_evaluate:
@@ -2625,6 +2624,12 @@ const StmtNode* EraseNode::erase(thread_db* tdbb, jrd_req* request, WhichTrigger
 
 	request->req_operation = jrd_req::req_return;
 	RLCK_reserve_relation(tdbb, transaction, relation, true);
+
+	if (rpb->rpb_runtime_flags & RPB_just_deleted)
+		return parentStmt;
+
+	if (rpb->rpb_number.isBof() || (!relation->rel_view_rse && !rpb->rpb_number.isValid()))
+		ERR_post(Arg::Gds(isc_no_cur_rec));
 
 	if (forNode && forNode->isWriteLockMode(request))
 	{
@@ -2672,6 +2677,7 @@ const StmtNode* EraseNode::erase(thread_db* tdbb, jrd_req* request, WhichTrigger
 			forNode->setWriteLockMode(request);
 			return parentStmt;
 		}
+
 		REPL_erase(tdbb, rpb, transaction);
 	}
 
@@ -2688,8 +2694,14 @@ const StmtNode* EraseNode::erase(thread_db* tdbb, jrd_req* request, WhichTrigger
 	// This is required for cascading referential integrity, which can be implemented as
 	// post_erase triggers.
 
-	if (!relation->rel_file && !relation->rel_view_rse && !relation->isVirtual())
-		IDX_erase(tdbb, rpb, transaction);
+	if (!relation->rel_view_rse)
+	{
+		if (!relation->rel_file && !relation->isVirtual())
+			IDX_erase(tdbb, rpb, transaction);
+
+		// Mark this rpb as already deleted to skip the subsequent attempts
+		rpb->rpb_runtime_flags |= RPB_just_deleted;
+	}
 
 	if (!relation->rel_view_rse || (whichTrig == ALL_TRIGS || whichTrig == POST_TRIG))
 	{
@@ -3248,7 +3260,7 @@ void ExecProcedureNode::executeProcedure(thread_db* tdbb, jrd_req* request) cons
 			&tdbb->getAttachment()->att_original_timezone,
 			tdbb->getAttachment()->att_current_timezone);
 
-		procRequest->req_gmt_timestamp = request->req_gmt_timestamp;
+		procRequest->setGmtTimeStamp(request->getGmtTimeStamp());
 
 		EXE_start(tdbb, procRequest, transaction);
 
@@ -6599,9 +6611,6 @@ const StmtNode* ModifyNode::modify(thread_db* tdbb, jrd_req* request, WhichTrigg
 	record_param* orgRpb = &request->req_rpb[orgStream];
 	jrd_rel* relation = orgRpb->rpb_relation;
 
-	if (orgRpb->rpb_number.isBof() || (!relation->rel_view_rse && !orgRpb->rpb_number.isValid()))
-		ERR_post(Arg::Gds(isc_no_cur_rec));
-
 	record_param* newRpb = &request->req_rpb[newStream];
 
 	switch (request->req_operation)
@@ -6666,6 +6675,7 @@ const StmtNode* ModifyNode::modify(thread_db* tdbb, jrd_req* request, WhichTrigg
 						forNode->setWriteLockMode(request);
 						return parentStmt;
 					}
+
 					IDX_modify(tdbb, orgRpb, newRpb, transaction);
 					REPL_modify(tdbb, orgRpb, newRpb, transaction);
 				}
@@ -6717,6 +6727,15 @@ const StmtNode* ModifyNode::modify(thread_db* tdbb, jrd_req* request, WhichTrigg
 
 	impure->sta_state = 0;
 	RLCK_reserve_relation(tdbb, transaction, relation, true);
+
+	if (orgRpb->rpb_runtime_flags & RPB_just_deleted)
+	{
+		request->req_operation = jrd_req::req_return;
+		return parentStmt;
+	}
+
+	if (orgRpb->rpb_number.isBof() || (!relation->rel_view_rse && !orgRpb->rpb_number.isValid()))
+		ERR_post(Arg::Gds(isc_no_cur_rec));
 
 	if (forNode && (marks & StmtNode::MARK_MERGE))
 		forNode->checkRecordUpdated(tdbb, request, orgRpb);
@@ -8560,6 +8579,39 @@ void SetRoleNode::execute(thread_db* tdbb, dsql_req* request, jrd_tra** /*traHan
 	}
 
 	SCL_release_all(attachment->att_security_classes);
+}
+
+
+//--------------------
+
+
+SetDebugOptionNode::SetDebugOptionNode(MemoryPool& pool, MetaName* aName, ExprNode* aValue)
+	: SessionManagementNode(pool),
+	  name(pool, *aName),
+	  value(aValue)
+{
+}
+
+void SetDebugOptionNode::execute(thread_db* tdbb, dsql_req* /*request*/, jrd_tra** /*traHandle*/) const
+{
+	SET_TDBB(tdbb);
+	auto& debugOptions = tdbb->getAttachment()->getDebugOptions();
+
+	const auto literal = nodeAs<LiteralNode>(value);
+
+	if (!literal)
+	{
+		// This currently can happen with negative numbers.
+		// Since it's not relevant for DSQL_KEEP_BLR, let's throw an error.
+		ERR_post(Arg::Gds(isc_random) << "Invalid DEBUG option value");
+	}
+
+	const auto litDesc = &literal->litDesc;
+
+	if (name == "DSQL_KEEP_BLR")
+		debugOptions.setDsqlKeepBlr(MOV_get_boolean(litDesc));
+	else
+		ERR_post(Arg::Gds(isc_random) << "Invalid DEBUG option");
 }
 
 

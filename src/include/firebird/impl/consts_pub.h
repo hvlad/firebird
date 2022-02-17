@@ -128,6 +128,7 @@
 #define isc_dpb_set_bind                  93
 #define isc_dpb_decfloat_round            94
 #define isc_dpb_decfloat_traps            95
+#define isc_dpb_clear_map				  96
 
 
 /**************************************************/
@@ -746,6 +747,7 @@
 #define fb_shutrsn_signal				  -5
 #define fb_shutrsn_services				  -6
 #define fb_shutrsn_exit_called			  -7
+#define fb_shutrsn_emergency			  -8
 
 /****************************************/
 /* Cancel types for fb_cancel_operation */

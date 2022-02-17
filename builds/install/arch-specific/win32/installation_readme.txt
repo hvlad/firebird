@@ -19,6 +19,7 @@ Contents
 --------
 
 o Before installation
+o Deployment to older versions of Windows
 o Deployment of gds32.dll
 o Installation of the Guardian
 o Re-installation of Firebird $MAJOR.$MINOR
@@ -37,13 +38,39 @@ fbclient.dll and gds32.dll are removed from <system32>.
 See the UNINSTALL section below for more info on this.
 
 
+Deployment to older versions of Windows
+---------------------------------------
+
+The binary installer no longer supports older versions
+of windows. As per the innosetup documentation:
+
+  "Change in default behavior: [Setup] section
+  directive MinVersion now defaults to 6.1sp1, so by
+  default Setup will not run on Windows Vista or on
+  versions of Windows 7 and Windows Server 2008 R2
+  which have not been updated."
+
+These earlier versions do not support some of the
+security measures against potential DLL preloading
+attacks so deployment to these is now blocked by the
+installer.
+
+This change _may_ be a problem for users of W2K8 R2.
+In any case Windows Vista and even Windows 7 are now
+deprecated by Microsoft and hopefully no production
+install of W2K8 R2 is unpatched. Users who need to
+deploy to what are now ancient versions of windows are
+advised to manually install Firebird 4.0 with the zip
+package.
+
+
 Installation of the Guardian
 ----------------------------
 
-We are hoping to phase out the Guardian. It doesn't 
-work with the Classic server and the binary installer 
-does not offer it at install time if Classic is 
-chosen. If SuperServer or SuperClassic are chosen 
+We are hoping to phase out the Guardian. It doesn't
+work with the Classic server and the binary installer
+does not offer it at install time if Classic is
+chosen. If SuperServer or SuperClassic are chosen
 it is offered but not selected by default.
 
 
@@ -74,14 +101,14 @@ o The service installer (instsvc) uses the same
   installations. This is by design. Services exist
   in a single name space.
 
-o Be sure to install as an administrator. ie, if 
-  using the binary installer right click and choose 
-  'Run as administrator'. Otherwise the installer 
+o Be sure to install as an administrator. ie, if
+  using the binary installer right click and choose
+  'Run as administrator'. Otherwise the installer
   may be unable to start the Firebird service at
   the end of installation.
 
 o Libraries deployed by instclient may fail to load if
-  the MS runtime libraries have not been installed. 
+  the MS runtime libraries have not been installed.
   This may be a problem if installing on older Windows
   platforms.
 

@@ -35,7 +35,9 @@ namespace
 
 	UChar32 getChar(bool latin, const char* str, unsigned len, unsigned& pos)
 	{
-		fb_assert(hasChar(len, pos));
+		if (!hasChar(len, pos))
+			status_exception::raise(Arg::Gds(isc_invalid_similar_pattern));
+
 		UChar32 c;
 
 		if (latin)

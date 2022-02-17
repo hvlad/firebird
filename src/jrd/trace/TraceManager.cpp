@@ -262,7 +262,7 @@ void TraceManager::update_session(const TraceSession& session)
 				if ((!attachment->att_user) || (attachment->att_flags & ATT_mapping))
 					return;
 
-				curr_user = attachment->att_user->getUserName().c_str();
+				curr_user = attachment->getUserName().c_str();
 
 				if (session.ses_auth.hasData())
 				{ // scope

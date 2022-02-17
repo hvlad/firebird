@@ -1095,7 +1095,7 @@ void CCH_forget_page(thread_db* tdbb, WIN* window)
 		dbb->dbb_flags &= ~DBB_suspend_bgio;
 
 	clear_dirty_flag_and_nbak_state(tdbb, bdb);
-	bdb->bdb_flags = 0;
+	bdb->bdb_flags = 0; // ?
 	BufferControl* bcb = dbb->dbb_bcb;
 
 	removeDirty(bcb, bdb);
@@ -3572,8 +3572,8 @@ static bool expand_buffers(thread_db* tdbb, ULONG number)
  **************************************
  *
  * Functional description
- *	Expand the cache to at least a given number of buffers.  If
- *	it's already that big, don't do anything.
+ *	Expand the cache to at least a given number of buffers.
+ *	If it's already that big, don't do anything.
  *
  **************************************/
 	SET_TDBB(tdbb);

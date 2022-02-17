@@ -6,16 +6,23 @@ jobs:
   build:
     runs-on: ${{ matrix.os }}
     container: ${{ matrix.container }}
+    env:
+      VS_VERSION: ${{ matrix.os == 'windows-2016' && '2017' || (matrix.os == 'windows-2019' && '2019' || (matrix.os == 'windows-2022' && '2022' || '')) }}
 
     strategy:
       fail-fast: false
       matrix:
-        os: [macOS-latest, windows-2016, ubuntu-20.04]
+        os:
+          - macOS-latest
+          - windows-2016
+          - windows-2019
+          - windows-2022
+          - ubuntu-20.04
         platform: [x64, x86]
         include:
           - os: ubuntu-18.04
             platform: x64
-            container: alpine
+            container: alpine:3.14
         exclude:
           - os: macOS-latest
             platform: x86
@@ -28,12 +35,12 @@ jobs:
         fetch-depth: 10
 
     - name: Prepare (Linux)
-      if: matrix.os == 'ubuntu-20.04' && matrix.container != 'alpine'
+      if: matrix.os == 'ubuntu-20.04' && !startsWith(matrix.container, 'alpine')
       run: |
         sudo apt-get install libtool-bin libtomcrypt1 libtomcrypt-dev libtommath1 libtommath-dev libicu-dev zlib1g-dev cmake
 
     - name: Build (Linux)
-      if: matrix.os == 'ubuntu-20.04' && matrix.container != 'alpine'
+      if: matrix.os == 'ubuntu-20.04' && !startsWith(matrix.container, 'alpine')
       run: |
         CC=clang CXX=clang++ ./autogen.sh --enable-binreloc --prefix=/opt/firebird
         make -j4
@@ -42,11 +49,11 @@ jobs:
         (cd Firebird-[0-9]*; sudo ./install.sh -silent)
 
     - name: Prepare (Linux, Alpine)
-      if: matrix.os == 'ubuntu-18.04' && matrix.container == 'alpine'
+      if: matrix.os == 'ubuntu-18.04' && startsWith(matrix.container, 'alpine')
       run: apk update && apk --no-cache --update add build-base libtool git autoconf automake cmake zlib-dev icu-dev ncurses-dev libedit-dev linux-headers tar
 
     - name: Build (Linux, Alpine)
-      if: matrix.os == 'ubuntu-18.04' && matrix.container == 'alpine'
+      if: matrix.os == 'ubuntu-18.04' && startsWith(matrix.container, 'alpine')
       run: |
         ./autogen.sh --enable-binreloc-threads --with-builtin-tommath --with-builtin-tomcrypt --prefix=/opt/firebird
         make -j4
@@ -114,16 +121,17 @@ jobs:
         mv gen/Release/*.pkg gen/artifacts
 
     - name: Prepare (Windows)
-      if: matrix.os == 'windows-2016'
+      if: startsWith(matrix.os, 'windows-')
       shell: cmd
       run: |
         for /r %%i in (*.bat) do unix2dos "%%i"
 
     - name: Build (Windows)
-      if: matrix.os == 'windows-2016'
+      if: startsWith(matrix.os, 'windows-')
       shell: cmd
       env:
         PLATFORM: ${{ matrix.platform }}
+        VS_SCRIPT: ${{ matrix.os == 'windows-2022' && 'C:\Program Files\Microsoft Visual Studio\%VS_VERSION%\Enterprise\Common7\Tools\VsDevCmd.bat' || 'C:\Program Files (x86)\Microsoft Visual Studio\%VS_VERSION%\Enterprise\Common7\Tools\VsDevCmd.bat' }}
       run: |
         if "%PLATFORM%" == "x64" set FB_VS_ARCH=amd64
         if "%PLATFORM%" == "x64" set FB_PROCESSOR_ARCHITECTURE=AMD64
@@ -131,19 +139,19 @@ jobs:
         if "%PLATFORM%" == "x86" set FB_VS_ARCH=x86
         if "%PLATFORM%" == "x86" set FB_PROCESSOR_ARCHITECTURE=x86
         if "%PLATFORM%" == "x86" set FB_OUTPUT_SUFFIX=win32
-        call "C:\Program Files (x86)\Microsoft Visual Studio\2017\Enterprise\Common7\Tools\VsDevCmd.bat" -arch=%FB_VS_ARCH%
+        call "%VS_SCRIPT%" -arch=%FB_VS_ARCH%
         cd builds\win32
         run_all.bat JUSTBUILD
 
     - name: Upload (Linux)
-      if: matrix.os == 'ubuntu-20.04' && matrix.container != 'alpine'
+      if: matrix.os == 'ubuntu-20.04' && !startsWith(matrix.container, 'alpine')
       uses: actions/upload-artifact@main
       with:
         name: firebird-linux-${{ matrix.platform }}
         path: gen/Firebird-[0-9]*.tar.gz
 
     - name: Upload (Linux, Alpine)
-      if: matrix.os == 'ubuntu-18.04' && matrix.container == 'alpine'
+      if: matrix.os == 'ubuntu-18.04' && startsWith(matrix.container, 'alpine')
       uses: actions/upload-artifact@master
       with:
         name: firebird-linux-alpine
@@ -157,15 +165,15 @@ jobs:
         path: gen/artifacts
 
     - name: Upload (Windows x64)
-      if: matrix.os == 'windows-2016' && matrix.platform == 'x64'
+      if: startsWith(matrix.os, 'windows-') && matrix.platform == 'x64'
       uses: actions/upload-artifact@main
       with:
-        name: firebird-windows-x64
+        name: firebird-windows-x64-vs-${{ env.VS_VERSION }}
         path: output_x64
 
     - name: Upload (Windows x86)
-      if: matrix.os == 'windows-2016' && matrix.platform == 'x86'
+      if: startsWith(matrix.os, 'windows-') && matrix.platform == 'x86'
       uses: actions/upload-artifact@main
       with:
-        name: firebird-windows-x86
+        name: firebird-windows-x86-vs-${{ env.VS_VERSION }}
         path: output_win32

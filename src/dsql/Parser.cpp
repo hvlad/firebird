@@ -846,7 +846,7 @@ int Parser::yylexAux()
 			++charlen;			// Okay, just count 'em
 			++lex.ptr;			// and advance...
 
-			if (charlen > 16)	// Too many digits...
+			if (charlen > 32)	// Too many digits...
 			{
 				hexerror = true;
 				break;
@@ -857,11 +857,24 @@ int Parser::yylexAux()
 		// an NUMBER32BIT or NUMBER64BIT.
 		if (!hexerror)
 		{
+			if (charlen > 16)
+			{
+				// we deal with int128
+				fb_assert(charlen <= 32);	// charlen is always <= 32, see 10-15 lines upper
+
+				Firebird::string sbuff(hexstring, charlen);
+				sbuff.insert(0, "0X");
+
+				yylval.lim64ptr = newLim64String(sbuff, 0);
+
+				return TOK_NUM128;
+			}
+
 			// if charlen > 8 (something like FFFF FFFF 0, w/o the spaces)
 			// then we have to return a NUMBER64BIT. We'll make a string
 			// node here, and let make.cpp worry about converting the
 			// string to a number and building the node later.
-			if (charlen > 8)
+			else if (charlen > 8)
 			{
 				char cbuff[32];
 				fb_assert(charlen <= 16);	// charlen is always <= 16, see 10-15 lines upper

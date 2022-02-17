@@ -545,8 +545,13 @@ DSC* BTR_eval_expression(thread_db* tdbb, index_desc* idx, Record* record, bool&
 	SET_TDBB(tdbb);
 	fb_assert(idx->idx_expression != NULL);
 
+	// check for resursive expression evaluation
 	jrd_req* const org_request = tdbb->getRequest();
-	jrd_req* const expr_request = idx->idx_expression_statement->findRequest(tdbb);
+	jrd_req* const expr_request = idx->idx_expression_statement->findRequest(tdbb, true);
+
+	if (expr_request == NULL)
+		ERR_post(Arg::Gds(isc_random) << "Attempt to evaluate index expression recursively");
+
 	fb_assert(expr_request != org_request);
 
 	fb_assert(expr_request->req_caller == NULL);
@@ -572,9 +577,9 @@ DSC* BTR_eval_expression(thread_db* tdbb, index_desc* idx, Record* record, bool&
 		Jrd::ContextPoolHolder context(tdbb, expr_request->req_pool);
 
 		if (org_request)
-			expr_request->req_gmt_timestamp = org_request->req_gmt_timestamp;
+			expr_request->setGmtTimeStamp(org_request->getGmtTimeStamp());
 		else
-			TimeZoneUtil::validateGmtTimeStamp(expr_request->req_gmt_timestamp);
+			expr_request->validateTimeStamp();
 
 		if (!(result = EVL_expr(tdbb, expr_request, idx->idx_expression)))
 			result = &idx->idx_expression_desc;
@@ -589,7 +594,7 @@ DSC* BTR_eval_expression(thread_db* tdbb, index_desc* idx, Record* record, bool&
 		expr_request->req_caller = NULL;
 		expr_request->req_flags &= ~req_in_use;
 		expr_request->req_attachment = NULL;
-		expr_request->req_gmt_timestamp.invalidate();
+		expr_request->invalidateTimeStamp();
 
 		throw;
 	}
@@ -600,7 +605,7 @@ DSC* BTR_eval_expression(thread_db* tdbb, index_desc* idx, Record* record, bool&
 	expr_request->req_caller = NULL;
 	expr_request->req_flags &= ~req_in_use;
 	expr_request->req_attachment = NULL;
-	expr_request->req_gmt_timestamp.invalidate();
+	expr_request->invalidateTimeStamp();
 
 	return result;
 }
@@ -1236,7 +1241,8 @@ idx_e BTR_key(thread_db* tdbb, jrd_rel* relation, Record* record, index_desc* id
 				//
 				isNull = !EVL_field(relation, record, tail->idx_field, desc_ptr);
 
-				if (!isNull && desc_ptr->dsc_dtype == dtype_text)
+				if (!isNull && desc_ptr->dsc_dtype == dtype_text &&
+					tail->idx_field < record->getFormat()->fmt_desc.getCount())
 				{
 					// That's necessary for NO-PAD collations.
 					INTL_adjust_text_descriptor(tdbb, desc_ptr);
@@ -1275,7 +1281,8 @@ idx_e BTR_key(thread_db* tdbb, jrd_rel* relation, Record* record, index_desc* id
 					key->key_nulls |= 1 << n;
 				else
 				{
-					if (desc_ptr->dsc_dtype == dtype_text)
+					if (desc_ptr->dsc_dtype == dtype_text &&
+						tail->idx_field < record->getFormat()->fmt_desc.getCount())
 					{
 						// That's necessary for NO-PAD collations.
 						INTL_adjust_text_descriptor(tdbb, desc_ptr);
@@ -3438,9 +3445,9 @@ static ULONG fast_load(thread_db* tdbb,
 
 		// Detect the case when set of duplicate keys contains more then one key
 		// from primary record version. It breaks the unique constraint and must
-		// be rejected. Note, it is not always could be detected while sorting. 
-		// Set to true when primary record version is found in current set of 
-		// duplicate keys.		
+		// be rejected. Note, it is not always could be detected while sorting.
+		// Set to true when primary record version is found in current set of
+		// duplicate keys.
 		bool primarySeen = false;
 
 		while (!error)
@@ -6299,6 +6306,7 @@ static bool scan(thread_db* tdbb, UCHAR* pointer, RecordBitmap** bitmap, RecordB
 	// stuff the key to the stuff boundary
 	ULONG count;
 	USHORT flag = retrieval->irb_generic;
+	bool partialEquality = false;
 
 	if ((flag & irb_partial) && (flag & irb_equality) &&
 		!(flag & irb_starting) && !(flag & irb_descending))
@@ -6309,6 +6317,7 @@ static bool scan(thread_db* tdbb, UCHAR* pointer, RecordBitmap** bitmap, RecordB
 			key->key_data[key->key_length + i] = 0;
 
 		count += key->key_length;
+		partialEquality = true;
 	}
 	else
 		count = key->key_length;
@@ -6390,8 +6399,36 @@ static bool scan(thread_db* tdbb, UCHAR* pointer, RecordBitmap** bitmap, RecordB
 				if (p >= end_key)
 				{
 					if (flag)
-						break;
+					{
+						if (partialEquality)
+						{
+							// node have no more data, it is equality
+							if (q >= node.data + node.length)
+								break;
 
+							// node contains more bytes than a key, check numbers
+							// of last key segment and current node segment.
+
+							fb_assert(!descending);
+							fb_assert(p - STUFF_COUNT - 1 >= key->key_data);
+
+							const USHORT keySeg = idx->idx_count - p[-STUFF_COUNT - 1];
+							const USHORT nodeSeg = idx->idx_count - *q;
+
+							fb_assert(keySeg <= nodeSeg);
+
+							// If current segment at node is the same as last segment
+							// of the key then node > key.
+							if (keySeg == nodeSeg)
+								return false;
+
+							// If node segment belongs to the key segments then key contains
+							// null or empty string and node contains some data.
+							if (nodeSeg < retrieval->irb_upper_count)
+								return false;
+						}
+						break;
+					}
 					return false;
 				}
 

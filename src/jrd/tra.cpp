@@ -530,8 +530,8 @@ void TRA_commit(thread_db* tdbb, jrd_tra* transaction, const bool retaining_flag
 
 	// Set the state on the inventory page to be committed
 
-	TRA_set_state(tdbb, transaction, transaction->tra_number, tra_committed);
 	REPL_trans_commit(tdbb, transaction);
+	TRA_set_state(tdbb, transaction, transaction->tra_number, tra_committed);
 
 	// Perform any post commit work
 
@@ -1115,7 +1115,9 @@ void TRA_prepare(thread_db* tdbb, jrd_tra* transaction, USHORT length, const UCH
 	// Set the state on the inventory page to be limbo
 
 	transaction->tra_flags |= TRA_prepared;
-	TRA_set_state(tdbb, transaction, transaction->tra_number, tra_limbo);
+
+	if (!(tdbb->tdbb_flags & TDBB_replicator))
+		TRA_set_state(tdbb, transaction, transaction->tra_number, tra_limbo);
 }
 
 
@@ -1453,8 +1455,8 @@ void TRA_rollback(thread_db* tdbb, jrd_tra* transaction, const bool retaining_fl
 		return;
 	}
 
-	TRA_set_state(tdbb, transaction, transaction->tra_number, state);
 	REPL_trans_rollback(tdbb, transaction);
+	TRA_set_state(tdbb, transaction, transaction->tra_number, state);
 
 	TRA_release_transaction(tdbb, transaction, &trace);
 }
@@ -1990,8 +1992,8 @@ int TRA_wait(thread_db* tdbb, jrd_tra* trans, TraNumber number, jrd_tra::wait_t 
 	if (state == tra_active)
 	{
 		state = tra_dead;
-		TRA_set_state(tdbb, 0, number, tra_dead);
 		REPL_trans_cleanup(tdbb, number);
+		TRA_set_state(tdbb, 0, number, tra_dead);
 	}
 
 	// If the transaction disappeared into limbo, died, for constructively
@@ -2100,7 +2102,17 @@ static header_page* bump_transaction_id(thread_db* tdbb, WIN* window, bool dontW
 	const bool new_tip = ((number % dbb->dbb_page_manager.transPerTIP) == 0);
 
 	if (new_tip)
-		TRA_extend_tip(tdbb, (number / dbb->dbb_page_manager.transPerTIP)); //, window);
+	{
+		try
+		{
+			TRA_extend_tip(tdbb, (number / dbb->dbb_page_manager.transPerTIP)); //, window);
+		}
+		catch (Exception&)
+		{
+			CCH_RELEASE(tdbb, window);
+			throw;
+		}
+	}
 
 	// Extend, if necessary, has apparently succeeded.  Next, update header page
 
@@ -2617,13 +2629,13 @@ static void retain_context(thread_db* tdbb, jrd_tra* transaction, bool commit, i
 
 	if (!dbb->readOnly())
 	{
-		// Set the state on the inventory page
-		TRA_set_state(tdbb, transaction, old_number, state);
-
 		if (commit)
 			REPL_trans_commit(tdbb, transaction);
 		else
 			REPL_trans_rollback(tdbb, transaction);
+
+		// Set the state on the inventory page
+		TRA_set_state(tdbb, transaction, old_number, state);
 	}
 	if (dbb->dbb_config->getClearGTTAtRetaining())
 		release_temp_tables(tdbb, transaction);
@@ -4131,7 +4143,7 @@ TraceSweepEvent::TraceSweepEvent(thread_db* tdbb)
 	gds__log("Sweep is started by %s\n"
 		"\tDatabase \"%s\" \n"
 		"\tOIT %" SQUADFORMAT", OAT %" SQUADFORMAT", OST %" SQUADFORMAT", Next %" SQUADFORMAT,
-		att->att_user ? att->att_user->getUserName().c_str() : "<Unknown user>",
+		att->getUserName("<Unknown user>").c_str(),
 		att->att_filename.c_str(),
 		m_sweep_info.getOIT(),
 		m_sweep_info.getOAT(),

@@ -41,7 +41,7 @@ DEV_FLAGS=$(COMMON_FLAGS) $(WARN_FLAGS)
 CROSS_CONFIG=android.arm64
 
 LDFLAGS += --sysroot=$(CROSS_SYSROOT) -static-libstdc++
-DroidLibs := -lm -ldl $(DECLIB) $(RE2LIB)
+DroidLibs := -lm -ldl $(DECLIB) $(RE2LIB) $(I128LIB)
 
 LINK_LIBS = $(DroidLibs)
 STATICLINK_LIBS = $(DroidLibs)

@@ -915,15 +915,15 @@ void get_process_times(SINT64 &userTime, SINT64 &sysTime)
 	FILETIME utime, stime, dummy;
 	if (GetProcessTimes(GetCurrentProcess(), &dummy, &dummy, &stime, &utime))
 	{
-		LARGE_INTEGER lint;
+		LARGE_INTEGER bigint;
 
-		lint.HighPart = stime.dwHighDateTime;
-		lint.LowPart = stime.dwLowDateTime;
-		sysTime = lint.QuadPart / 10000;
+		bigint.HighPart = stime.dwHighDateTime;
+		bigint.LowPart = stime.dwLowDateTime;
+		sysTime = bigint.QuadPart / 10000;
 
-		lint.HighPart = utime.dwHighDateTime;
-		lint.LowPart = utime.dwLowDateTime;
-		userTime = lint.QuadPart / 10000;
+		bigint.HighPart = utime.dwHighDateTime;
+		bigint.LowPart = utime.dwLowDateTime;
+		userTime = bigint.QuadPart / 10000;
 	}
 	else
 	{
@@ -1562,8 +1562,7 @@ unsigned sqlTypeToDsc(unsigned runOffset, unsigned sqlType, unsigned sqlLength,
 	if (dscType == dtype_unknown)
 	{
 		fb_assert(false);
-		// keep old yvalve logic
-		dscType = sqlType;
+		Firebird::Arg::Gds(isc_dsql_datatype_err).raise();
 	}
 
 	if (dtype)
@@ -1611,6 +1610,13 @@ bool containsErrorCode(const ISC_STATUS* v, ISC_STATUS code)
 	return false;
 }
 
+inline bool sqlSymbolChar(char c, bool first)
+{
+	if (c & 0x80)
+		return false;
+	return (isdigit(c) && !first) || isalpha(c) || c == '_' || c == '$';
+}
+
 const char* dpbItemUpper(const char* s, FB_SIZE_T l, Firebird::string& buf)
 {
 	if (l && (s[0] == '"' || s[0] == '\''))
@@ -1623,30 +1629,37 @@ const char* dpbItemUpper(const char* s, FB_SIZE_T l, Firebird::string& buf)
 		{
 			if (s[i] == end_quote)
 			{
-				if (++i >= l || s[i] != end_quote)
-					break;		// delimited quote, done processing
+				if (++i >= l)
+				{
+					if (ascii && s[0] == '\'')
+						buf.upper();
+
+					return buf.c_str();
+				}
+
+				if (s[i] != end_quote)
+				{
+					buf.assign(&s[i], l - i);
+					Firebird::fatal_exception::raiseFmt("Invalid text <%s> after quoted string", buf.c_str());
+				}
 
 				// skipped the escape quote, continue processing
 			}
-
-			if (s[i] & 0x80)
+			else if (!sqlSymbolChar(s[i], i == 1))
 				ascii = false;
+
 			buf += s[i];
 		}
 
-		if (ascii && s[0] == '\'')
-			buf.upper();
-
-		return buf.c_str();
+		Firebird::fatal_exception::raiseFmt("Missing terminating quote <%c> in the end of quoted string", s[0]);
 	}
 
 	// non-quoted string - try to uppercase
 	for (FB_SIZE_T i = 0; i < l; ++i)
 	{
-		if (!(s[i] & 0x80))
-			buf += toupper(s[i]);
-		else
+		if (!sqlSymbolChar(s[i], i == 0))
 			return NULL;				// contains non-ascii data
+		buf += toupper(s[i]);
 	}
 
 	return buf.c_str();

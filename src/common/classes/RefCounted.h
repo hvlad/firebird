@@ -137,6 +137,13 @@ namespace Firebird
 			r.ptr = NULL;
 		}
 
+		T* clear()		// nullify pointer w/o calling release
+		{
+			T* rc = ptr;
+			ptr = NULL;
+			return rc;
+		}
+
 		T* operator=(T* p)
 		{
 			return assign(p);

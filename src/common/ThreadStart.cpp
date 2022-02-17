@@ -30,9 +30,9 @@
 #include "firebird.h"
 #include <stdio.h>
 #include <errno.h>
+#include "../common/classes/alloc.h"
 #include "../common/ThreadStart.h"
 #include "../yvalve/gds_proto.h"
-#include "../common/isc_s_proto.h"
 #include "../common/gdsassert.h"
 
 #ifdef WIN_NT

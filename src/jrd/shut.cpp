@@ -26,6 +26,7 @@
 #include "../jrd/scl.h"
 #include "../jrd/nbak.h"
 #include "../jrd/ods.h"
+#include "../jrd/Mapping.h"
 #include "../jrd/cch_proto.h"
 #include "../jrd/cmp_proto.h"
 #include "../jrd/err_proto.h"
@@ -222,6 +223,9 @@ void SHUT_database(thread_db* tdbb, SSHORT flag, SSHORT delay, Sync* guard)
 		check_backup_state(tdbb);
 	}
 
+	// Clear old mapping cache data (if present)
+	Mapping::clearCache(dbb->dbb_filename.c_str(), Mapping::ALL_CACHE);
+
 	attachment->att_flags |= ATT_shutdown_manager;
 
 	// Database is being shutdown. First notification gives shutdown type and delay in seconds.
@@ -400,6 +404,9 @@ void SHUT_online(thread_db* tdbb, SSHORT flag, Sync* guard)
 	{
 		check_backup_state(tdbb);
 	}
+
+	// Clear old mapping cache data (if present)
+	Mapping::clearCache(dbb->dbb_filename.c_str(), Mapping::ALL_CACHE);
 
 	// Reset shutdown flag on database header page
 

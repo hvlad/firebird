@@ -127,24 +127,6 @@ InternalConnection::~InternalConnection()
 {
 }
 
-// Status helper
-class IntStatus : public Firebird::FbLocalStatus
-{
-public:
-	explicit IntStatus(FbStatusVector *p)
-		: FbLocalStatus(), v(p)
-	{}
-
-	~IntStatus()
-	{
-		if (v)
-			fb_utils::copyStatus(v, &(*this));
-	}
-
-private:
-	FbStatusVector *v;
-};
-
 void InternalConnection::attach(thread_db* tdbb)
 {
 	fb_assert(!m_attachment);
@@ -209,7 +191,7 @@ void InternalConnection::doDetach(thread_db* tdbb)
 		FbLocalStatus status;
 
 		RefPtr<JAttachment> att = m_attachment;
-		m_attachment = NULL;
+		m_attachment = NULL;	// release and nullify
 
 		{	// scope
 			EngineCallbackGuard guard(tdbb, *this, FB_FUNCTION);
@@ -290,8 +272,8 @@ bool InternalConnection::isSameDatabase(const PathName& dbName, ClumpletReader& 
 	if (m_isCurrent)
 	{
 		const Attachment* att = m_attachment->getHandle();
-		const MetaString& attUser = att->att_user->getUserName();
-		const MetaString& attRole = att->att_user->getSqlRole();
+		const MetaString& attUser = att->getUserName();
+		const MetaString& attRole = att->getSqlRole();
 
 		MetaString str;
 
@@ -345,10 +327,9 @@ void InternalTransaction::doStart(FbStatusVector* status, thread_db* tdbb, Clump
 		JAttachment* att = m_IntConnection.getJrdAtt();
 
 		EngineCallbackGuard guard(tdbb, *this, FB_FUNCTION);
-		IntStatus s(status);
 
 		m_transaction.assignRefNoIncr(
-			att->startTransaction(&s, tpb.getBufferLength(), tpb.getBuffer()));
+			att->startTransaction(status, tpb.getBufferLength(), tpb.getBuffer()));
 
 		if (m_transaction)
 			m_transaction->getHandle()->tra_callback_count = localTran->tra_callback_count;
@@ -369,18 +350,20 @@ void InternalTransaction::doCommit(FbStatusVector* status, thread_db* tdbb, bool
 	if (m_scope == traCommon && m_IntConnection.isCurrent())
 	{
 		if (!retain) {
-			m_transaction = NULL;
+			m_transaction = NULL;	// release and nullify
 		}
 	}
 	else
 	{
-		IntStatus s(status);
-
 		EngineCallbackGuard guard(tdbb, *this, FB_FUNCTION);
 		if (retain)
-			m_transaction->commitRetaining(&s);
+			m_transaction->commitRetaining(status);
 		else
-			m_transaction->commit(&s);
+		{
+			m_transaction->commit(status);
+			if (!(status->getState() & IStatus::STATE_ERRORS))
+				m_transaction.clear();
+		}
 	}
 }
 
@@ -390,30 +373,51 @@ void InternalTransaction::doRollback(FbStatusVector* status, thread_db* tdbb, bo
 
 	if (m_connection.isBroken())
 	{
-		m_transaction = NULL;
+		m_transaction.clear();
 		return;
 	}
 
 	if (m_scope == traCommon && m_IntConnection.isCurrent())
 	{
 		if (!retain) {
-			m_transaction = NULL;
+			m_transaction = NULL;	// release and nullify
 		}
+		return;
 	}
-	else
-	{
-		IntStatus s(status);
 
+	ISC_STATUS err = 0;
+	{
 		EngineCallbackGuard guard(tdbb, *this, FB_FUNCTION);
 		if (retain)
-			m_transaction->rollbackRetaining(&s);
+			m_transaction->rollbackRetaining(status);
 		else
-			m_transaction->rollback(&s);
+			m_transaction->rollback(status);
+
+		if (status->getState() & IStatus::STATE_ERRORS) 
+			err = status->getErrors()[1];
+
+		if (err == isc_cancelled)
+		{
+			FbLocalStatus temp;
+			JAttachment* jAtt = m_IntConnection.getJrdAtt();
+			jAtt->cancelOperation(&temp, fb_cancel_disable);
+
+			status->init();
+			if (retain)
+				m_transaction->rollbackRetaining(status);
+			else
+				m_transaction->rollback(status);
+
+			err = (status->getState() & IStatus::STATE_ERRORS) ?
+				status->getErrors()[1] : 0;
+
+			jAtt->cancelOperation(&temp, fb_cancel_enable);
+		}
 	}
 
-	if ((status->getErrors()[1] == isc_att_shutdown || status->getErrors()[1] == isc_shutdown) && !retain)
+	if ((!err || err == isc_att_shutdown || err == isc_shutdown) && !retain)
 	{
-		m_transaction = NULL;
+		m_transaction.clear();
 		status->init();
 	}
 }
@@ -618,7 +622,7 @@ void InternalStatement::doOpen(thread_db* tdbb)
 		if (m_cursor)
 		{
 			m_cursor->close(&status);
-			m_cursor = NULL;
+			m_cursor.clear();
 		}
 
 		fb_assert(m_inMetadata->getMessageLength() == m_in_buffer.getCount());
@@ -661,9 +665,11 @@ void InternalStatement::doClose(thread_db* tdbb, bool drop)
 		EngineCallbackGuard guard(tdbb, *this, FB_FUNCTION);
 
 		if (m_cursor)
+		{
 			m_cursor->close(&status);
+			m_cursor.clear();
+		}
 
-		m_cursor = NULL;
 		if (status->getState() & IStatus::STATE_ERRORS)
 		{
 			raise(&status, tdbb, "JResultSet::close");
@@ -672,10 +678,12 @@ void InternalStatement::doClose(thread_db* tdbb, bool drop)
 		if (drop)
 		{
 			if (m_request)
+			{
 				m_request->free(&status);
+				m_request.clear();
+			}
 
 			m_allocated = false;
-			m_request = NULL;
 
 			if (status->getState() & IStatus::STATE_ERRORS)
 			{
@@ -835,7 +843,7 @@ void InternalBlob::close(thread_db* tdbb)
 	{
 		EngineCallbackGuard guard(tdbb, m_connection, FB_FUNCTION);
 		m_blob->close(&status);
-		m_blob = NULL;
+		m_blob.clear();
 	}
 
 	if (status->getState() & IStatus::STATE_ERRORS)
@@ -855,7 +863,7 @@ void InternalBlob::cancel(thread_db* tdbb)
 	{
 		EngineCallbackGuard guard(tdbb, m_connection, FB_FUNCTION);
 		m_blob->cancel(&status);
-		m_blob = NULL;
+		m_blob.clear();
 	}
 
 	if (status->getState() & IStatus::STATE_ERRORS)

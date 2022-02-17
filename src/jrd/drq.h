@@ -79,6 +79,7 @@ enum drq_type_t
 	drq_e_filters,			// erase filters
 	drq_e_func_args,		// erase functions
 	drq_e_funcs,			// erase function arguments
+	drq_e_arg_prvs,			// erase argument source's privileges
 	drq_l_fld_src,			// lookup a field source
 	drq_e_gfields,			// erase global fields
 	drq_e_indices,			// erase indices
@@ -213,6 +214,7 @@ enum drq_type_t
 	drq_e_fun_prv,			// erase function privileges
 	drq_s_fld_src,			// store field source
 	drq_e_prm_gfld,			// erase parameter source
+	drq_e_prm_prvs,			// erase parameter source's privileges
 	drq_g_nxt_sec_id,		// lookup next security class ID
 	drq_f_nxt_gen,			// find next generator name
 	drq_g_nxt_gen,			// generate next generator name
