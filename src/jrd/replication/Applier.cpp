@@ -241,7 +241,7 @@ Applier* Applier::create(thread_db* tdbb)
 	AutoPtr<CompilerScratch> csb(FB_NEW_POOL(*req_pool) CompilerScratch(*req_pool));
 
 	const auto request = JrdStatement::makeRequest(tdbb, csb, true);
-	TimeZoneUtil::validateGmtTimeStamp(request->req_gmt_timestamp);
+	request->validateTimeStamp();
 	request->req_attachment = attachment;
 
 	auto& att_pool = *attachment->att_pool;
@@ -556,6 +556,25 @@ void Applier::insertRecord(thread_db* tdbb, TraNumber traNum,
 
 		fb_utils::init_status(tdbb->tdbb_status_vector);
 
+		// The subsequent backout will delete the blobs we have stored before,
+		// so we have to copy them and adjust the references
+		for (USHORT id = 0; id < format->fmt_count; id++)
+		{
+			dsc desc;
+			if (DTYPE_IS_BLOB(format->fmt_desc[id].dsc_dtype) &&
+				EVL_field(NULL, record, id, &desc))
+			{
+				const auto blobId = (bid*) desc.dsc_address;
+
+				if (!blobId->isEmpty())
+				{
+					const auto numericId = blobId->get_permanent_number().getValue();
+					const auto destination = blb::copy(tdbb, blobId);
+					transaction->tra_repl_blobs.put(numericId, destination.bid_temp_id());
+				}
+			}
+		}
+
 		// Undo this particular insert (without involving a savepoint)
 		VIO_backout(tdbb, &rpb, transaction);
 
@@ -609,14 +628,10 @@ void Applier::insertRecord(thread_db* tdbb, TraNumber traNum,
 
 		record_param newRpb;
 		newRpb.rpb_relation = relation;
-
-		newRpb.rpb_record = NULL;
-		AutoPtr<Record> newRecord(VIO_record(tdbb, &newRpb, format, m_request->req_pool));
-
+		newRpb.rpb_record = record;
 		newRpb.rpb_format_number = format->fmt_version;
-		newRpb.rpb_address = newRecord->getData();
-		newRpb.rpb_length = length;
-		newRecord->copyDataFrom(data);
+		newRpb.rpb_address = record->getData();
+		newRpb.rpb_length = record->getLength();
 
 		doUpdate(tdbb, &rpb, &newRpb, transaction, NULL);
 	}

@@ -6808,6 +6808,7 @@ void RelationNode::defineConstraint(thread_db* tdbb, DsqlCompilerScratch* dsqlSc
 				definition.unique = constraint.type != Constraint::TYPE_FK;
 				if (constraint.index->descending)
 					definition.descending = true;
+				definition.inactive = false;
 				definition.columns = constraint.columns;
 				definition.refRelation = constraint.refRelation;
 				definition.refColumns = constraint.refColumns;
@@ -9902,6 +9903,7 @@ void CreateIndexNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch,
 	definition.relation = relation->dsqlName;
 	definition.unique = unique;
 	definition.descending = descending;
+	definition.inactive = false;
 
 	if (columns)
 	{

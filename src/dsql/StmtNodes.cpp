@@ -3260,7 +3260,7 @@ void ExecProcedureNode::executeProcedure(thread_db* tdbb, jrd_req* request) cons
 			&tdbb->getAttachment()->att_original_timezone,
 			tdbb->getAttachment()->att_current_timezone);
 
-		procRequest->req_gmt_timestamp = request->req_gmt_timestamp;
+		procRequest->setGmtTimeStamp(request->getGmtTimeStamp());
 
 		EXE_start(tdbb, procRequest, transaction);
 

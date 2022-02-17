@@ -1016,7 +1016,10 @@ void DsqlDdlRequest::execute(thread_db* tdbb, jrd_tra** traHandle,
 
 			node->executeDdl(tdbb, internalScratch, req_transaction);
 
-			if (node->mustBeReplicated())
+			const bool isInternalRequest =
+				(internalScratch->flags & DsqlCompilerScratch::FLAG_INTERNAL_REQUEST);
+
+			if (!isInternalRequest && node->mustBeReplicated())
 				REPL_exec_sql(tdbb, req_transaction, getStatement()->getOrgText());
 		}
 		catch (status_exception& ex)

@@ -127,24 +127,6 @@ InternalConnection::~InternalConnection()
 {
 }
 
-// Status helper
-class IntStatus : public Firebird::FbLocalStatus
-{
-public:
-	explicit IntStatus(FbStatusVector *p)
-		: FbLocalStatus(), v(p)
-	{}
-
-	~IntStatus()
-	{
-		if (v)
-			fb_utils::copyStatus(v, &(*this));
-	}
-
-private:
-	FbStatusVector *v;
-};
-
 void InternalConnection::attach(thread_db* tdbb)
 {
 	fb_assert(!m_attachment);
@@ -345,10 +327,9 @@ void InternalTransaction::doStart(FbStatusVector* status, thread_db* tdbb, Clump
 		JAttachment* att = m_IntConnection.getJrdAtt();
 
 		EngineCallbackGuard guard(tdbb, *this, FB_FUNCTION);
-		IntStatus s(status);
 
 		m_transaction.assignRefNoIncr(
-			att->startTransaction(&s, tpb.getBufferLength(), tpb.getBuffer()));
+			att->startTransaction(status, tpb.getBufferLength(), tpb.getBuffer()));
 
 		if (m_transaction)
 			m_transaction->getHandle()->tra_callback_count = localTran->tra_callback_count;
@@ -374,15 +355,13 @@ void InternalTransaction::doCommit(FbStatusVector* status, thread_db* tdbb, bool
 	}
 	else
 	{
-		IntStatus s(status);
-
 		EngineCallbackGuard guard(tdbb, *this, FB_FUNCTION);
 		if (retain)
-			m_transaction->commitRetaining(&s);
+			m_transaction->commitRetaining(status);
 		else
 		{
-			m_transaction->commit(&s);
-			if (!(s->getState() & IStatus::STATE_ERRORS))
+			m_transaction->commit(status);
+			if (!(status->getState() & IStatus::STATE_ERRORS))
 				m_transaction.clear();
 		}
 	}
@@ -403,23 +382,40 @@ void InternalTransaction::doRollback(FbStatusVector* status, thread_db* tdbb, bo
 		if (!retain) {
 			m_transaction = NULL;	// release and nullify
 		}
+		return;
 	}
-	else
-	{
-		IntStatus s(status);
 
+	ISC_STATUS err = 0;
+	{
 		EngineCallbackGuard guard(tdbb, *this, FB_FUNCTION);
 		if (retain)
-			m_transaction->rollbackRetaining(&s);
+			m_transaction->rollbackRetaining(status);
 		else
+			m_transaction->rollback(status);
+
+		if (status->getState() & IStatus::STATE_ERRORS) 
+			err = status->getErrors()[1];
+
+		if (err == isc_cancelled)
 		{
-			m_transaction->rollback(&s);
-			if (!(s->getState() & IStatus::STATE_ERRORS))
-				m_transaction.clear();
+			FbLocalStatus temp;
+			JAttachment* jAtt = m_IntConnection.getJrdAtt();
+			jAtt->cancelOperation(&temp, fb_cancel_disable);
+
+			status->init();
+			if (retain)
+				m_transaction->rollbackRetaining(status);
+			else
+				m_transaction->rollback(status);
+
+			err = (status->getState() & IStatus::STATE_ERRORS) ?
+				status->getErrors()[1] : 0;
+
+			jAtt->cancelOperation(&temp, fb_cancel_enable);
 		}
 	}
 
-	if ((status->getErrors()[1] == isc_att_shutdown || status->getErrors()[1] == isc_shutdown) && !retain)
+	if ((!err || err == isc_att_shutdown || err == isc_shutdown) && !retain)
 	{
 		m_transaction.clear();
 		status->init();

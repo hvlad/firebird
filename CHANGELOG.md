@@ -1,4 +1,205 @@
-# v4.0 Release
+# v4.0.1
+
+## New features
+
+* [#6910](https://github.com/FirebirdSQL/firebird/issues/6910): Add way to retrieve statement BLR with Statement::getInfo and ISQL's SET EXEC_PATH_DISPLAY BLR  
+  Contributor(s): Adriano dos Santos Fernandes
+
+## Improvements
+
+* [#6959](https://github.com/FirebirdSQL/firebird/issues/6959): Add IBatch::getInfo() method to the API  
+  Contributor(s): Alex Peshkoff
+
+* [#6954](https://github.com/FirebirdSQL/firebird/issues/6954): fb_info_protocol_version support  
+  Contributor(s): Alex Peshkoff
+
+* [#6929](https://github.com/FirebirdSQL/firebird/issues/6929): Add support of PKCS v.1.5 padding to RSA functions, needed for backward compatibility with old systems  
+  Contributor(s): Alex Peshkoff
+
+* [#6915](https://github.com/FirebirdSQL/firebird/issues/6915): Allow attribute DISABLE-COMPRESSIONS in UNICODE collations  
+  Contributor(s): Adriano dos Santos Fernandes
+
+* [#6903](https://github.com/FirebirdSQL/firebird/issues/6903): Make it possible to create ICU-based collations with locales keywords  
+  Contributor(s): tkeinz, Adriano dos Santos Fernandes
+
+* [#6872](https://github.com/FirebirdSQL/firebird/issues/6872): Faster indexed STARTING WITH execution with UNICODE collations  
+  Contributor(s): Adriano dos Santos Fernandes
+
+* [#6810](https://github.com/FirebirdSQL/firebird/issues/6810): Use precise limit of salt length when signing messages and verifying the sign  
+  Contributor(s): Alex Peshkoff
+
+* [#6809](https://github.com/FirebirdSQL/firebird/issues/6809): Integer hex-literal support for INT128  
+  Contributor(s): Alex Peshkoff
+
+## Bugfixes
+
+* [#7070](https://github.com/FirebirdSQL/firebird/issues/7070): Error "BLOB is not found" while replication converts INSERT into UPDATE for a conflicting record  
+  Contributor(s): Dmitry Yemanov
+
+* [#7068](https://github.com/FirebirdSQL/firebird/issues/7068): Errors in the ChaCha plugin are displayed incorrectly  
+  Contributor(s): Alex Peshkoff
+
+* [#7067](https://github.com/FirebirdSQL/firebird/issues/7067): Deadlock when using not initialized security database  
+  Contributor(s): Alex Peshkoff
+
+* [#7066](https://github.com/FirebirdSQL/firebird/issues/7066): Server may send incorrect specific data to client when establishing encrypted connection  
+  Contributor(s): Alex Peshkoff
+
+* [#7065](https://github.com/FirebirdSQL/firebird/issues/7065): Connection hangs after delivery of 256GB of data  
+  Contributor(s): Alex Peshkoff
+
+* [#7064](https://github.com/FirebirdSQL/firebird/issues/7064): Linear regression functions aren't implemented correctly  
+  Contributor(s): Adriano dos Santos Fernandes
+
+* [#7062](https://github.com/FirebirdSQL/firebird/issues/7062): Creation of expression index does not release its statement correctly  
+  Contributor(s): Adriano dos Santos Fernandes
+
+* [#7060](https://github.com/FirebirdSQL/firebird/issues/7060): Deadlock when execute test for CORE-4337  
+  Contributor(s): Alex Peshkoff
+
+* [#7057](https://github.com/FirebirdSQL/firebird/issues/7057): Client-side positioned updates work wrongly with scrollable cursors  
+  Contributor(s): Dmitry Yemanov
+
+* [#7056](https://github.com/FirebirdSQL/firebird/issues/7056): Fetching from a scrollable cursor may overwrite user-specified buffer and corrupt memory  
+  Contributor(s): Dmitry Yemanov
+
+* [#7052](https://github.com/FirebirdSQL/firebird/issues/7052): Races between transactions on the primary side may cause update conflicts while applying journals to the replica  
+  Contributor(s): Dmitry Yemanov
+
+* [#7048](https://github.com/FirebirdSQL/firebird/issues/7048): Incorrect releasing of user savepoint (older savepoints become inaccessible)  
+  Contributor(s): Dmitry Yemanov
+
+* [#7043](https://github.com/FirebirdSQL/firebird/issues/7043): Wrong message when user has no access to /tmp/firebird  
+  Contributor(s): Alex Peshkoff
+
+* [#7037](https://github.com/FirebirdSQL/firebird/issues/7037): Build problem when using both --with-builtin-tommath and --with-builtin-tomcrypt  
+  Contributor(s): Adriano dos Santos Fernandes
+
+* [#7034](https://github.com/FirebirdSQL/firebird/issues/7034): Server crashes while fetching from a scrollable cursor in PSQL  
+  Contributor(s): Dmitry Yemanov
+
+* [#7033](https://github.com/FirebirdSQL/firebird/issues/7033): Replicator is missing sanity checks for user-supplied blocks  
+  Contributor(s): Dmitry Yemanov
+
+* [#7018](https://github.com/FirebirdSQL/firebird/issues/7018): Problems with windows frames  
+  Contributor(s): Adriano dos Santos Fernandes
+
+* [#7015](https://github.com/FirebirdSQL/firebird/issues/7015): Replication applier code may crash if the specified block contains no savepoint operations  
+  Contributor(s): Dmitry Yemanov
+
+* [#6998](https://github.com/FirebirdSQL/firebird/issues/6998): Problems with access to RDB$CONFIG table for non-privileged user when he has grant on execution of SP which has necessary access rights (created by SYSDBA with SQL DEFINER clause)  
+  Contributor(s): Roman Simakov
+
+* [#6995](https://github.com/FirebirdSQL/firebird/issues/6995): "String truncation error" is raised while restoring the database from a v2.5 backup  
+  Contributor(s): Dmitry Yemanov
+
+* [#6989](https://github.com/FirebirdSQL/firebird/issues/6989): Invalid message in replication.log (and possibly crash in the case of synchronous replication) when the target DB has no "replica" flag set  
+  Contributor(s): Dmitry Yemanov
+
+* [#6985](https://github.com/FirebirdSQL/firebird/issues/6985): Application could hang when using new Batch API with blobs over XNET  
+  Contributor(s): Vlad Khorsun
+
+* [#6979](https://github.com/FirebirdSQL/firebird/issues/6979): Windows x64 server installer installs an incomplete x86 client
+  Contributor(s): Paul Reeves
+
+* [#6978](https://github.com/FirebirdSQL/firebird/issues/6978): Firebird 4 fails to build on big endian platforms  
+  Contributor(s): Alex Peshkoff
+
+* [#6976](https://github.com/FirebirdSQL/firebird/issues/6976): Lack of proper clean up after failure to initialize shared memory  
+  Contributor(s): Vlad Khorsun
+
+* [#6975](https://github.com/FirebirdSQL/firebird/issues/6975): Crash or hang while shutting down the replica database if segments are being applied  
+  Contributor(s): Dmitry Yemanov
+
+* [#6968](https://github.com/FirebirdSQL/firebird/issues/6968): On Windows, engine may hang when works with corrupted database and read after the end of file  
+  Contributor(s): Vlad Khorsun
+
+* [#6966](https://github.com/FirebirdSQL/firebird/issues/6966): Status vector for ES(<EMPTY_STRING>) is unstable if another execute block with correct statement was executed before. Affects only LINUX builds in Classic mode  
+  Contributor(s): Alex Peshkoff
+
+* [#6963](https://github.com/FirebirdSQL/firebird/issues/6963): The REFERENCES permission does not work  
+  Contributor(s): Alex Peshkoff
+
+* [#6955](https://github.com/FirebirdSQL/firebird/issues/6955): fb_info_creation_timestamp_tz returns a corrupted buffer  
+  Contributor(s): Vlad Khorsun
+
+* [#6945](https://github.com/FirebirdSQL/firebird/issues/6945): Segfault in the batch interface when gbak restores a database with many blobs over the wire  
+  Contributor(s): Alex Peshkoff
+
+* [#6943](https://github.com/FirebirdSQL/firebird/issues/6943): Windows client install is missing some DLLs
+  Contributor(s): Paul Reeves
+
+* [#6935](https://github.com/FirebirdSQL/firebird/issues/6935): SQL SECURITY DEFINER has inconsistent behaviour if the object owner is non-privileged  
+  Contributor(s): Dmitry Yemanov
+
+* [#6935](https://github.com/FirebirdSQL/firebird/issues/6935): SQL SECURITY DEFINER does not affect the ownership of created DDL objects  
+  Contributor(s): Dmitry Yemanov
+
+* [#6930](https://github.com/FirebirdSQL/firebird/issues/6930): Segfault when calling cryptographic functions  
+  Contributor(s): Alex Peshkoff
+
+* [#6917](https://github.com/FirebirdSQL/firebird/issues/6917): Firebird 4 installer asks for SYSDBA password when doing client installation
+  Contributor(s): Paul Reeves
+
+* [#6913](https://github.com/FirebirdSQL/firebird/issues/6913): Buffer overflows in getInfo APIs  
+  Contributor(s): Adriano dos Santos Fernandes
+
+* [#6909](https://github.com/FirebirdSQL/firebird/issues/6909): Some updates may crash Firebird server on the replica side  
+  Contributor(s): Dmitry Yemanov
+
+* [#6907](https://github.com/FirebirdSQL/firebird/issues/6907): Failed DDL commands can be replicated  
+  Contributor(s): Dmitry Yemanov
+
+* [#6900](https://github.com/FirebirdSQL/firebird/issues/6900): IBatch::add() method fails silently when a memory limit is exceeded  
+  Contributor(s): Alex Peshkoff
+
+* [#6893](https://github.com/FirebirdSQL/firebird/issues/6893): Problem with replication of BLOB segments longer than 32KB  
+  Contributor(s): Dmitry Yemanov
+
+* [#6887](https://github.com/FirebirdSQL/firebird/issues/6887): Invalid SIMILAR TO patterns may lead memory read beyond string limits  
+  Contributor(s): Adriano dos Santos Fernandes
+
+* [#6886](https://github.com/FirebirdSQL/firebird/issues/6886): Differerent interfaces behaviour depending upon source of interface  
+  Contributor(s): Alex Peshkoff
+
+* [#6887](https://github.com/FirebirdSQL/firebird/issues/6887): Significant performance regression of SIMILAR TO and SUBSTRING(SIMILAR) when pattern is taken from a variable  
+  Contributor(s): Adriano dos Santos Fernandes
+
+* [#6874](https://github.com/FirebirdSQL/firebird/issues/6874): Literal 65536 (interpreted as int) cannot be multiplied by itself w/o cast if result is more than 2^63-1  
+  Contributor(s): Alex Peshkoff
+
+* [#6860](https://github.com/FirebirdSQL/firebird/issues/6860): Create user statement fails with SQLSTATE = HY000 when using DataTypeCompatibility  
+  Contributor(s): Alex Peshkoff
+
+* [#6856](https://github.com/FirebirdSQL/firebird/issues/6856): Permission error after replication of DDL commands  
+  Contributor(s): Dmitry Yemanov
+
+* [#6853](https://github.com/FirebirdSQL/firebird/issues/6853): Asynchronous replication leaks file handles  
+  Contributor(s): Dmitry Yemanov
+
+* [#6850](https://github.com/FirebirdSQL/firebird/issues/6850): Database-level and DDL triggers are executed at the replica side  
+  Contributor(s): Dmitry Yemanov
+
+* [#6849](https://github.com/FirebirdSQL/firebird/issues/6849): Conflicting INSERT propagated into a read-write replica may cause duplicate records to appear (and PK/UK violation to happen)  
+  Contributor(s): Dmitry Yemanov
+
+* [#6848](https://github.com/FirebirdSQL/firebird/issues/6848): Generator values may not replicate after commit  
+  Contributor(s): Dmitry Yemanov
+
+* [#6845](https://github.com/FirebirdSQL/firebird/issues/6845): Result type of AVG over BIGINT column results in type INT128  
+  Contributor(s): Alex Peshkoff
+
+* [#6838](https://github.com/FirebirdSQL/firebird/issues/6838): Deleting multiple rows from a view with triggers may cause triggers to fire just once  
+  Contributor(s): Dmitry Yemanov
+
+* [#6832](https://github.com/FirebirdSQL/firebird/issues/6832): Segfault when using COMMIT RETAINING with Global Temporary Tables  
+  Contributor(s): Alex Peshkoff
+
+* [#6801](https://github.com/FirebirdSQL/firebird/issues/6801): Error recompiling a package with some combination of nested functions  
+  Contributor(s): Adriano dos Santos Fernandes
+
+
+# v4.0 Release (01-Jun-2021)
 
 ## Improvements
 

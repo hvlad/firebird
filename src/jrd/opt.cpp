@@ -302,8 +302,6 @@ namespace
 				{
 					// Ideally, we should never get here. But just in case it happened, handle it.
 
-					fb_assert(false);
-
 					for (auto& subRiver : rivers)
 					{
 						const auto subRsb = subRiver->getRecordSource();

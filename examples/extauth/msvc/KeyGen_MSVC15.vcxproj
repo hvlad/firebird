@@ -83,31 +83,31 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <OutDir>..\..\prebuilt\$(Platform)\$(Configuration)\bin\</OutDir>
     <IntDir>..\..\..\temp\$(PlatformName)\$(Configuration)\examples\$(ProjectName)\</IntDir>
-    <TargetName>fbSampleExtAuthKeygen </TargetName>
+    <TargetName>fbSampleExtAuthKeygen</TargetName>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <OutDir>..\..\prebuilt\$(Platform)\$(Configuration)\bin\</OutDir>
     <IntDir>..\..\..\temp\$(PlatformName)\$(Configuration)\examples\$(ProjectName)\</IntDir>
-    <TargetName>fbSampleExtAuthKeygen </TargetName>
+    <TargetName>fbSampleExtAuthKeygen</TargetName>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <OutDir>..\..\prebuilt\$(Platform)\$(Configuration)\bin\</OutDir>
     <IntDir>..\..\..\temp\$(PlatformName)\$(Configuration)\examples\$(ProjectName)\</IntDir>
-    <TargetName>fbSampleExtAuthKeygen </TargetName>
+    <TargetName>fbSampleExtAuthKeygen</TargetName>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <OutDir>..\..\prebuilt\$(Platform)\$(Configuration)\bin\</OutDir>
     <IntDir>..\..\..\temp\$(PlatformName)\$(Configuration)\examples\$(ProjectName)\</IntDir>
-    <TargetName>fbSampleExtAuthKeygen </TargetName>
+    <TargetName>fbSampleExtAuthKeygen</TargetName>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
       <SDLCheck>true</SDLCheck>
-      <ConformanceMode>true</ConformanceMode>
+      <ConformanceMode>false</ConformanceMode>
       <AdditionalIncludeDirectories>..\..\..\src\include\;..\..\..\extern\libtomcrypt\src\headers\</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;LTM_DESC</PreprocessorDefinitions>
+      <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;LTM_DESC;WIN32</PreprocessorDefinitions>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -120,9 +120,9 @@
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
       <SDLCheck>true</SDLCheck>
-      <ConformanceMode>true</ConformanceMode>
+      <ConformanceMode>false</ConformanceMode>
       <AdditionalIncludeDirectories>..\..\..\src\include\;..\..\..\extern\libtomcrypt\src\headers\</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;LTM_DESC</PreprocessorDefinitions>
+      <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;LTM_DESC;WIN32</PreprocessorDefinitions>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -137,9 +137,9 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
-      <ConformanceMode>true</ConformanceMode>
+      <ConformanceMode>false</ConformanceMode>
       <AdditionalIncludeDirectories>..\..\..\src\include\;..\..\..\extern\libtomcrypt\src\headers\</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;LTM_DESC</PreprocessorDefinitions>
+      <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;LTM_DESC;WIN32</PreprocessorDefinitions>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -156,9 +156,9 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
-      <ConformanceMode>true</ConformanceMode>
+      <ConformanceMode>false</ConformanceMode>
       <AdditionalIncludeDirectories>..\..\..\src\include\;..\..\..\extern\libtomcrypt\src\headers\</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;LTM_DESC</PreprocessorDefinitions>
+      <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;LTM_DESC;WIN32</PreprocessorDefinitions>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>

@@ -1235,7 +1235,7 @@ InitInstance<SysPrivCache> spCache;
 
 void resetMap(const char* db, ULONG index)
 {
-	switch(index)
+	switch (index)
 	{
 	case Mapping::MAPPING_CACHE:
 		resetMap(db);
@@ -1631,7 +1631,14 @@ ULONG Mapping::mapUser(string& name, string& trustedRole)
 
 void Mapping::clearCache(const char* dbName, USHORT index)
 {
-	mappingIpc->clearCache(dbName, index);
+	if (index == ALL_CACHE)
+	{
+		// use only old index values not to conflict with previous FB versions (if any used)
+		mappingIpc->clearCache(dbName, MAPPING_CACHE);
+		mappingIpc->clearCache(dbName, SYSTEM_PRIVILEGES_CACHE);
+	}
+	else
+		mappingIpc->clearCache(dbName, index);
 }
 
 

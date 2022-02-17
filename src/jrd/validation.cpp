@@ -725,6 +725,7 @@ static int validate(Firebird::UtilSvc* svc)
 	{
 		dpb.insertString(isc_dpb_trusted_auth, userName);
 	}
+	dpb.insertTag(isc_dpb_no_garbage_collect);
 
 	PathName expandedFilename;
 	if (expandDatabaseName(dbName, expandedFilename, NULL))

@@ -23,7 +23,7 @@
 
 ;   Usage Notes:
 ;
-;   This script has been designed to work with Inno Setup v6.1.2
+;   This script has been designed to work with Inno Setup v6.2.0
 ;   It is available as a quick start pack from here:
 ;     http://www.jrsoftware.org/isdl.php
 ;

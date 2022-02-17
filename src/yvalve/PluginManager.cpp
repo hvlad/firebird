@@ -940,6 +940,9 @@ namespace
 			current = rc;
 			startModule(masterInterface);
 			current = NULL;
+#ifdef DARWIN	// Plugin unload disabled in MacOS - GH-7112
+			rc->addRef();
+#endif
 			return rc;
 		}
 

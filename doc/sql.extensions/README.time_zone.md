@@ -59,7 +59,7 @@ But Firebird also supports region-based time zones in `TIME WITH TIME ZONE` valu
 When constructing a `TIME WITH TIME ZONE` value from a literal or conversion its UTC value must
 be computed and cannot be changed, so the current date may not be used. In this case the fixed date
 `2020-01-01` is used. So when comparing `TIME WITH TIME ZONE` with different time zones the
-comparation is done is a manner similar to they being `TIMESTAMP WITH TIME ZONE` values in the
+comparation is done in a manner similar to they being `TIMESTAMP WITH TIME ZONE` values in the
 given date.
 
 However when converting between `TIMESTAMP` types to `TIME WITH TIME ZONE` that fixed date is

@@ -86,6 +86,20 @@ dnl Test for special ar options?
 AR_OPT_CHECK=false
 
 case "$build" in
+  aarch64-*-darwin*)
+    MAKEFILE_PREFIX=darwin_aarch64
+    MAKEFILE_POSTFIX=darwin
+    PLATFORM=DARWIN
+    INSTALL_PREFIX=darwin
+    AC_DEFINE(DARWIN, 1, [Define this if OS is DARWIN])
+	XE_APPEND(-framework CoreFoundation,LIBS)
+    EDITLINE_FLG=Y
+    SHRLIB_EXT=dylib
+    CPU_TYPE=ARM64
+    EXPORT_SYMBOLS_STYLE=darwin
+    RAW_DEVICES_FLG=N
+    ;;
+
   x*64-*-darwin*)
     MAKEFILE_PREFIX=darwin_x86_64
     MAKEFILE_POSTFIX=darwin
@@ -1025,7 +1039,7 @@ AC_MSG_CHECKING(for working sem_init())
 AC_RUN_IFELSE([AC_LANG_SOURCE([[#include <semaphore.h>
 	main () {
 		sem_t s;
-		exit(sem_init(&s,0,0));
+		return sem_init(&s,0,0);
 		}
 	]])],[AC_DEFINE(WORKING_SEM_INIT,1,[Define this if sem_init() works on the platform])
 AC_MSG_RESULT(yes)],[AC_MSG_RESULT(no)
@@ -1065,7 +1079,7 @@ if test "$ac_cv_sys_file_offset_bits" = "no"; then
   AC_MSG_CHECKING(for native large file support)
   AC_RUN_IFELSE([AC_LANG_SOURCE([[#include <unistd.h>
     main () {
-    exit(!(sizeof(off_t) == 8));
+    return !(sizeof(off_t) == 8);
   }]])],[ac_cv_sys_file_offset_bits=64; AC_DEFINE(_FILE_OFFSET_BITS,64)
    AC_MSG_RESULT(yes)],[AC_MSG_RESULT(no)],[])
 fi
@@ -1116,7 +1130,7 @@ main () {
     char a;
     union { long long x; sem_t y; } b;
   };
-  exit((int)&((struct s*)0)->b);
+  return (int)&((struct s*)0)->b;
 }]])],[ac_cv_c_alignment=$ac_status],[ac_cv_c_alignment=$ac_status],[])
 AC_MSG_RESULT($ac_cv_c_alignment)
 AC_DEFINE_UNQUOTED(FB_ALIGNMENT, $ac_cv_c_alignment, [Alignment of long])
@@ -1127,7 +1141,7 @@ AC_RUN_IFELSE([AC_LANG_SOURCE([[main () {
     char a;
     double b;
   };
-  exit((int)&((struct s*)0)->b);
+  return (int)&((struct s*)0)->b;
 }]])],[ac_cv_c_double_align=$ac_status],[ac_cv_c_double_align=$ac_status],[])
 AC_MSG_RESULT($ac_cv_c_double_align)
 AC_DEFINE_UNQUOTED(FB_DOUBLE_ALIGN, $ac_cv_c_double_align, [Alignment of double])
@@ -1144,7 +1158,7 @@ static int abs64Compare(SINT64 n1, SINT64 n2) {
     return n1 == n2 ? 0 : n1 < n2 ? 1 : -1;
 }
 int main() {
-	exit (abs64Compare(-9223372036854775808, 3652058) == 1 ? 0 : 1);
+	return abs64Compare(-9223372036854775808, 3652058) == 1 ? 0 : 1;
 }]])],[ac_cv_compare_failed=0
 ac_cv_compare_result=success])
 CFLAGS="$savedflags"
@@ -1270,6 +1284,8 @@ dnl # output
 	mkdir -p gen/\$fb_tgt/firebird/examples/extauth
 	mkdir -p gen/\$fb_tgt/firebird/examples/include
 	mkdir -p gen/\$fb_tgt/firebird/examples/interfaces
+	mkdir -p gen/\$fb_tgt/firebird/examples/object_pascal
+	mkdir -p gen/\$fb_tgt/firebird/examples/object_pascal/common
 	mkdir -p gen/\$fb_tgt/firebird/examples/package
 	mkdir -p gen/\$fb_tgt/firebird/examples/stat
 	mkdir -p gen/\$fb_tgt/firebird/examples/udf

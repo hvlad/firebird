@@ -4170,19 +4170,9 @@ dsc* CurrentDateNode::execute(thread_db* tdbb, jrd_req* request) const
 	request->req_flags &= ~req_null;
 
 	// Use the request timestamp.
-	fb_assert(!request->req_gmt_timestamp.isEmpty());
+	impure->vlu_misc.vlu_sql_date = request->getLocalTimeStamp().timestamp_date;
 
-	ISC_TIMESTAMP_TZ timeStampTz;
-	timeStampTz.utc_timestamp = request->req_gmt_timestamp.value();
-	timeStampTz.time_zone = TimeZoneUtil::GMT_ZONE;
-
-	impure->vlu_misc.vlu_sql_date = TimeZoneUtil::timeStampTzToTimeStamp(
-		timeStampTz, request->req_attachment->att_current_timezone).timestamp_date;
-
-	memset(&impure->vlu_desc, 0, sizeof(impure->vlu_desc));
-	impure->vlu_desc.dsc_dtype = dtype_sql_date;
-	impure->vlu_desc.dsc_length = type_lengths[dtype_sql_date];
-	impure->vlu_desc.dsc_address = (UCHAR*) &impure->vlu_misc.vlu_sql_date;
+	impure->vlu_desc.makeDate(&impure->vlu_misc.vlu_sql_date);
 
 	return &impure->vlu_desc;
 }
@@ -4283,20 +4273,10 @@ dsc* CurrentTimeNode::execute(thread_db* tdbb, jrd_req* request) const
 	request->req_flags &= ~req_null;
 
 	// Use the request timestamp.
-	fb_assert(!request->req_gmt_timestamp.isEmpty());
-
-	ISC_TIMESTAMP_TZ currentTimeStamp;
-	currentTimeStamp.utc_timestamp = request->req_gmt_timestamp.value();
-	currentTimeStamp.time_zone = tdbb->getAttachment()->att_current_timezone;
-
-	impure->vlu_desc.dsc_dtype = dtype_sql_time_tz;
-	impure->vlu_desc.dsc_length = type_lengths[dtype_sql_time_tz];
-	impure->vlu_desc.dsc_address = (UCHAR*) &impure->vlu_misc.vlu_sql_time_tz;
-
-	impure->vlu_misc.vlu_sql_time_tz.time_zone = tdbb->getAttachment()->att_current_timezone;
-	impure->vlu_misc.vlu_sql_time_tz.utc_time = TimeZoneUtil::timeStampTzToTimeTz(currentTimeStamp).utc_time;
-
+	impure->vlu_misc.vlu_sql_time_tz = request->getTimeTz();
 	TimeStamp::round_time(impure->vlu_misc.vlu_sql_time_tz.utc_time, precision);
+
+	impure->vlu_desc.makeTimeTz(&impure->vlu_misc.vlu_sql_time_tz);
 
 	return &impure->vlu_desc;
 }
@@ -4398,19 +4378,10 @@ dsc* CurrentTimeStampNode::execute(thread_db* tdbb, jrd_req* request) const
 	request->req_flags &= ~req_null;
 
 	// Use the request timestamp.
-	fb_assert(!request->req_gmt_timestamp.isEmpty());
-	ISC_TIMESTAMP encTimes = request->req_gmt_timestamp.value();
+	impure->vlu_misc.vlu_timestamp_tz = request->getTimeStampTz();
+	TimeStamp::round_time(impure->vlu_misc.vlu_timestamp_tz.utc_timestamp.timestamp_time, precision);
 
-	memset(&impure->vlu_desc, 0, sizeof(impure->vlu_desc));
-	impure->vlu_desc.dsc_address = (UCHAR*) &impure->vlu_misc.vlu_timestamp_tz;
-
-	TimeStamp::round_time(encTimes.timestamp_time, precision);
-
-	impure->vlu_desc.dsc_dtype = dtype_timestamp_tz;
-	impure->vlu_desc.dsc_length = type_lengths[dtype_timestamp_tz];
-
-	impure->vlu_misc.vlu_timestamp_tz.utc_timestamp = encTimes;
-	impure->vlu_misc.vlu_timestamp_tz.time_zone = tdbb->getAttachment()->att_current_timezone;
+	impure->vlu_desc.makeTimestampTz(&impure->vlu_misc.vlu_timestamp_tz);
 
 	return &impure->vlu_desc;
 }
@@ -8120,21 +8091,10 @@ dsc* LocalTimeNode::execute(thread_db* tdbb, jrd_req* request) const
 	request->req_flags &= ~req_null;
 
 	// Use the request timestamp.
-	fb_assert(!request->req_gmt_timestamp.isEmpty());
-
-	ISC_TIMESTAMP_TZ timeStampTz;
-	timeStampTz.utc_timestamp = request->req_gmt_timestamp.value();
-	timeStampTz.time_zone = TimeZoneUtil::GMT_ZONE;
-
-	impure->vlu_misc.vlu_sql_time = TimeZoneUtil::timeStampTzToTimeStamp(
-		timeStampTz, request->req_attachment->att_current_timezone).timestamp_time;
-
+	impure->vlu_misc.vlu_sql_time = request->getLocalTimeStamp().timestamp_time;
 	TimeStamp::round_time(impure->vlu_misc.vlu_sql_time, precision);
 
-	memset(&impure->vlu_desc, 0, sizeof(impure->vlu_desc));
-	impure->vlu_desc.dsc_dtype = dtype_sql_time;
-	impure->vlu_desc.dsc_length = type_lengths[dtype_sql_time];
-	impure->vlu_desc.dsc_address = (UCHAR*) &impure->vlu_misc.vlu_sql_time;
+	impure->vlu_desc.makeTime(&impure->vlu_misc.vlu_sql_time);
 
 	return &impure->vlu_desc;
 }
@@ -8223,15 +8183,10 @@ dsc* LocalTimeStampNode::execute(thread_db* tdbb, jrd_req* request) const
 	request->req_flags &= ~req_null;
 
 	// Use the request timestamp.
-	fb_assert(!request->req_gmt_timestamp.isEmpty());
-
-	impure->vlu_misc.vlu_timestamp = request->getLocalTimeStamp().value();
+	impure->vlu_misc.vlu_timestamp = request->getLocalTimeStamp();
 	TimeStamp::round_time(impure->vlu_misc.vlu_timestamp.timestamp_time, precision);
 
-	memset(&impure->vlu_desc, 0, sizeof(impure->vlu_desc));
-	impure->vlu_desc.dsc_address = (UCHAR*) &impure->vlu_misc.vlu_timestamp;
-	impure->vlu_desc.dsc_dtype = dtype_timestamp;
-	impure->vlu_desc.dsc_length = type_lengths[dtype_timestamp];
+	impure->vlu_desc.makeTimestamp(&impure->vlu_misc.vlu_timestamp);
 
 	return &impure->vlu_desc;
 }
@@ -13075,7 +13030,7 @@ dsc* UdfCallNode::execute(thread_db* tdbb, jrd_req* request) const
 		{
 			Jrd::ContextPoolHolder context(tdbb, funcRequest->req_pool);	// Save the old pool.
 
-			funcRequest->req_gmt_timestamp = request->req_gmt_timestamp;
+			funcRequest->setGmtTimeStamp(request->getGmtTimeStamp());
 
 			EXE_start(tdbb, funcRequest, transaction);
 
@@ -13104,7 +13059,7 @@ dsc* UdfCallNode::execute(thread_db* tdbb, jrd_req* request) const
 			EXE_unwind(tdbb, funcRequest);
 			funcRequest->req_attachment = NULL;
 			funcRequest->req_flags &= ~(req_in_use | req_proc_fetch);
-			funcRequest->req_gmt_timestamp.invalidate();
+			funcRequest->invalidateTimeStamp();
 			throw;
 		}
 
@@ -13132,7 +13087,7 @@ dsc* UdfCallNode::execute(thread_db* tdbb, jrd_req* request) const
 
 		funcRequest->req_attachment = NULL;
 		funcRequest->req_flags &= ~(req_in_use | req_proc_fetch);
-		funcRequest->req_gmt_timestamp.invalidate();
+		funcRequest->invalidateTimeStamp();
 	}
 
 	if (!(request->req_flags & req_null))

@@ -465,7 +465,7 @@ void registerEngine(IPluginManager* iPlugin)
 
 } // namespace Jrd
 
-extern "C" void FB_EXPORTED FB_PLUGIN_ENTRY_POINT(IMaster* master)
+extern "C" FB_DLL_EXPORT void FB_PLUGIN_ENTRY_POINT(IMaster* master)
 {
 	CachedMasterInterface::set(master);
 	registerEngine(PluginManagerInterfacePtr());
@@ -1085,6 +1085,7 @@ namespace Jrd
 		ULONG	dpb_remote_flags;
 		ReplicaMode	dpb_replica_mode;
 		bool	dpb_set_db_replica;
+		bool	dpb_clear_map;
 
 		// here begin compound objects
 		// for constructor to work properly dpb_user_name
@@ -1934,6 +1935,12 @@ JAttachment* JProvider::internalAttach(CheckStatusWrapper* user_status, const ch
 				break;
 			}
 
+			// Clear old mapping cache data on request.
+			// Unfortunately have to do it w/o access rights check - to check access rights engine
+			// needs correct mapping which sometimes can't be guaranteed before cleaning cache.
+			if (options.dpb_clear_map)
+				Mapping::clearCache(dbb->dbb_filename.c_str(), Mapping::ALL_CACHE);
+
 			// Check for correct credentials supplied
 			UserId userId;
 
@@ -2070,6 +2077,7 @@ JAttachment* JProvider::internalAttach(CheckStatusWrapper* user_status, const ch
 
 				// Can't allow garbage collection during database validation.
 
+				AutoSetRestoreFlag<ULONG> noCleanup(&attachment->att_flags, ATT_no_cleanup, true);
 				VIO_fini(tdbb);
 
 				if (!VAL_validate(tdbb, options.dpb_verify))
@@ -3050,6 +3058,9 @@ JAttachment* JProvider::createDatabase(CheckStatusWrapper* user_status, const ch
 				dbb->dbb_database_name = org_filename;
 			else
 				dbb->dbb_database_name = dbb->dbb_filename;
+
+			// Clear old mapping cache data (if present)
+			Mapping::clearCache(dbb->dbb_filename.c_str(), Mapping::ALL_CACHE);
 
 			// Initialize backup difference subsystem. This must be done before WAL and shadowing
 			// is enabled because nbackup it is a lower level subsystem
@@ -7157,6 +7168,10 @@ void DatabaseOptions::get(const UCHAR* dpb, USHORT dpb_length, bool& invalid_cli
 
 		case isc_dpb_decfloat_traps:
 			rdr.getString(dpb_decfloat_traps);
+			break;
+
+		case isc_dpb_clear_map:
+			dpb_clear_map = rdr.getBoolean();
 			break;
 
 		default:

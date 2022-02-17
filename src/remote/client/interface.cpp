@@ -1043,7 +1043,7 @@ void registerRedirector(Firebird::IPluginManager* iPlugin)
 } // namespace Remote
 
 /*
-extern "C" void FB_PLUGIN_ENTRY_POINT(IMaster* master)
+extern "C" FB_DLL_EXPORT void FB_PLUGIN_ENTRY_POINT(IMaster* master)
 {
 	IPluginManager* pi = master->getPluginManager();
 	registerRedirector(pi);
@@ -8389,6 +8389,11 @@ static void receive_packet_noqueue(rem_port* port, PACKET* packet)
 
 			case op_batch_msg:
 				stmt_id = p->packet.p_batch_msg.p_batch_statement;
+				bCheckResponse = true;
+				break;
+
+			case op_batch_create:
+				stmt_id = p->packet.p_batch_create.p_batch_statement;
 				bCheckResponse = true;
 				break;
 

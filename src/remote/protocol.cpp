@@ -883,6 +883,8 @@ bool_t xdr_protocol(RemoteXdr* xdrs, PACKET* p)
 
 			ULONG count = b->p_batch_messages;
 			ULONG size = statement->rsr_batch_size;
+			if (!size)
+				statement->rsr_batch_size = size = FB_ALIGN(statement->rsr_format->fmt_length, FB_ALIGNMENT);
 			if (xdrs->x_op == XDR_DECODE)
 			{
 				b->p_batch_data.cstr_length = (count ? count : 1) * size;
@@ -991,10 +993,9 @@ bool_t xdr_protocol(RemoteXdr* xdrs, PACKET* p)
 
 			// Process status vectors
 			ULONG pos = 0u;
-			LocalStatus to;
 			DEB_RBATCH(fprintf(stderr, "BatRem: xdr sv %d\n", b->p_batch_vectors));
 
-			for (unsigned i = 0; i < b->p_batch_vectors; ++i, ++pos)
+			for (unsigned i = 0; i < b->p_batch_vectors; ++pos)
 			{
 				DynamicStatusVector s;
 				DynamicStatusVector* ptr = NULL;
@@ -1006,6 +1007,7 @@ bool_t xdr_protocol(RemoteXdr* xdrs, PACKET* p)
 					if (pos == IBatchCompletionState::NO_MORE_ERRORS)
 						return P_FALSE(xdrs, p);
 
+					LocalStatus to;
 					statement->rsr_batch_ics->getStatus(&status_vector, &to, pos);
 					if (status_vector.getState() & IStatus::STATE_ERRORS)
 						continue;
@@ -1022,17 +1024,19 @@ bool_t xdr_protocol(RemoteXdr* xdrs, PACKET* p)
 				if (xdrs->x_op == XDR_DECODE)
 				{
 					Firebird::Arg::StatusVector sv(ptr->value());
+					LocalStatus to;
 					sv.copyTo(&to);
 					delete ptr;
 					statement->rsr_batch_cs->regErrorAt(pos, &to);
 				}
+				++i;
 			}
 
 			// Process status-less errors
 			pos = 0u;
 			DEB_RBATCH(fprintf(stderr, "BatRem: xdr err %d\n", b->p_batch_errors));
 
-			for (unsigned i = 0; i < b->p_batch_errors; ++i, ++pos)
+			for (unsigned i = 0; i < b->p_batch_errors; ++pos)
 			{
 				if (xdrs->x_op == XDR_ENCODE)
 				{
@@ -1041,6 +1045,7 @@ bool_t xdr_protocol(RemoteXdr* xdrs, PACKET* p)
 					if (pos == IBatchCompletionState::NO_MORE_ERRORS)
 						return P_FALSE(xdrs, p);
 
+					LocalStatus to;
 					statement->rsr_batch_ics->getStatus(&status_vector, &to, pos);
 					if (!(status_vector.getState() & IStatus::STATE_ERRORS))
 						continue;
@@ -1052,6 +1057,7 @@ bool_t xdr_protocol(RemoteXdr* xdrs, PACKET* p)
 				{
 					statement->rsr_batch_cs->regErrorAt(pos, nullptr);
 				}
+				++i;
 			}
 
 			return P_TRUE(xdrs, p);

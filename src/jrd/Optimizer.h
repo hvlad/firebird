@@ -299,7 +299,7 @@ protected:
 	void estimateCost(StreamType stream, double* cost, double* resulting_cardinality, bool start) const;
 	void findBestOrder(StreamType position, InnerJoinStreamInfo* stream,
 		IndexedRelationships* processList, double cost, double cardinality);
-	void getIndexedRelationship(InnerJoinStreamInfo* baseStream, InnerJoinStreamInfo* testStream);
+	void getIndexedRelationships(InnerJoinStreamInfo* testStream);
 	InnerJoinStreamInfo* getStreamInfo(StreamType stream);
 #ifdef OPT_DEBUG
 	void printBestOrder() const;

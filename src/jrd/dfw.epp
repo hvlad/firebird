@@ -5917,7 +5917,7 @@ static bool make_version(thread_db* tdbb, SSHORT phase, DeferredWork* work, jrd_
 							AutoSetRestore2<jrd_req*, thread_db> autoRequest(tdbb,
 								&thread_db::getRequest, &thread_db::setRequest, defaultRequest);
 
-							TimeZoneUtil::validateGmtTimeStamp(defaultRequest->req_gmt_timestamp);
+							defaultRequest->validateTimeStamp();
 
 							TRA_attach_request(transaction, defaultRequest);
 							dsc* result = EVL_expr(tdbb, defaultRequest, defaultNode);

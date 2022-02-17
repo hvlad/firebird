@@ -2889,7 +2889,7 @@ bool Service::process_switches(ClumpletReader& spb, string& switches)
 					spb.getString(s);
 
 					bool inStr = false;
-					for (FB_SIZE_T i = 0; i < s.length(); ++i)
+					for (FB_SIZE_T i = 0; i < s.length(); )
 					{
 						if (s[i] == SVC_TRMNTR)
 						{
