@@ -197,7 +197,7 @@ static DSC* eval(thread_db*, const ValueExprNode*, DSC*, bool*);
 static ULONG fast_load(thread_db*, IndexCreation&, SelectivityList&);
 
 static index_root_page* fetch_root(thread_db*, WIN*, const jrd_rel*, const RelationPages*);
-static UCHAR* find_node_start_point(btree_page*, temporary_key*, UCHAR*, USHORT*,
+static UCHAR* find_node_start_point(btree_page*, const temporary_key*, UCHAR*, USHORT*,
 									bool, bool, bool = false, RecordNumber = NO_VALUE);
 
 static UCHAR* find_area_start_point(btree_page*, const temporary_key*, UCHAR*,
@@ -352,9 +352,9 @@ struct BtrPrefetchCtrl
 	}
 
 	void initPrefetch(thread_db* tdbb, const IndexRetrieval* retrieval, WIN* window, 
-					  temporary_key* lower, RecordNumber recno, temporary_key* upper);
+					  const temporary_key* lower, RecordNumber recno, const temporary_key* upper);
 	void nextLeafPage(thread_db* tdbb, const IndexRetrieval* retrieval, btree_page* leaf, 
-					  temporary_key* upper);
+					  const temporary_key* upper);
 
 	void disable()
 	{
@@ -363,7 +363,7 @@ struct BtrPrefetchCtrl
 
 private:
 	void makePrefetch(thread_db* tdbb, const IndexRetrieval* retrieval, WIN* window, 
-					  UCHAR* pointer, temporary_key* upper);
+					  UCHAR* pointer, const temporary_key* upper);
 
 	bool			m_enabled;
 	temporary_key	m_lastKey;			// key and recno up to which we made prefetch requests
@@ -376,7 +376,7 @@ private:
 
 
 void BtrPrefetchCtrl::initPrefetch(thread_db* tdbb, const IndexRetrieval* retrieval, WIN* window, 
-					  temporary_key* lower, RecordNumber recno, temporary_key* upper)
+	const temporary_key* lower, RecordNumber recno, const temporary_key* upper)
 {
 	if (!m_enabled)
 		return;
@@ -398,7 +398,7 @@ void BtrPrefetchCtrl::initPrefetch(thread_db* tdbb, const IndexRetrieval* retrie
 		{
 			pointer = find_node_start_point(bucket, lower, m_lastKey.key_data, NULL, 
 					descending, true, true, recno);
-			
+
 			if (pointer)
 			{
 				node.readNode(pointer, false);
@@ -437,13 +437,13 @@ void BtrPrefetchCtrl::initPrefetch(thread_db* tdbb, const IndexRetrieval* retrie
 
 
 void BtrPrefetchCtrl::nextLeafPage(thread_db* tdbb, const IndexRetrieval* retrieval, btree_page* leaf, 
-	temporary_key* upper)
+	const temporary_key* upper)
 {
 	if (!m_enabled)
 		return;
 
 	UCHAR* pointer = leaf->btr_nodes + leaf->btr_jump_size;
-	
+
 	IndexNode node;
 	pointer = node.readNode(pointer, true);
 	if (node.isEndBucket || node.isEndLevel)
@@ -504,11 +504,11 @@ void BtrPrefetchCtrl::nextLeafPage(thread_db* tdbb, const IndexRetrieval* retrie
 
 		window.win_page = relPages->rel_index_root;
 		index_root_page* rpage = (index_root_page*) CCH_FETCH(tdbb, &window, LCK_read, pag_root);
-		
+
 		const index_desc &idx = retrieval->irb_desc;
 		const ULONG idx_root = rpage->irt_rpt[retrieval->irb_index].getRoot();
 		bucket = (btree_page*) CCH_HANDOFF(tdbb, &window, idx_root, LCK_read, pag_index);
-		
+
 		if (bucket->btr_level > 1)
 		{
 			while (bucket->btr_level > 1)
@@ -539,9 +539,9 @@ void BtrPrefetchCtrl::nextLeafPage(thread_db* tdbb, const IndexRetrieval* retrie
 	CCH_RELEASE(tdbb, &window);
 }
 
-	
+
 void BtrPrefetchCtrl::makePrefetch(thread_db* tdbb, const IndexRetrieval* retrieval, WIN* window, 
-	UCHAR* pointer, temporary_key* upper)
+	UCHAR* pointer, const temporary_key* upper)
 {
 	if (!m_enabled)
 		return;
@@ -1302,7 +1302,7 @@ btree_page* BTR_find_page(thread_db* tdbb,
 		{
 			while (true)
 			{
-				/*const*/ temporary_key* tkey = ignoreNulls ? &firstNotNullKey : lower;
+				const temporary_key* tkey = ignoreNulls ? &firstNotNullKey : lower;
 				const ULONG number = find_page(page, tkey, idx,
 					NO_VALUE, (retrieval->irb_generic & (irb_starting | irb_partial)));
 				if (number != END_BUCKET)
@@ -4494,7 +4494,7 @@ static index_root_page* fetch_root(thread_db* tdbb, WIN* window, const jrd_rel* 
 }
 
 
-static UCHAR* find_node_start_point(btree_page* bucket, temporary_key* key,
+static UCHAR* find_node_start_point(btree_page* bucket, const temporary_key* key,
 									UCHAR* value,
 									USHORT* return_value, bool descending,
 									bool retrieval, bool pointer_by_marker,

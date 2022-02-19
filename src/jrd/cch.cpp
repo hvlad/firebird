@@ -149,6 +149,7 @@ static bool set_diff_page(thread_db*, BufferDesc*);
 static void clear_dirty_flag_and_nbak_state(thread_db*, BufferDesc*);
 
 
+
 static inline void insertDirty(BufferControl* bcb, BufferDesc* bdb)
 {
 	if (bdb->bdb_dirty.que_forward != &bdb->bdb_dirty)
@@ -5580,7 +5581,7 @@ PIORequest* CCH_make_PIO(thread_db* tdbb, PrefetchReq* prf)
 	PageSpace* pageSpace = prf->getPageSpace();
 
 	PIORequest* pio = prf_to_pio(tdbb, prf);
-	
+
 	if (!pio)
 		return NULL;
 

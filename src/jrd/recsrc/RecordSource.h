@@ -146,7 +146,6 @@ namespace Jrd
 
 	class FullTableScan : public RecordStream
 	{
-
 		struct Impure : public RecordSource::Impure
 		{
 			RecordNumber irsb_lower;

@@ -304,10 +304,10 @@ void IndexTableScan::cacheRecordInfo(thread_db* tdbb) const
 		info.recno = number.getValue();
 		info.key_offset = impure->irsb_nav_keys->getCount();
 		info.key_length = key.key_length;
-		
+
 		UCHAR* p = impure->irsb_nav_keys->getBuffer(info.key_offset + info.key_length) + info.key_offset;
 		memcpy(p, key.key_data, key.key_length);
-		
+
 		// reset the current navigational position in the index
 		if (impure->irsb_nav_recs->getCount() == RECS_TO_CACHE)
 		{

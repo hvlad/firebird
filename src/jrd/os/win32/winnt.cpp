@@ -408,7 +408,8 @@ void PIO_header(thread_db* tdbb, UCHAR* address, int length)
 	OVERLAPPED overlapped;
 	memset(&overlapped, 0, sizeof(OVERLAPPED));
 
-	ThreadSync* thread = ThreadSync::getThread("PIO_header");
+	// See also comments at seek_file()
+	ThreadSync* thread = ThreadSync::getThread(FB_FUNCTION);
 	overlapped.hEvent = (HANDLE) ((UINT_PTR) thread->getIOEvent() | 1);
 
 	DWORD actual_length;
@@ -480,7 +481,6 @@ USHORT PIO_init_data(thread_db* tdbb, jrd_file* main_file, FbStatusVector* statu
 
 		const DWORD to_write = (DWORD) write_pages * dbb->dbb_page_size;
 		DWORD written;
-
 		BOOL ret = WriteFile(file->fil_desc, zero_buff, to_write, &written, &overlapped);
 		if (!ret)
 		{
@@ -956,9 +956,6 @@ static bool nt_error(const TEXT* string,
  *
  **************************************/
 	const DWORD lastError = GetLastError();
-
-MessageBox(NULL, string, "nt_error", MB_OK);
-
 	Arg::StatusVector status;
 	status << Arg::Gds(isc_io_error) << Arg::Str(string) << Arg::Str(file->fil_string) <<
 			  Arg::Gds(operation);
@@ -1209,7 +1206,7 @@ PIO_EVENT_T PIOPort::getCompletedRequest(thread_db* tdbb, PIORequest** pio, int 
 	{
 		PIORequest* req = PIORequest::fromOSData(pOvrl);
 		req->markCompletion(ret == 0, dwSize);
-	
+
 		*pio = req;
 		pKey = PIO_EVENT_IO;
 	}
