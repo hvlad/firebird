@@ -166,7 +166,7 @@ bool IndexTableScan::getRecord(thread_db* tdbb) const
 			if (!impure->irsb_nav_done)
 				cacheRecordInfo(tdbb);
 
-			if (impure->irsb_nav_recs->isEmpty())
+			if (!impure->irsb_nav_recs || impure->irsb_nav_recs->isEmpty())
 				break;
 		}
 
