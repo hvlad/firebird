@@ -2156,14 +2156,6 @@ void CCH_shutdown(thread_db* tdbb)
 	while (bcb->bcb_thd_starting.value())
 		Thread::yield();
 
-	const bool readers = (bcb->bcb_reader_cnt.value() > 0);
-	while (bcb->bcb_reader_cnt.value())
-	{
-		bcb->bcb_reader_sem.release();
-		dbb->dbb_page_manager.pioPort.postEvent(PIO_EVENT_WAKEUP);
-		bcb->bcb_reader_fini.waitForCompletion(); // check me
-	}
-
 	// Wait for cache writer startup to complete
 
 	while (bcb->bcb_flags & BCB_writer_start)
@@ -2209,6 +2201,14 @@ void CCH_shutdown(thread_db* tdbb)
 				PAGE_LOCK_RELEASE(tdbb, bcb, bdb->bdb_lock);
 			}
 		}
+	}
+
+	const bool readers = (bcb->bcb_reader_cnt.value() > 0);
+	while (bcb->bcb_reader_cnt.value())
+	{
+		bcb->bcb_reader_sem.release();
+		dbb->dbb_page_manager.pioPort.postEvent(PIO_EVENT_WAKEUP);
+		bcb->bcb_reader_fini.waitForCompletion(); // check me
 	}
 
 	if (bcb->bcb_flags & BCB_exclusive && readers &&
@@ -5649,10 +5649,17 @@ void BufferControl::prefetch_thread(BufferControl* bcb)
 			}
 
 			PrefetchReq* prf = nullptr;
+			bool shutdown = false;
 
-			while (!bcb->bcb_reader_sem.tryEnter())
+			while (!shutdown || cntPending)
 			{
-				if (!prf)
+				if (shutdown && prf)
+				{
+					PageSpace* pageSpace = prf->getPageSpace();
+					pageSpace->freePrefetchReq(prf);
+					prf = nullptr;
+				}
+				else if (!shutdown && !prf)
 					prf = pageMgr.getPrefetchReq();
 
 				// don't wait if we have prefetch and IO queue is not full
@@ -5677,7 +5684,11 @@ void BufferControl::prefetch_thread(BufferControl* bcb)
 				else if (evnt == PIO_EVENT_WAKEUP)
 				{
 					fb_assert(pio == nullptr);
-					if (cntPending >= maxPending)
+
+					if (!shutdown)
+						shutdown = bcb->bcb_reader_sem.tryEnter();
+
+					if (cntPending >= maxPending || shutdown)
 						continue;
 
 					if (!prf)
@@ -5688,6 +5699,8 @@ void BufferControl::prefetch_thread(BufferControl* bcb)
 					fb_assert(false);
 					gds__log("Unknown event %d in pioPort.getCompletedRequest", evnt);
 				}
+
+				fb_assert(!shutdown || !prf);
 
 				if ((cntPending < maxPending) && prf)
 				{
@@ -5703,7 +5716,7 @@ void BufferControl::prefetch_thread(BufferControl* bcb)
 						prf = nullptr;
 					}
 				}
-			}	// bcb_reader_sem
+			}	// !shutdown || cntPending
 		}
 		catch (const Firebird::Exception& ex)
 		{
