@@ -126,7 +126,7 @@ void DPMPrefetchInfo_1::nextDP(thread_db* tdbb, const RelationPages* relPages,
 			{
 				ULONG pageno = pages.current();
 				ULONG seq = pageno / dbb->dbb_dp_per_pp;
-									
+
 				if (seq != m_seqCheck)
 				{
 					if (relPages->rel_pages && seq < relPages->rel_pages->count())
@@ -219,7 +219,7 @@ void DPMPrefetchInfo_1::nextDP(thread_db* tdbb, const RelationPages* relPages,
 					m_seqDone = pp2_seq;
 					prf.push(pp2->ppg_page[s]);
 				}
-					
+
 				recno += dbb->dbb_max_records - l;
 				if (!recs.locate(locGreatEqual, recno))
 					break;

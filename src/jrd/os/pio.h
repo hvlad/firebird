@@ -213,7 +213,7 @@ private:
 	jrd_file*	m_file;
 	PIOR_STATE	m_state;
 	int			m_osError;
-	
+
 	Firebird::Array<SCHAR> m_buffer;
 	SCHAR*		m_aligned_buffer;
 

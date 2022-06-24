@@ -1025,7 +1025,7 @@ static const struct {
 	{336003092, -502}, /*  20 dsql_cursor_exists */
 	{336003093, -502}, /*  21 dsql_cursor_rel_ambiguous */
 	{336003094, -502}, /*  22 dsql_cursor_rel_not_found */
-	{336003095, -502}, /*  23 dsql_cursor_not_open */
+	{336003095, -504}, /*  23 dsql_cursor_not_open */
 	{336003096, -607}, /*  24 dsql_type_not_supp_ext_tab */
 	{336003097, -804}, /*  25 dsql_feature_not_supported_ods */
 	{336003098, -660}, /*  26 primary_key_required */

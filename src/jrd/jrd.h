@@ -1092,6 +1092,18 @@ namespace Jrd {
 				m_ref->getMutex()->leave();
 		}
 
+		EngineCheckout(Attachment* att, const char* from)
+			: m_tdbb(nullptr), m_from(from)
+		{
+			fb_assert(att);
+
+			if (att && att->att_use_count)
+			{
+				m_ref = att->getStable();
+				m_ref->getMutex()->leave();
+			}
+		}
+
 		~EngineCheckout()
 		{
 			if (m_ref.hasData())

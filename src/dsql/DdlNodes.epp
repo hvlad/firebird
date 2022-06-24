@@ -6038,6 +6038,21 @@ void DropSequenceNode::deleteIdentity(thread_db* tdbb, jrd_tra* transaction, con
 		WITH GEN.RDB$GENERATOR_NAME EQ name.c_str()
 	{
 		ERASE GEN;
+
+		if (!GEN.RDB$SECURITY_CLASS.NULL)
+			deleteSecurityClass(tdbb, transaction, GEN.RDB$SECURITY_CLASS);
+	}
+	END_FOR
+
+	AutoRequest request2;
+
+	FOR (REQUEST_HANDLE request2 TRANSACTION_HANDLE transaction)
+		PRIV IN RDB$USER_PRIVILEGES
+		WITH PRIV.RDB$RELATION_NAME EQ name.c_str() AND
+			 PRIV.RDB$OBJECT_TYPE = obj_generator AND
+			 PRIV.RDB$GRANTOR NOT MISSING
+	{
+		ERASE PRIV;
 	}
 	END_FOR
 }

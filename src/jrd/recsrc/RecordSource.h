@@ -217,6 +217,11 @@ namespace Jrd
 			RecordBitmap** irsb_nav_bitmap;				// bitmap for inversion tree
 			RecordBitmap* irsb_nav_records_visited;		// bitmap of records already retrieved
 			BtrPageGCLock* irsb_nav_btr_gc_lock;		// lock to prevent removal of currently walked index page
+			temporary_key* irsb_nav_lower;				// lower (possible multiple) key
+			temporary_key* irsb_nav_upper;				// upper (possible multiple) key
+			temporary_key* irsb_nav_current_lower;		// current lower key
+			temporary_key* irsb_nav_current_upper;		// current upper key
+
 			RecordsData* irsb_nav_recs;					// precomputed record numbers...
 			KeysData* irsb_nav_keys;					// ...and index keys
 			bool irsb_nav_done;							// end of level or upper key was seen
@@ -249,7 +254,9 @@ namespace Jrd
 	private:
 		int compareKeys(const index_desc*, const UCHAR*, USHORT, const temporary_key*, USHORT) const;
 		bool findSavedNode(thread_db* tdbb, Impure* impure, win* window, UCHAR**) const;
+		void advanceStream(thread_db* tdbb, Impure* impure, win* window) const;
 		UCHAR* getPosition(thread_db* tdbb, Impure* impure, win* window) const;
+		UCHAR* getStreamPosition(thread_db* tdbb, Impure* impure, win* window) const;
 		UCHAR* openStream(thread_db* tdbb, Impure* impure, win* window) const;
 		void setPage(thread_db* tdbb, Impure* impure, win* window) const;
 		void setPosition(thread_db* tdbb, Impure* impure, RecordNumber,

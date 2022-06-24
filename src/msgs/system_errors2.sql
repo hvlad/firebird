@@ -1013,7 +1013,7 @@ set bulk_insert INSERT INTO SYSTEM_ERRORS (SQL_CODE, SQL_CLASS, SQL_SUBCLASS, FA
 (-502, '24', '000', 7, 20, 'dsql_cursor_exists', NULL, NULL)
 (-502, '34', '000', 7, 21, 'dsql_cursor_rel_ambiguous', NULL, NULL)
 (-502, '34', '000', 7, 22, 'dsql_cursor_rel_not_found', NULL, NULL)
-(-502, '24', '000', 7, 23, 'dsql_cursor_not_open', NULL, NULL)
+(-504, '24', '000', 7, 23, 'dsql_cursor_not_open', NULL, NULL)
 (-607, 'HY', '004', 7, 24, 'dsql_type_not_supp_ext_tab', NULL, NULL)
 (-804, '0A', '000', 7, 25, 'dsql_feature_not_supported_ods', NULL, NULL)
 (-660, '22', '000', 7, 26, 'primary_key_required', NULL, NULL)

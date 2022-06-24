@@ -71,14 +71,18 @@ using Firebird::FbLocalStatus;
 //  GPRE.  This is to avoid multiple threading problems with module
 //  level statics.
 
-DATABASE DB = STATIC FILENAME "yachts.lnk";
-
 #define DB			tdgbl->db_handle
 #define fbTrans		tdgbl->tr_handle
 #define gds_trans	tdgbl->tr_handle
 #define fbStatus	(&tdgbl->status_vector)
 #define isc_status	(&tdgbl->status_vector)
 #define gds_status	(&tdgbl->status_vector)
+
+// unused
+#define fbProvider
+#define fbStatus2
+
+DATABASE DB = STATIC FILENAME "yachts.lnk";
 
 
 namespace // unnamed, private
@@ -1613,15 +1617,21 @@ void get_array(BurpGlobals* tdgbl, burp_rel* relation, UCHAR* record_buffer)
 	burp_fld*		field = NULL;
 	FbLocalStatus	status_vector;
 	USHORT		count, field_number, field_length = 0;
-	UCHAR*		buffer = NULL;
+	UCHAR**		buffer = NULL;
 	UCHAR*		p = NULL;
 	UCHAR		blr_buffer[200]; // enough for a sdl with 16 dimensions
 	lstring		xdr_slice;
 
-	// don't free something you don't allocate
 	lstring xdr_buffer;
 	xdr_buffer.lstr_allocated = 0;
 	xdr_buffer.lstr_address = NULL;
+
+	Firebird::Cleanup datClean( [&] {
+		if (buffer && *buffer)
+			BURP_free(*buffer);
+		if (tdgbl->gbl_sw_transportable && xdr_buffer.lstr_allocated)
+			BURP_free(xdr_buffer.lstr_address);
+	} );
 
 	// Pick up attributes
 	SLONG		fld_ranges[2 * MAX_DIMENSION];
@@ -1921,7 +1931,6 @@ void get_array(BurpGlobals* tdgbl, burp_rel* relation, UCHAR* record_buffer)
 
 			if (data_at == 0)
 			{
-				buffer = BURP_alloc (return_length);
 				SLONG lcount = 0;
 				if (tdgbl->gbl_sw_transportable)
 				{
@@ -1936,18 +1945,22 @@ void get_array(BurpGlobals* tdgbl, burp_rel* relation, UCHAR* record_buffer)
 						lcount |= get(tdgbl) << 8;
 						lcount |= get(tdgbl) << 16;
 						lcount |= get(tdgbl) << 24;
+
 						xdr_buffer.lstr_length = xdr_buffer.lstr_allocated = lcount;
-						xdr_buffer.lstr_address = BURP_alloc(lcount);
+						p = xdr_buffer.lstr_address = BURP_alloc(lcount);
+
 						xdr_slice.lstr_allocated = xdr_slice.lstr_length = return_length;
-						xdr_slice.lstr_address = buffer;
-						p = xdr_buffer.lstr_address;
+						buffer = &xdr_slice.lstr_address;
 					}
 				}
 				else
 				{
-					p = buffer;
+					buffer = &p;
 					lcount = return_length;
 				}
+
+				fb_assert(buffer);
+				*buffer = BURP_alloc(return_length);
 
 				if (lcount)
 					get_block(tdgbl, p, lcount);
@@ -1958,7 +1971,7 @@ void get_array(BurpGlobals* tdgbl, burp_rel* relation, UCHAR* record_buffer)
 
 			DB->putSlice(&status_vector, gds_trans, blob_id, blr_length, blr_buffer,
 						 0, NULL,	// parameters for subset of an array handling
-						 elements_written * field->fld_length, buffer + data_at);
+						 elements_written * field->fld_length, (*buffer) + data_at);
 			if (status_vector->hasData())
 			{
 				BURP_print (false, 81, field->fld_name);
@@ -2047,7 +2060,6 @@ void get_array(BurpGlobals* tdgbl, burp_rel* relation, UCHAR* record_buffer)
 
 		const USHORT blr_length = blr - blr_buffer;
 
-		buffer = BURP_alloc (return_length);
 		SLONG lcount = 0;
 		if (tdgbl->gbl_sw_transportable)
 		{
@@ -2063,17 +2075,20 @@ void get_array(BurpGlobals* tdgbl, burp_rel* relation, UCHAR* record_buffer)
 				xdr_buffer.lstr_allocated |= get(tdgbl) << 16;
 				xdr_buffer.lstr_allocated |= get(tdgbl) << 24;
 				lcount = xdr_buffer.lstr_length = xdr_buffer.lstr_allocated;
-				xdr_buffer.lstr_address = BURP_alloc (xdr_buffer.lstr_allocated);
+				p = xdr_buffer.lstr_address = BURP_alloc(xdr_buffer.lstr_allocated);
+
 				xdr_slice.lstr_allocated = xdr_slice.lstr_length = return_length;
-				xdr_slice.lstr_address = buffer;
-				p = xdr_buffer.lstr_address;
+				buffer = &xdr_slice.lstr_address;
 			}
 		}
 		else
 		{
-			p = buffer;
+			buffer = &p;
 			lcount = return_length;
 		}
+
+		fb_assert(buffer);
+		*buffer = BURP_alloc (return_length);
 
 		if (lcount)
 			get_block(tdgbl, p, lcount);
@@ -2084,7 +2099,7 @@ void get_array(BurpGlobals* tdgbl, burp_rel* relation, UCHAR* record_buffer)
 
 		DB->putSlice(&status_vector, gds_trans, blob_id, blr_length, blr_buffer,
 					 0, NULL,	// parameters for subset of an array handling
-					 return_length, buffer);
+					 return_length, *buffer);
 		if (status_vector->hasData())
 		{
 			BURP_print (false, 81, field->fld_name);
@@ -2096,10 +2111,6 @@ void get_array(BurpGlobals* tdgbl, burp_rel* relation, UCHAR* record_buffer)
 			return;
 		}
 	}
-
-	BURP_free (buffer);
-	if (tdgbl->gbl_sw_transportable && xdr_buffer.lstr_allocated)
-		BURP_free (xdr_buffer.lstr_address);
 }
 
 
@@ -3210,8 +3221,13 @@ rec_type get_data(BurpGlobals* tdgbl, burp_rel* relation, bool skip_relation)
 		lstring data;
 		data.lstr_allocated = 0;
 		data.lstr_address = NULL;
-		Firebird::Array<UCHAR> dataBuffer;
 		RCRD_LENGTH old_length = 0;
+		Firebird::Cleanup datClean( [&data]
+			{
+				if (data.lstr_address)
+					BURP_free(data.lstr_address);
+			}
+		);
 
 		Firebird::Array<UCHAR> sqlBuffer;
 		UCHAR* sql = sqlBuffer.getBuffer(meta->getMessageLength(&tdgbl->throwStatus));
@@ -3249,10 +3265,13 @@ rec_type get_data(BurpGlobals* tdgbl, burp_rel* relation, bool skip_relation)
 				else
 				{
 					data.lstr_length = len = get_int32(tdgbl);
+
 					if (len > data.lstr_allocated)
 					{
 						data.lstr_allocated = len;
-						data.lstr_address = dataBuffer.getBuffer(data.lstr_allocated);
+						if (data.lstr_address)
+							BURP_free (data.lstr_address);
+						data.lstr_address = BURP_alloc(data.lstr_allocated);
 					}
 					p = data.lstr_address;
 				}
@@ -3740,15 +3759,22 @@ rec_type get_data_old(BurpGlobals* tdgbl, burp_rel* relation)
 	}
 
 	BURP_free (blr_buffer);
-	SSHORT* buffer = NULL;
 
 	BURP_verbose (124, relation->rel_name); // msg 124  restoring data for relation %s
 
+	SSHORT* buffer = NULL;
 	lstring data;
 	data.lstr_allocated = 0;
 	data.lstr_address = NULL;
-	ULONG old_length = 0;
 
+	Firebird::Cleanup datClean( [&] {
+		if (buffer)
+			BURP_free(buffer);
+		if (data.lstr_address)
+			BURP_free(data.lstr_address);
+	} );
+
+	ULONG old_length = 0;
 	FB_UINT64 records = 0;
 	rec_type record;
 	bool resync = false;
@@ -3898,10 +3924,6 @@ rec_type get_data_old(BurpGlobals* tdgbl, burp_rel* relation)
 		if (record != rec_data)
 			break;
 	} // while (true)
-
-	BURP_free (buffer);
-	if (data.lstr_address)
-		BURP_free (data.lstr_address);
 
 	request = nullptr;
 

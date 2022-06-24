@@ -810,6 +810,7 @@ ProcedureSourceNode* ProcedureSourceNode::parse(thread_db* tdbb, CompilerScratch
 {
 	SET_TDBB(tdbb);
 
+	const auto blrStartPos = csb->csb_blr_reader.getPos();
 	jrd_prc* procedure = NULL;
 	string* aliasString = NULL;
 	QualifiedName name;
@@ -876,6 +877,25 @@ ProcedureSourceNode* ProcedureSourceNode::parse(thread_db* tdbb, CompilerScratch
 
 	if (!procedure)
 		PAR_error(csb, Arg::Gds(isc_prcnotdef) << Arg::Str(name.toString()));
+	else
+	{
+		if (procedure->isImplemented() && !procedure->isDefined())
+		{
+			if (tdbb->getAttachment()->isGbak() || (tdbb->tdbb_flags & TDBB_replicator))
+			{
+				PAR_warning(
+					Arg::Warning(isc_prcnotdef) << Arg::Str(name.toString()) <<
+					Arg::Warning(isc_modnotfound));
+			}
+			else
+			{
+				csb->csb_blr_reader.setPos(blrStartPos);
+				PAR_error(csb,
+					Arg::Gds(isc_prcnotdef) << Arg::Str(name.toString()) <<
+					Arg::Gds(isc_modnotfound));
+			}
+		}
+	}
 
 	if (procedure->prc_type == prc_executable)
 	{

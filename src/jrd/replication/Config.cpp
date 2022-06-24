@@ -382,7 +382,6 @@ void Config::enumerate(Firebird::Array<Config*>& replicas)
 				{
 					config->sourceDirectory = value.c_str();
 					PathUtils::ensureSeparator(config->sourceDirectory);
-					checkAccess(config->sourceDirectory, key);
 				}
 				else if (key == "source_guid")
 				{

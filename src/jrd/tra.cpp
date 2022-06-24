@@ -1235,6 +1235,8 @@ void TRA_release_transaction(thread_db* tdbb, jrd_tra* transaction, Jrd::TraceTr
 			blb::release_array(transaction->tra_arrays);
 	}
 
+	fb_assert(transaction->tra_temp_blobs_count == 0);
+
 	if (transaction->tra_pool)
 	{
 		// Iterate the doubly linked list of requests for transaction and null out the transaction references
@@ -1687,7 +1689,11 @@ jrd_tra* TRA_start(thread_db* tdbb, ULONG flags, SSHORT lock_timeout, Jrd::jrd_t
 	Database* const dbb = tdbb->getDatabase();
 	Jrd::Attachment* const attachment = tdbb->getAttachment();
 
-	if (dbb->dbb_ast_flags & DBB_shut_tran)
+	// Starting new transactions should be allowed for threads which
+	// are running purge_attachment() because it's needed for
+	// ON DISCONNECT triggers
+	if (dbb->dbb_ast_flags & DBB_shut_tran &&
+		attachment->att_purge_tid != Thread::getId())
 	{
 		ERR_post(Arg::Gds(isc_shutinprog) << Arg::Str(attachment->att_filename));
 	}
@@ -1740,7 +1746,11 @@ jrd_tra* TRA_start(thread_db* tdbb, int tpb_length, const UCHAR* tpb, Jrd::jrd_t
 	Database* dbb = tdbb->getDatabase();
 	Jrd::Attachment* attachment = tdbb->getAttachment();
 
-	if (dbb->dbb_ast_flags & DBB_shut_tran)
+	// Starting new transactions should be allowed for threads which
+	// are running purge_attachment() because it's needed for
+	// ON DISCONNECT triggers
+	if (dbb->dbb_ast_flags & DBB_shut_tran &&
+		attachment->att_purge_tid != Thread::getId())
 	{
 		ERR_post(Arg::Gds(isc_shutinprog) << Arg::Str(attachment->att_filename));
 	}
@@ -4050,13 +4060,17 @@ void jrd_tra::checkBlob(thread_db* tdbb, const bid* blob_id, jrd_fld* fld, bool 
 		vec<jrd_rel*>* vector = tra_attachment->att_relations;
 		jrd_rel* blb_relation;
 
-		if (rel_id < vector->count() &&	(blb_relation = (*vector)[rel_id]))
+		if ((rel_id < vector->count() && (blb_relation = (*vector)[rel_id])) ||
+			(blb_relation = MET_relation(tdbb, rel_id)))
 		{
-			const MetaName security_name = fld ?
+			MetaName security_name = (fld && fld->fld_security_name.hasData()) ?
 				fld->fld_security_name : blb_relation->rel_security_name;
 
 			if (security_name.isEmpty())
+			{
 				MET_scan_relation(tdbb, blb_relation);
+				security_name = blb_relation->rel_security_name;
+			}
 
 			SecurityClass* s_class = SCL_get_class(tdbb, security_name.c_str());
 

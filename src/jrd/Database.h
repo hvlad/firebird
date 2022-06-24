@@ -305,6 +305,8 @@ class Database : public pool_alloc<type_dbb>
 										const Firebird::PathName& filename,
 										Firebird::RefPtr<const Firebird::Config> config);
 
+		int release() const override;
+
 		~GlobalObjectHolder();
 
 		LockManager* getLockManager();

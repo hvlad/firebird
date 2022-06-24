@@ -234,6 +234,9 @@ void TraceSvcUtil::runService(size_t spbSize, const UCHAR* spb)
 				sizeof(query), query,
 				sizeof(results) - 1, results))
 		{
+			if (ctrlCHandler.getTerminated())
+				break;
+
 			status_exception::raise(status);
 		}
 

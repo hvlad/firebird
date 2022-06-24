@@ -3998,6 +3998,7 @@ void DFW_reset_icu(thread_db* tdbb)
 			"join RDB$CHARACTER_SETS cs on coll.RDB$CHARACTER_SET_ID = cs.RDB$CHARACTER_SET_ID "
 			"where coll.RDB$SPECIFIC_ATTRIBUTES like '%COLL-VERSION=%' "
 			" and coalesce(ind.RDB$INDEX_INACTIVE, 0) = 0 "
+			" and coalesce(rel.RDB$RELATION_TYPE, 0) = 0 "		// rel_persistent
 			"group by ind.RDB$INDEX_NAME, rel.RDB$RELATION_ID, coll.RDB$BASE_COLLATION_NAME, "
 			" coll.RDB$COLLATION_NAME, cs.RDB$CHARACTER_SET_NAME, coll.RDB$SPECIFIC_ATTRIBUTES";
 
