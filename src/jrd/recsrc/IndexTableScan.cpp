@@ -254,6 +254,12 @@ void IndexTableScan::cacheRecordInfo(thread_db* tdbb) const
 	const IndexRetrieval* const retrieval = m_index->retrieval;
 	const USHORT flags = retrieval->irb_generic & (irb_descending | irb_partial | irb_starting);
 
+	if (impure->irsb_nav_recs)
+	{
+		impure->irsb_nav_recs->clear();
+		impure->irsb_nav_keys->clear();
+	}
+
 	do
 	{
 		UCHAR* nextPointer = getPosition(tdbb, impure, &window);
@@ -272,18 +278,6 @@ void IndexTableScan::cacheRecordInfo(thread_db* tdbb) const
 		{
 			upper.key_length = impure->irsb_nav_upper_length;
 			memcpy(upper.key_data, impure->irsb_nav_data + m_length, upper.key_length);
-		}
-
-		if (!impure->irsb_nav_recs)
-		{
-			MemoryPool* pool = tdbb->getDefaultPool();
-			impure->irsb_nav_recs = FB_NEW_POOL(*pool) RecordsData(*pool, RECS_TO_CACHE);
-			impure->irsb_nav_keys = FB_NEW_POOL(*pool) KeysData(*pool, KEYS_TO_CACHE);
-		}
-		else
-		{
-			impure->irsb_nav_recs->clear();
-			impure->irsb_nav_keys->clear();
 		}
 
 		// Find the next interesting node. If necessary, skip to the next page.
@@ -339,6 +333,14 @@ void IndexTableScan::cacheRecordInfo(thread_db* tdbb) const
 			}
 
 			// save record number and key
+
+			if (!impure->irsb_nav_recs)
+			{
+				MemoryPool* pool = tdbb->getDefaultPool();
+				impure->irsb_nav_recs = FB_NEW_POOL(*pool) RecordsData(*pool, RECS_TO_CACHE);
+				impure->irsb_nav_keys = FB_NEW_POOL(*pool) KeysData(*pool, KEYS_TO_CACHE);
+			}
+
 			RecordInfo& info = impure->irsb_nav_recs->add();
 			info.recno = number.getValue();
 			info.key_offset = impure->irsb_nav_keys->getCount();
@@ -357,7 +359,7 @@ void IndexTableScan::cacheRecordInfo(thread_db* tdbb) const
 
 		CCH_RELEASE(tdbb, &window);
 
-		if (impure->irsb_nav_recs->getCount() == RECS_TO_CACHE)
+		if (impure->irsb_nav_recs && impure->irsb_nav_recs->getCount() == RECS_TO_CACHE)
 			break;
 
 		advanceStream(tdbb, impure, &window);
