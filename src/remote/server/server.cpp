@@ -2681,23 +2681,28 @@ static void cancel_operation(rem_port* port, USHORT kind)
 	if ((port->port_flags & (PORT_async | PORT_disconnect)) || !(port->port_context))
 		return;
 
-	ServAttachment iface;
+	ServAttachment dbIface;
+	ServService svcIface;
 	{
 		RefMutexGuard portGuard(*port->port_cancel_sync, FB_FUNCTION);
 
-		Rdb* rdb;
-		if ((port->port_flags & PORT_disconnect) || !(rdb = port->port_context))
+		Rdb* rdb = port->port_context;
+		if ((port->port_flags & PORT_disconnect) || !rdb)
 			return;
 
-		iface = rdb->rdb_iface;
+		if (rdb->rdb_svc)
+			svcIface = rdb->rdb_svc->svc_iface;
+		else
+			dbIface = rdb->rdb_iface;
 	}
 
-	if (iface)
-	{
-		LocalStatus ls;
-		CheckStatusWrapper status_vector(&ls);
-		iface->cancelOperation(&status_vector, kind);
-	}
+	LocalStatus ls;
+	CheckStatusWrapper status_vector(&ls);
+
+	if (dbIface)
+		dbIface->cancelOperation(&status_vector, kind);
+	else if (svcIface && kind == fb_cancel_raise)
+		svcIface->cancel(&status_vector);
 }
 
 
@@ -3834,7 +3839,8 @@ ISC_STATUS rem_port::execute_statement(P_OP op, P_SQLDATA* sqldata, PACKET* send
 
 	if (statement->rsr_cursor || statement->rsr_batch)
 	{
-		 Arg::Gds(isc_dsql_cursor_open_err).raise();
+		(Arg::Gds(isc_sqlerr) << Arg::Num(-502) <<
+			Arg::Gds(isc_dsql_cursor_open_err)).raise();
 	}
 
 	InternalMessageBuffer iMsgBuffer(sqldata->p_sqldata_blr.cstr_length,
@@ -3963,7 +3969,8 @@ ISC_STATUS rem_port::fetch(P_SQLDATA * sqldata, PACKET* sendL)
 			sqldata->p_sqldata_blr.cstr_address, msg_length, NULL);
 
 		if (!msgBuffer.metadata)
-			Arg::Gds(isc_dsql_cursor_open_err).raise();
+			(Arg::Gds(isc_sqlerr) << Arg::Num(-502) <<
+				Arg::Gds(isc_dsql_cursor_open_err)).raise();
 
 		statement->rsr_cursor->setDelayedOutputFormat(&status_vector, msgBuffer.metadata);
 		check(&status_vector);
@@ -5052,8 +5059,11 @@ static bool process_packet(rem_port* port, PACKET* sendL, PACKET* receive, rem_p
 		{
 			if (!port->port_parent)
 			{
-				if (!Worker::isShuttingDown() && !(port->port_flags & (PORT_rdb_shutdown | PORT_detached)))
+				if (!Worker::isShuttingDown() && !(port->port_flags & (PORT_rdb_shutdown | PORT_detached)) &&
+					((port->port_server_flags & (SRVR_server | SRVR_multi_client)) != SRVR_server))
+				{
 					gds__log("SERVER/process_packet: broken port, server exiting");
+				}
 				port->disconnect(sendL, receive);
 				return false;
 			}

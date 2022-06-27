@@ -681,6 +681,7 @@ using namespace Firebird;
 
 %token <metaNamePtr> DEBUG
 %token <metaNamePtr> PKCS_1_5
+%token <metaNamePtr> BLOB_APPEND
 
 // precedence declarations for expression evaluation
 
@@ -8106,6 +8107,7 @@ system_function_std_syntax
 	| BIN_SHL
 	| BIN_SHR
 	| BIN_XOR
+	| BLOB_APPEND
 	| CEIL
 	| CHAR_TO_UUID
 	| COS
@@ -9062,6 +9064,7 @@ non_reserved_word
 	| ZONE
 	| DEBUG				// added in FB 4.0.1
 	| PKCS_1_5
+	| BLOB_APPEND
 	;
 
 %%

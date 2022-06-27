@@ -121,7 +121,8 @@ public:
 	int lowerCount;					//
 	int upperCount;					//
 	int nonFullMatchedSegments;		//
-	bool fuzzy;						// Need to use INTL_KEY_PARTIAL in btr lookups
+	bool usePartialKey;				// Use INTL_KEY_PARTIAL
+	bool useMultiStartingKeys;		// Use INTL_KEY_MULTI_STARTING
 	double cardinality;				// Estimated cardinality when using the whole index
 
 	Firebird::Array<IndexScratchSegment*> segments;

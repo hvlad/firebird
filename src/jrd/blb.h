@@ -179,6 +179,7 @@ const int BLB_closed		= 8;		// Temporary blob has been closed
 const int BLB_damaged		= 16;		// Blob is busted
 const int BLB_seek			= 32;		// Seek is pending
 const int BLB_large_scan	= 64;		// Blob is larger than page buffer cache
+const int BLB_close_on_read = 128;		// Temporary blob is not closed until read
 
 /* Blob levels are:
 

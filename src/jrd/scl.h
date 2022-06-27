@@ -94,8 +94,7 @@ const SecurityClass::flags_t SCL_MODIFY_ANY	= SCL_create | SCL_alter | SCL_contr
 
 const USHORT USR_mapdown	= 1;		// Mapping failed when getting context
 const USHORT USR_newrole	= 2;		// usr_granted_roles array needs refresh
-
-const USHORT USR_external	= USR_mapdown;
+const USHORT USR_sysdba		= 4;		// User detected as SYSDBA
 
 class UserId
 {
@@ -318,7 +317,7 @@ public:
 		return usr_privileges.test(sp);
 	}
 
-	static void sclInit(thread_db* tdbb, bool create, const UserId& tempId);
+	void sclInit(thread_db* tdbb, bool create);
 
 	void setUserName(const Firebird::MetaString& userName)
 	{
@@ -387,7 +386,7 @@ public:
 
 	void setFlag(USHORT mask)
 	{
-		usr_flags |= (mask & USR_external);
+		usr_flags |= mask;
 	}
 
 	static void makeRoleName(Firebird::MetaString& role, const int dialect);

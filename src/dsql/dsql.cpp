@@ -945,6 +945,8 @@ void DsqlDmlRequest::executeReceiveWithRestarts(thread_db* tdbb, jrd_tra** traHa
 				"\tQuery:\n%s\n", numTries, req_request->getStatement()->sqlText->c_str() );
 		}
 
+		TraceManager::event_dsql_restart(req_dbb->dbb_attachment, req_transaction, this, numTries);
+
 		// When restart we must execute query
 		exec = true;
 	}
@@ -1065,9 +1067,6 @@ void DsqlTransactionRequest::dsqlPass(thread_db* tdbb, DsqlCompilerScratch* scra
 	ntrace_result_t* /*traceResult*/)
 {
 	node = Node::doDsqlPass(scratch, node);
-
-	// Don't trace pseudo-statements (without requests associated).
-	req_traced = false;
 }
 
 // Execute a dynamic SQL statement.
@@ -1076,7 +1075,9 @@ void DsqlTransactionRequest::execute(thread_db* tdbb, jrd_tra** traHandle,
 	IMessageMetadata* /*outMetadata*/, UCHAR* /*outMsg*/,
 	bool /*singleton*/)
 {
+	TraceDSQLExecute trace(req_dbb->dbb_attachment, this);
 	node->execute(tdbb, this, traHandle);
+	trace.finish(false, ITracePlugin::RESULT_SUCCESS);
 }
 
 
@@ -1501,7 +1502,7 @@ static dsql_req* prepareStatement(thread_db* tdbb, dsql_dbb* database, jrd_tra* 
 	if (text && textLength == 0)
 		textLength = static_cast<ULONG>(strlen(text));
 
-	TraceDSQLPrepare trace(database->dbb_attachment, transaction, textLength, text);
+	TraceDSQLPrepare trace(database->dbb_attachment, transaction, textLength, text, isInternalRequest);
 
 	if (clientDialect > SQL_DIALECT_CURRENT)
 	{
@@ -1628,7 +1629,7 @@ static dsql_req* prepareStatement(thread_db* tdbb, dsql_dbb* database, jrd_tra* 
 
 		statement->setType(DsqlCompiledStatement::TYPE_SELECT);
 
-		request->req_traced = true;
+		request->req_traced = !isInternalRequest;
 		trace.setStatement(request);
 
 		ntrace_result_t traceResult = ITracePlugin::RESULT_SUCCESS;

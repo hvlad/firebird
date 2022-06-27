@@ -258,7 +258,8 @@ IndexScratch::IndexScratch(MemoryPool& p, thread_db* tdbb, index_desc* ix,
 	lowerCount = 0;
 	upperCount = 0;
 	nonFullMatchedSegments = 0;
-	fuzzy = false;
+	usePartialKey = false;
+	useMultiStartingKeys = false;
 
 	segments.grow(idx->idx_count);
 
@@ -307,7 +308,8 @@ IndexScratch::IndexScratch(MemoryPool& p, const IndexScratch& scratch) :
 	lowerCount = scratch.lowerCount;
 	upperCount = scratch.upperCount;
 	nonFullMatchedSegments = scratch.nonFullMatchedSegments;
-	fuzzy = scratch.fuzzy;
+	usePartialKey = scratch.usePartialKey;
+	useMultiStartingKeys = scratch.useMultiStartingKeys;
 	idx = scratch.idx;
 
 	// Allocate needed segments
@@ -1011,7 +1013,8 @@ void OptimizerRetrieval::getInversionCandidates(InversionCandidateList* inversio
 		scratch.lowerCount = 0;
 		scratch.upperCount = 0;
 		scratch.nonFullMatchedSegments = MAX_INDEX_SEGMENTS + 1;
-		scratch.fuzzy = false;
+		scratch.usePartialKey = false;
+		scratch.useMultiStartingKeys = false;
 
 		if (scratch.candidate)
 		{
@@ -1027,26 +1030,34 @@ void OptimizerRetrieval::getInversionCandidates(InversionCandidateList* inversio
 				if (segment->scope == scope)
 					scratch.scopeCandidate = true;
 
-				if (segment->scanType != segmentScanMissing && !(scratch.idx->idx_flags & idx_unique))
+				const USHORT iType = scratch.idx->idx_rpt[j].idx_itype;
+
+				if (iType >= idx_first_intl_string)
 				{
-					const USHORT iType = scratch.idx->idx_rpt[j].idx_itype;
+					auto textType = INTL_texttype_lookup(tdbb, INTL_INDEX_TO_TEXT(iType));
 
-					if (iType >= idx_first_intl_string)
+					if (segment->scanType != segmentScanMissing && !(scratch.idx->idx_flags & idx_unique))
 					{
-						TextType* textType = INTL_texttype_lookup(tdbb, INTL_INDEX_TO_TEXT(iType));
-
 						if (textType->getFlags() & TEXTTYPE_SEPARATE_UNIQUE)
 						{
 							// ASF: Order is more precise than equivalence class.
 							// We can't use the next segments, and we'll need to use
 							// INTL_KEY_PARTIAL to construct the last segment's key.
-							scratch.fuzzy = true;
+							scratch.usePartialKey = true;
 						}
+					}
+
+					if (segment->scanType == segmentScanStarting)
+					{
+						if (textType->getFlags() & TEXTTYPE_MULTI_STARTING_KEY)
+							scratch.useMultiStartingKeys = true;	// use INTL_KEY_MULTI_STARTING
+
+						scratch.usePartialKey = true;
 					}
 				}
 
 				// Check if this is the last usable segment
-				if (!scratch.fuzzy &&
+				if (!scratch.usePartialKey &&
 					(segment->scanType == segmentScanEqual ||
 					 segment->scanType == segmentScanEquivalent ||
 					 segment->scanType == segmentScanMissing))
@@ -1320,8 +1331,14 @@ InversionNode* OptimizerRetrieval::makeIndexScanNode(IndexScratch* indexScratch)
 			retrieval->irb_generic |= irb_exclude_upper;
 	}
 
-	if (indexScratch->fuzzy)
+	if (indexScratch->usePartialKey)
 		retrieval->irb_generic |= irb_starting;	// Flag the need to use INTL_KEY_PARTIAL in btr.
+
+	if (indexScratch->useMultiStartingKeys)
+	{
+		// Flag the need to use INTL_KEY_MULTI_STARTING in btr.
+		retrieval->irb_generic |= irb_multi_starting | irb_starting;
+	}
 
 	// This index is never used for IS NULL, thus we can ignore NULLs
 	// already at index scan. But this rule doesn't apply to nod_equiv
@@ -2697,12 +2714,37 @@ void OptimizerInnerJoin::calculateStreamInfo()
 		csb_tail->deactivate();
 	}
 
-	// Collect stream inter-dependencies
-	StreamStateHolder stateHolder(csb, streams);
-	stateHolder.activate();
+	// Collect dependencies between every pair of streams
 
-	for (i = 0; i < innerStreams.getCount(); i++)
-		getIndexedRelationships(innerStreams[i]);
+	for (StreamType* iter = streams.begin(); iter != streams.end(); ++iter)
+	{
+		csb->csb_rpt[*iter].activate();
+
+		for (FB_SIZE_T j = 0; j < innerStreams.getCount(); j++)
+		{
+			const StreamType testStream = innerStreams[j]->stream;
+
+			if (*iter != testStream)
+			{
+				csb->csb_rpt[testStream].activate();
+				getIndexedRelationships(innerStreams[j]);
+				csb->csb_rpt[testStream].deactivate();
+			}
+		}
+
+		csb->csb_rpt[*iter].deactivate();
+	}
+
+	// Collect more complex inter-dependencies (involving three and more streams), if any
+
+	if (streams.getCount() > 2)
+	{
+		StreamStateHolder stateHolder(csb, streams);
+		stateHolder.activate();
+
+		for (i = 0; i < innerStreams.getCount(); i++)
+			getIndexedRelationships(innerStreams[i]);
+	}
 
 	// Sort the streams based on independecy and cost.
 	// Except when a PLAN was forced.
@@ -3097,6 +3139,21 @@ void OptimizerInnerJoin::getIndexedRelationships(InnerJoinStreamInfo* testStream
 		if (baseStream->stream != testStream->stream &&
 			candidate->dependentFromStreams.exist(baseStream->stream))
 		{
+			// If the base stream already depends on the testing stream, don't store it again
+			bool found = false;
+			for (const IndexRelationship* const* iter = baseStream->indexedRelationships.begin();
+				iter != baseStream->indexedRelationships.end(); ++iter)
+			{
+				if ((*iter)->stream == testStream->stream)
+				{
+					found = true;
+					break;
+				}
+			}
+
+			if (found)
+				continue;
+
 			// If we could use more conjunctions on the testing stream
 			// with the base stream active as without the base stream
 			// then the test stream has a indexed relationship with the base stream.

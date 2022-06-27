@@ -728,7 +728,6 @@ public:
 		: dsql_req(pool),
 		  node(aNode)
 	{
-		req_traced = false;
 	}
 
 	virtual void dsqlPass(thread_db* tdbb, DsqlCompilerScratch* scratch, bool* destroyScratchPool,
@@ -750,7 +749,6 @@ public:
 		: dsql_req(pool),
 		  node(aNode)
 	{
-		req_traced = false;
 	}
 
 	virtual void dsqlPass(thread_db* tdbb, DsqlCompilerScratch* scratch, bool* destroyScratchPool,

@@ -59,6 +59,7 @@
 #include "../jrd/dpm_proto.h"
 #include "../jrd/err_proto.h"
 #include "../jrd/evl_proto.h"
+#include "../jrd/exe_proto.h"
 #include "../jrd/filte_proto.h"
 #include "../yvalve/gds_proto.h"
 #include "../jrd/intl_proto.h"
@@ -113,7 +114,12 @@ void blb::BLB_cancel(thread_db* tdbb)
 	// Release filter control resources
 
 	if (blb_flags & BLB_temporary)
+	{
+		if (!(blb_flags & BLB_closed))
+			blb_transaction->tra_temp_blobs_count--;
+
 		delete_blob(tdbb, 0);
+	}
 
 	destroy(true);
 }
@@ -189,11 +195,14 @@ bool blb::BLB_close(thread_db* tdbb)
 
 	SET_TDBB(tdbb);
 
+	const bool alreadyClosed = (blb_flags & BLB_closed);
+
 	// Release filter control resources
 
 	if (blb_filter)
 		BLF_close_blob(tdbb, &blb_filter);
 
+	blb_flags &= ~BLB_close_on_read;
 	blb_flags |= BLB_closed;
 
 	if (!(blb_flags & BLB_temporary))
@@ -201,6 +210,9 @@ bool blb::BLB_close(thread_db* tdbb)
 		destroy(true);
 		return true;
 	}
+
+	if (!alreadyClosed)
+		blb_transaction->tra_temp_blobs_count--;
 
 	if (blb_level == 0)
 	{
@@ -267,6 +279,40 @@ blb* blb::create2(thread_db* tdbb,
 	Database* dbb = tdbb->getDatabase();
 	CHECK_DBB(dbb);
 
+	const int maxTempBlobs = MAX_TEMP_BLOBS;
+	if (maxTempBlobs > 0 && transaction->tra_temp_blobs_count >= maxTempBlobs)
+	{
+		const jrd_req* request = tdbb->getRequest();
+		string info;
+
+		if (userBlob)
+		{
+			Attachment* att = tdbb->getAttachment();
+			info = "By user application";
+			if (att->att_remote_process.hasData())
+			{
+				info += string(" (") + att->att_remote_process.c_str() + ")";
+			}
+		}
+		else if (request)
+		{
+			const JrdStatement* const statement = request->getStatement();
+			if (statement && statement->sqlText) 
+				info = string("By query: ") + *statement->sqlText;
+
+			string stack;
+			if (EXE_get_stack_trace(request, stack))
+			{
+				info += "\n";
+				info += stack;
+			}
+		}
+
+		gds__log("Too many temporary blobs (%i allowed)\n%s", maxTempBlobs, info.c_str());
+
+		ERR_post(Arg::Gds(isc_random) << Arg::Str("Too many temporary blobs"));
+	}
+
 	// Create a blob large enough to hold a single data page
 	SSHORT from, to;
 	SSHORT from_charset, to_charset;
@@ -322,6 +368,7 @@ blb* blb::create2(thread_db* tdbb,
 
 	blob->blb_space_remaining = blob->blb_clump_size;
 	blob->blb_flags |= BLB_temporary;
+	blob->blb_transaction->tra_temp_blobs_count++;
 
 	if (filter_required)
 	{
@@ -1163,7 +1210,10 @@ void blb::move(thread_db* tdbb, dsc* from_desc, dsc* to_desc, const record_param
 
 				if (!blob || !(blob->blb_flags & BLB_closed))
 				{
-					ERR_post(Arg::Gds(isc_bad_segstr_id));
+					if (blob && (blob->blb_flags & BLB_close_on_read))
+						blob->BLB_close(tdbb);
+					else
+						ERR_post(Arg::Gds(isc_bad_segstr_id));
 				}
 
 				if (blob->blb_level && (blob->blb_pg_space_id != relPages->rel_pg_space_id))
@@ -1327,7 +1377,7 @@ blb* blb::open2(thread_db* tdbb,
 			 */
 
 			// Search the index of transaction blobs for a match
-			const blb* new_blob = NULL;
+			blb* new_blob = NULL;
 			if (transaction->tra_blobs->locate(blobId.bid_temp_id()))
 			{
 				current = &transaction->tra_blobs->current();
@@ -1342,7 +1392,10 @@ blb* blb::open2(thread_db* tdbb,
 				if (!new_blob || !(new_blob->blb_flags & BLB_temporary) ||
 					!(new_blob->blb_flags & BLB_closed))
 				{
-					ERR_post(Arg::Gds(isc_bad_segstr_id));
+					if (new_blob && (new_blob->blb_flags & BLB_close_on_read))
+						new_blob->BLB_close(tdbb);
+					else
+						ERR_post(Arg::Gds(isc_bad_segstr_id));
 				}
 
 				blob->blb_lead_page = new_blob->blb_lead_page;
@@ -1542,7 +1595,7 @@ void blb::BLB_put_segment(thread_db* tdbb, const void* seg, USHORT segment_lengt
 
 	// Make sure blob is a temporary blob.  If not, complain bitterly.
 
-	if (!(blb_flags & BLB_temporary))
+	if (!(blb_flags & BLB_temporary) || (blb_flags & BLB_closed))
 		ERR_post(Arg::Gds(isc_cannot_update_old_blob));
 
 	if (blb_filter)
