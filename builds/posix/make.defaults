@@ -146,6 +146,8 @@ else
   I128LIB=
 endif
 
+LIBCDSLIB=-lcds
+
 # crypt library
 CRYPTLIB=@CRYPTLIB@
 
@@ -200,8 +202,8 @@ endif
 STATICLIB_LINK = $(AR) crus
 STATICEXE_LINK = $(CXX) $(GLOB_OPTIONS) $(CXXFLAGS) -static-libstdc++
 
-LINK_LIBS = @LIBS@ $(DECLIB) $(RE2LIB) $(I128LIB)
-SO_LINK_LIBS = @LIBS@ $(DECLIB) $(RE2LIB) $(I128LIB)
+LINK_LIBS = @LIBS@ $(DECLIB) $(RE2LIB) $(I128LIB) $(LIBCDSLIB)
+SO_LINK_LIBS = @LIBS@ $(DECLIB) $(RE2LIB) $(I128LIB) $(LIBCDSLIB)
 
 # Default extensions
 
@@ -288,6 +290,11 @@ TOMCRYPT=$(ROOT)/extern/libtomcrypt
 TOMCRYPT_INC=$(TOMCRYPT)/src/headers
 TOMCRYPT_SO=$(TOMCRYPT)/.libs/libtomcrypt.so
 TOMCRYPT_VER=1
+
+# Own libcds support
+LIBCDS=$(ROOT)/extern/libcds
+LIBCDS_INC=$(LIBCDS)
+LIBCDS_DEF=CDS_BUILD_STATIC_LIB
 
 # LINKER OPTIONS
 #

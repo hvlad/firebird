@@ -478,9 +478,6 @@ public:
 			block->validate(pool, vUse);
 			m += block->getSize();
 		}
-
-		if (next)
-			next->validate(pool, hdr, vMap, vUse);
 	}
 
 #ifdef MEM_DEBUG
@@ -1710,8 +1707,8 @@ public:
 		for (unsigned int slot = 0; slot < Limits::TOTAL_ELEMENTS; ++slot)
 			ListBuilder::validate(freeObjects[slot], Limits::getSize(slot));
 
-		if (currentExtent)
-			currentExtent->validate(pool, currentExtent->hdrSize(), vMap, vUse);
+		for (Extent* ext = currentExtent; ext; ext = ext->next)
+			ext->validate(pool, ext->hdrSize(), vMap, vUse);
 	}
 
 private:
@@ -2282,6 +2279,9 @@ MemBlock* MemPool::alloc(size_t from, size_t& length, bool flagRedirect)
 	MutexEnsureUnlock guard(mutex, "MemPool::alloc");
 	guard.enter();
 
+	++blocksAllocated;
+	++blocksActive;
+
 	// If this is a small block, look for it there
 
 	MemBlock* block = smallObjects.allocateBlock(this, from, length);
@@ -2357,9 +2357,6 @@ MemBlock* MemPool::allocate2(size_t from, size_t& size
 	memset(&memory->body, INIT_BYTE, size);
 	memset(&memory->body + size, GUARD_BYTE, memory->getSize() - offsetof(MemBlock,body) - size);
 #endif
-
-	++blocksAllocated;
-	++blocksActive;
 
 	fb_assert((U_IPTR)(&memory->body) % ALLOC_ALIGNMENT == 0);
 	return memory;
@@ -2458,11 +2455,11 @@ void MemPool::releaseBlock(MemBlock* block, bool decrUsage) noexcept
 	}
 #endif
 
-	--blocksActive;
 	const size_t length = block->getSize();
 
 	MutexEnsureUnlock guard(mutex, "MemPool::releaseBlock");
 	guard.enter();
+	--blocksActive;
 
 	Validator vld(decrUsage ? this : NULL);
 

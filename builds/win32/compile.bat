@@ -18,6 +18,10 @@ set projects=
 	set config=debug
 )
 
+@if "%FB_LIBCDS%"=="1" (
+	set config=%config%-static
+)
+
 shift
 shift
 

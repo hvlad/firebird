@@ -35,6 +35,9 @@ if "%ERRLEV%"=="1" goto :END
 call :btyacc
 if "%ERRLEV%"=="1" goto :END
 
+call :libcds
+if "%ERRLEV%"=="1" goto :END
+
 call :LibTom
 if "%ERRLEV%"=="1" goto :END
 
@@ -163,6 +166,20 @@ if errorlevel 1 call :boot2 decNumber_%FB_OBJ_DIR%
 @call compile.bat extern\decNumber\msvc\decNumber_MSVC%MSVC_VERSION% decNumber_%FB_CONFIG%_%FB_TARGET_PLATFORM%.log decNumber
 if errorlevel 1 call :boot2 decNumber_%FB_OBJ_DIR%
 @call set_build_target.bat %*
+goto :EOF
+
+::===================
+:: Build libcds
+:libcds
+@echo.
+@call set_build_target.bat %* RELEASE LIBCDS
+@echo Building libcds (%FB_OBJ_DIR%)...
+@call compile.bat extern\libcds\projects\Win\vc141\cds libcds_%FB_CONFIG%_%FB_TARGET_PLATFORM%.log cds
+if errorlevel 1 call :boot2 libcds%FB_OBJ_DIR%
+@call set_build_target.bat %* DEBUG LIBCDS
+@echo Building libcds (%FB_OBJ_DIR%)...
+@call compile.bat extern\libcds\projects\Win\vc141\cds libcds_%FB_CONFIG%_%FB_TARGET_PLATFORM%.log cds
+if errorlevel 1 call :boot2 libcds%FB_OBJ_DIR%
 goto :EOF
 
 ::===================

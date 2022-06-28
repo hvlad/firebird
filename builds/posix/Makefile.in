@@ -190,6 +190,16 @@ ifeq ($(RE2_BUILD_FLG),Y)
 	ln -sf $(ROOT)/extern/re2/obj/libre2.a $(LIB)
 endif
 
+	mkdir -p $(LIBCDS)/lib/$(TARGET)
+	cmake -DCMAKE_BUILD_TYPE=$(TARGET) -DCMAKE_CXX_FLAGS=-fPIC -S $(LIBCDS) -B $(LIBCDS)/lib/$(TARGET)
+	$(MAKE) -C $(LIBCDS)/lib/$(TARGET)
+
+ifeq ($(TARGET),Debug)
+	ln -sf $(LIBCDS)/lib/$(TARGET)/bin/libcds-s_d.a $(LIB)/libcds.a
+else
+	ln -sf $(LIBCDS)/lib/$(TARGET)/bin/libcds-s.a $(LIB)/libcds.a
+endif
+
 ifeq ($(TOMMATH_BUILD_FLG),Y)
 	CC="$(CC)" CFLAGS="$(CFLAGS)" $(MAKE) -C $(ROOT)/extern/libtommath -f makefile.shared GCC=$(GCC)
 

@@ -25,3 +25,4 @@ extern/int128/absl/numeric/libi128*.a
 /src/include/gen/parse.h
 /src/include/gen/autoconfig.auto
 /src/include/gen/autoconfig.h
+extern/libcds/lib/
