@@ -22,7 +22,7 @@ ARG ICU_VERSION
 
 RUN \
 	apt-get -y update && \
-	apt-get -y install curl xz-utils && \
+	apt-get -y install curl xz-utils cmake && \
 	rm -rf /var/lib/apt/lists/* && \
 	\
 	mkdir /work && \
