@@ -56,12 +56,12 @@ goto :EOF
 ::===========
 :BOOT_PROCESS
 @echo.
-@set GPRE=%FB_BOOT_BIN_DIR%\gpre_boot -lang_internal
+@set GPRE=%FB_BIN_DIR%\gpre_boot -lang_internal
 @for %%i in (backup, restore, OdsDetection) do @call :PREPROCESS burp %%i -ocxx -m
 @for %%i in (extract, isql, show) do @call :PREPROCESS isql %%i -ocxx
 @for %%i in (dba) do @call :PREPROCESS utilities/gstat %%i
 
-@set GPRE=%FB_BOOT_BIN_DIR%\gpre_boot
+@set GPRE=%FB_BIN_DIR%\gpre_boot
 @for %%i in (alice_meta) do @call :PREPROCESS alice %%i
 @for %%i in (array, blob) do @call :PREPROCESS yvalve %%i
 @for %%i in (metd, DdlNodes, PackageNodes) do @call :PREPROCESS dsql %%i -gds_cxx

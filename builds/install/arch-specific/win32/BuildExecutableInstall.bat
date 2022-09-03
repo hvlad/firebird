@@ -87,6 +87,9 @@ if defined MD5_COMMAND (
 
 if %FBBUILD_ZIP_PACK% EQU 1 (
   if not defined SEVENZIP (
+    if exist "%ProgramW6432%\7-Zip\7z.exe" set SEVENZIP=%ProgramW6432%\7-Zip
+  )
+  if not defined SEVENZIP (
     call :ERROR SEVENZIP environment variable is not defined.
     @goto :EOF
   ) else (@echo     o Compression utility found.)

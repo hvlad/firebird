@@ -49,7 +49,7 @@ $(RPL_GREP): $(RPL_GREP_SRC)
 
 $(FB_GEN_DIR)\iberror.pas: $(ERR_CONSTS_PAS) $(FB_ROOT_PATH)\src\include\firebird\impl\msg\*.h
 	compile.bat builds\win32\%VS_VER%\FirebirdBoot build_msg_%FB_TARGET_PLATFORM%.log build_msg
-	%FB_BOOT_BIN_DIR%\build_msg -p $(FB_GEN_DIR)\iberror_codes.pas
+	%FB_BIN_DIR%\build_msg -p $(FB_GEN_DIR)\iberror_codes.pas
 	copy $(ERR_CONSTS_PAS) $(FB_GEN_DIR)\iberror.pas
 	type $(FB_GEN_DIR)\iberror_codes.pas >> $(FB_GEN_DIR)\iberror.pas
 

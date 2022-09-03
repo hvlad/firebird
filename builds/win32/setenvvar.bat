@@ -5,7 +5,6 @@
 :: (This is used by gpre and preprocess.bat)
 :: VS_VER VisualStudio version (msvc15)
 :: FB_OBJ_DIR
-:: FB_BOOT_BIN_DIR
 :: FB_BIN_DIR
 
 @echo off
@@ -142,8 +141,8 @@ for %%v in ( %* )  do (
 @set FIREBIRD_BOOT_BUILD=1
 
 @set FB_OBJ_DIR=%FB_TARGET_PLATFORM%\%FB_CONFIG%
-@set FB_BOOT_BIN_DIR=%FB_ROOT_PATH%\temp\%FB_OBJ_DIR%\firebird
-@set FB_BIN_DIR=%FB_OUTPUT_DIR%
+@set FB_BIN_DIR=%FB_ROOT_PATH%\temp\%FB_OBJ_DIR%\firebird
+
 
 
 goto :END

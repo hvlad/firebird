@@ -16,11 +16,6 @@ set ERRLEV=0
 :MAIN
 @echo.
 
-@echo Cleaning output directory
-@rmdir /S /Q "%FB_OUTPUT_DIR%" 2>nul
-:: short delay to let OS complete actions by rmdir above
-@timeout 1 >nul
-
 @echo Creating directories
 :: Create the directory hierarchy.
 for %%v in ( alice auth burp dsql gpre isql jrd misc msgs examples yvalve utilities) do (
@@ -31,8 +26,7 @@ for %%v in ( alice auth burp dsql gpre isql jrd misc msgs examples yvalve utilit
 @mkdir %FB_GEN_DIR%\auth\SecurityDatabase 2>nul
 @mkdir %FB_GEN_DIR%\gpre\std 2>nul
 
-@mkdir %FB_OUTPUT_DIR%\include\firebird\impl 2>nul
-@mkdir %FB_OUTPUT_DIR%\tzdata 2>nul
+@mkdir %FB_BIN_DIR%\tzdata 2>nul
 
 call :interfaces
 if "%ERRLEV%"=="1" goto :END
@@ -77,17 +71,33 @@ if "%ERRLEV%"=="1" goto :END
 call :isql
 if "%ERRLEV%"=="1" goto :END
 
-@copy %FB_ROOT_PATH%\builds\install\misc\firebird.conf %FB_BIN_DIR%\firebird.conf
+@mkdir %FB_BIN_DIR% >nul 2>&1
+@mkdir %FB_BIN_DIR%\intl\ >nul 2>&1
+
+:: copy conf files only if not exists already
+for %%v in (databases firebird plugins replication) do (
+  if not exist %FB_BIN_DIR%\%%v.conf (
+    @copy %FB_ROOT_PATH%\builds\install\misc\%%v.conf %FB_BIN_DIR% >nul 2>&1
+  )
+)
+
+if not exist %FB_BIN_DIR%\intl\fbintl.conf (
+  @copy %FB_ROOT_PATH%\builds\install\misc\fbintl.conf %FB_BIN_DIR%\intl\ >nul 2>&1
+)
 
 :: Copy ICU and zlib to the output directory
-@mkdir %FB_BIN_DIR%
 @copy %FB_ROOT_PATH%\extern\icu\icudt???.dat %FB_BIN_DIR% >nul 2>&1
 @copy %FB_ICU_SOURCE_BIN%\*.dll %FB_BIN_DIR% >nul 2>&1
-@copy %FB_ROOT_PATH%\extern\icu\tzdata-extract\* %FB_OUTPUT_DIR%\tzdata >nul 2>&1
+@copy %FB_ROOT_PATH%\extern\icu\tzdata-extract\* %FB_BIN_DIR%\tzdata >nul 2>&1
 @copy %FB_ROOT_PATH%\extern\zlib\%FB_TARGET_PLATFORM%\*.dll %FB_BIN_DIR% >nul 2>&1
 
 ::=======
 @call :databases
+
+:: copy security db if not exists already
+if not exist %FB_BIN_DIR%\security5.fdb (
+  @copy %FB_GEN_DIR%\dbs\security5.fdb %FB_BIN_DIR%
+)
 
 ::=======
 @echo Preprocessing the entire source tree...
@@ -254,11 +264,13 @@ goto :EOF
 @echo create database '%FB_GEN_DB_DIR%\dbs\security5.fdb'; | "%FB_BIN_DIR%\isql" -q
 @echo Apply security.sql...
 @"%FB_BIN_DIR%\isql" -q %FB_GEN_DB_DIR%/dbs/security5.fdb -i %FB_ROOT_PATH%\src\dbs\security.sql
-@copy %FB_GEN_DIR%\dbs\security5.fdb %FB_GEN_DIR%\dbs\security.fdb > nul
+@mklink %FB_GEN_DIR%\dbs\security.fdb %FB_GEN_DIR%\dbs\security5.fdb
+rem @copy %FB_GEN_DIR%\dbs\security5.fdb %FB_GEN_DIR%\dbs\security.fdb > nul
 
 @echo Creating metadata.fdb...
 @echo create database '%FB_GEN_DB_DIR%/dbs/metadata.fdb'; | "%FB_BIN_DIR%\isql" -q -sqldialect 1
-@copy %FB_GEN_DIR%\dbs\metadata.fdb %FB_GEN_DIR%\dbs\yachts.lnk > nul
+@mklink %FB_GEN_DIR%\dbs\yachts.lnk %FB_GEN_DIR%\dbs\metadata.fdb
+rem @copy %FB_GEN_DIR%\dbs\metadata.fdb %FB_GEN_DIR%\dbs\yachts.lnk > nul
 
 @goto :EOF
 

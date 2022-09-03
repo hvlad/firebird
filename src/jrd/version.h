@@ -129,6 +129,9 @@
 #elif defined RC_TARGET_ib_udf
 #define VER_FILEDESC "UDF library"
 
+#elif defined RC_TARGET_default_profiler
+#define VER_FILEDESC "Default Profiler plugin"
+
 #else
 #define VER_FILEDESC "SQL Server"
 
