@@ -51,34 +51,36 @@ namespace
 	public:
 		BufferedStreamWindow(CompilerScratch* csb, BufferedStream* next);
 
-		void open(thread_db* tdbb) const;
-		void close(thread_db* tdbb) const;
+		void internalOpen(thread_db* tdbb) const override;
+		void close(thread_db* tdbb) const override;
 
-		bool getRecord(thread_db* tdbb) const;
-		bool refetchRecord(thread_db* tdbb) const;
-		bool lockRecord(thread_db* tdbb) const;
+		bool internalGetRecord(thread_db* tdbb) const override;
+		bool refetchRecord(thread_db* tdbb) const override;
+		bool lockRecord(thread_db* tdbb) const override;
 
-		void print(thread_db* tdbb, Firebird::string& plan, bool detailed, unsigned level) const;
+		void getChildren(Firebird::Array<const RecordSource*>& children) const override;
 
-		void markRecursive();
-		void invalidateRecords(Request* request) const;
+		void print(thread_db* tdbb, Firebird::string& plan, bool detailed, unsigned level, bool recurse) const override;
 
-		void findUsedStreams(StreamList& streams, bool expandAll) const;
-		void nullRecords(thread_db* tdbb) const;
+		void markRecursive() override;
+		void invalidateRecords(Request* request) const override;
 
-		void locate(thread_db* tdbb, FB_UINT64 position) const
+		void findUsedStreams(StreamList& streams, bool expandAll) const override;
+		void nullRecords(thread_db* tdbb) const override;
+
+		void locate(thread_db* tdbb, FB_UINT64 position) const override
 		{
 			Request* const request = tdbb->getRequest();
 			Impure* const impure = request->getImpure<Impure>(m_impure);
 			impure->irsb_position = position;
 		}
 
-		FB_UINT64 getCount(thread_db* tdbb) const
+		FB_UINT64 getCount(thread_db* tdbb) const override
 		{
 			return m_next->getCount(tdbb);
 		}
 
-		FB_UINT64 getPosition(Request* request) const
+		FB_UINT64 getPosition(Request* request) const override
 		{
 			Impure* const impure = request->getImpure<Impure>(m_impure);
 			return impure->irsb_position;
@@ -91,12 +93,13 @@ namespace
 	// BufferedStreamWindow implementation
 
 	BufferedStreamWindow::BufferedStreamWindow(CompilerScratch* csb, BufferedStream* next)
-		: m_next(next)
+		: BaseBufferedStream(csb),
+		  m_next(next)
 	{
 		m_impure = csb->allocImpure<Impure>();
 	}
 
-	void BufferedStreamWindow::open(thread_db* tdbb) const
+	void BufferedStreamWindow::internalOpen(thread_db* tdbb) const
 	{
 		Request* const request = tdbb->getRequest();
 		Impure* const impure = request->getImpure<Impure>(m_impure);
@@ -117,7 +120,7 @@ namespace
 			impure->irsb_flags &= ~irsb_open;
 	}
 
-	bool BufferedStreamWindow::getRecord(thread_db* tdbb) const
+	bool BufferedStreamWindow::internalGetRecord(thread_db* tdbb) const
 	{
 		Request* const request = tdbb->getRequest();
 		Impure* const impure = request->getImpure<Impure>(m_impure);
@@ -143,9 +146,15 @@ namespace
 		return m_next->lockRecord(tdbb);
 	}
 
-	void BufferedStreamWindow::print(thread_db* tdbb, string& plan, bool detailed, unsigned level) const
+	void BufferedStreamWindow::getChildren(Array<const RecordSource*>& children) const
 	{
-		m_next->print(tdbb, plan, detailed, level);
+		children.add(m_next);
+	}
+
+	void BufferedStreamWindow::print(thread_db* tdbb, string& plan, bool detailed, unsigned level, bool recurse) const
+	{
+		if (recurse)
+			m_next->print(tdbb, plan, detailed, level, recurse);
 	}
 
 	void BufferedStreamWindow::markRecursive()
@@ -185,7 +194,8 @@ namespace
 
 WindowedStream::WindowedStream(thread_db* tdbb, Optimizer* opt,
 			ObjectsArray<WindowSourceNode::Window>& windows, RecordSource* next)
-	: m_joinedStream(nullptr)
+	: RecordSource(opt->getCompilerScratch()),
+	  m_joinedStream(nullptr)
 {
 	const auto csb = opt->getCompilerScratch();
 
@@ -334,7 +344,7 @@ WindowedStream::WindowedStream(thread_db* tdbb, Optimizer* opt,
 	}
 }
 
-void WindowedStream::open(thread_db* tdbb) const
+void WindowedStream::internalOpen(thread_db* tdbb) const
 {
 	Request* const request = tdbb->getRequest();
 	Impure* const impure = request->getImpure<Impure>(m_impure);
@@ -361,7 +371,7 @@ void WindowedStream::close(thread_db* tdbb) const
 	}
 }
 
-bool WindowedStream::getRecord(thread_db* tdbb) const
+bool WindowedStream::internalGetRecord(thread_db* tdbb) const
 {
 	JRD_reschedule(tdbb);
 
@@ -388,9 +398,15 @@ bool WindowedStream::lockRecord(thread_db* /*tdbb*/) const
 	return false; // compiler silencer
 }
 
-void WindowedStream::print(thread_db* tdbb, string& plan, bool detailed, unsigned level) const
+void WindowedStream::getChildren(Array<const RecordSource*>& children) const
 {
-	m_joinedStream->print(tdbb, plan, detailed, level);
+	children.add(m_joinedStream);
+}
+
+void WindowedStream::print(thread_db* tdbb, string& plan, bool detailed, unsigned level, bool recurse) const
+{
+	if (recurse)
+		m_joinedStream->print(tdbb, plan, detailed, level, recurse);
 }
 
 void WindowedStream::markRecursive()
@@ -506,9 +522,9 @@ WindowedStream::WindowStream::WindowStream(thread_db* tdbb, CompilerScratch* csb
 	(void) m_exclusion;	// avoid warning
 }
 
-void WindowedStream::WindowStream::open(thread_db* tdbb) const
+void WindowedStream::WindowStream::internalOpen(thread_db* tdbb) const
 {
-	BaseAggWinStream::open(tdbb);
+	BaseAggWinStream::internalOpen(tdbb);
 
 	Request* const request = tdbb->getRequest();
 	Impure* const impure = getImpure(request);
@@ -543,7 +559,7 @@ void WindowedStream::WindowStream::close(thread_db* tdbb) const
 	BaseAggWinStream::close(tdbb);
 }
 
-bool WindowedStream::WindowStream::getRecord(thread_db* tdbb) const
+bool WindowedStream::WindowStream::internalGetRecord(thread_db* tdbb) const
 {
 	JRD_reschedule(tdbb);
 
@@ -871,8 +887,13 @@ bool WindowedStream::WindowStream::getRecord(thread_db* tdbb) const
 	return true;
 }
 
+void WindowedStream::WindowStream::getChildren(Array<const RecordSource*>& children) const
+{
+	children.add(m_next);
+}
+
 void WindowedStream::WindowStream::print(thread_db* tdbb, string& plan, bool detailed,
-	unsigned level) const
+	unsigned level, bool recurse) const
 {
 	if (detailed)
 	{
@@ -880,7 +901,8 @@ void WindowedStream::WindowStream::print(thread_db* tdbb, string& plan, bool det
 		printOptInfo(plan);
 	}
 
-	m_next->print(tdbb, plan, detailed, level);
+	if (recurse)
+		m_next->print(tdbb, plan, detailed, level, recurse);
 }
 
 void WindowedStream::WindowStream::findUsedStreams(StreamList& streams, bool expandAll) const

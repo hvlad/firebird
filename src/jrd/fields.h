@@ -223,3 +223,7 @@
 
 	FIELD(fld_keyword_name	, nam_keyword_name	, dtype_varying	, METADATA_IDENTIFIER_CHAR_LEN, dsc_text_type_ascii		, NULL		, false)
 	FIELD(fld_keyword_reserved, nam_keyword_reserved, dtype_boolean, 1						, 0							, NULL		, false)
+
+	FIELD(fld_short_description, nam_short_description, dtype_varying, 255 * METADATA_BYTES_PER_CHAR, dsc_text_type_metadata, NULL	, true)
+	FIELD(fld_seconds_interval, nam_seconds_interval, dtype_long, sizeof(SLONG)				, 0							, NULL		, true)
+	FIELD(fld_prof_ses_id	, nam_prof_ses_id	, dtype_int64	, sizeof(SINT64)			, 0							, NULL		, true)

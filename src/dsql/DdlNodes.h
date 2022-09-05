@@ -2066,7 +2066,7 @@ private:
 class MappingNode : public DdlNode, private ExecInSecurityDb
 {
 public:
-	enum OP {MAP_ADD, MAP_MOD, MAP_RPL, MAP_DROP};
+	enum OP {MAP_ADD, MAP_MOD, MAP_RPL, MAP_DROP, MAP_COMMENT};
 
 	MappingNode(MemoryPool& p, OP o, const MetaName& nm)
 		: DdlNode(p),
@@ -2077,6 +2077,7 @@ public:
 		  fromType(NULL),
 		  from(NULL),
 		  to(NULL),
+		  comment(NULL),
 		  op(o),
 		  mode('#'),
 		  global(false),
@@ -2096,7 +2097,8 @@ protected:
 	{
 		statusVector << Firebird::Arg::Gds(isc_dsql_mapping_failed) << name <<
 			(op == MAP_ADD ? "CREATE" : op == MAP_MOD ?
-			 "ALTER" : op == MAP_RPL ? "CREATE OR ALTER" : "DROP");
+			 "ALTER" : op == MAP_RPL ? "CREATE OR ALTER" : op == MAP_DROP ?
+			 "DROP" : "COMMENT ON");
 	}
 	void runInSecurityDb(SecDbContext* secDbContext);
 
@@ -2111,6 +2113,7 @@ public:
 	MetaName* fromType;
 	IntlString* from;
 	MetaName* to;
+	Firebird::string* comment;
 	OP op;
 	char mode;	// * - any source, P - plugin, M - mapping, S - any serverwide plugin
 	bool global;

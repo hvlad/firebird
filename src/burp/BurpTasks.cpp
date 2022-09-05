@@ -1,7 +1,7 @@
 /*
  *	PROGRAM:	JRD Backup and Restore Program
  *	MODULE:		BurpTasks.cpp
- *	DESCRIPTION:	
+ *	DESCRIPTION:
  *
  * The contents of this file are subject to the Interbase Public
  * License Version 1.0 (the "License"); you may not use this file
@@ -356,7 +356,7 @@ IOBuffer* BackupRelationTask::renewBuffer(BurpGlobals* tdgbl)
 			used = newBuf->getSize() - used;
 			memcpy(p, tdgbl->mvol_io_data, used);
 		}
-		else 
+		else
 		{
 			oldBuf->setUsed(oldBuf->getSize());
 			oldBuf->linkNext(newBuf);
@@ -389,7 +389,7 @@ void BackupRelationTask::releaseBuffer(Item& item)
 		oldBuf->setUsed(used);
 		putDirtyBuffer(oldBuf);
 	}
-	else 
+	else
 	{
 		oldBuf->clear();
 		putCleanBuffer(oldBuf);
@@ -507,7 +507,7 @@ void BackupRelationTask::initItem(BurpGlobals* tdgbl, Item& item)
 			// add snapshot id
 			tpb.insertBigInt(isc_tpb_at_snapshot_number, m_masterGbl->tr_snapshot);
 
-			item.m_tra = item.m_att->startTransaction(&status, 
+			item.m_tra = item.m_att->startTransaction(&status,
 							tpb.getBufferLength(), tpb.getBuffer());
 
 			if (status->getState() & IStatus::STATE_ERRORS)
@@ -619,7 +619,7 @@ BackupRelationTask::Item::EnsureUnlockBuffer::~EnsureUnlockBuffer()
 }
 
 
-/// class RestoreRelationTask 
+/// class RestoreRelationTask
 
 RestoreRelationTask::RestoreRelationTask(BurpGlobals* tdgbl) : Task(),
 	m_masterGbl(tdgbl),
@@ -882,8 +882,8 @@ void RestoreRelationTask::initItem(BurpGlobals* tdgbl, Item& item)
 			FbLocalStatus status;
 			DispatcherPtr provider;
 
-			ClumpletWriter dpb(ClumpletReader::dpbList, 128, 
-				m_masterGbl->gbl_dpb_data.begin(), 
+			ClumpletWriter dpb(ClumpletReader::dpbList, 128,
+				m_masterGbl->gbl_dpb_data.begin(),
 				m_masterGbl->gbl_dpb_data.getCount());
 
 			dpb.deleteWithTag(isc_dpb_gbak_attach);
@@ -1003,7 +1003,7 @@ void RestoreRelationTask::putDirtyBuffer(IOBuffer* buf)
 
 IOBuffer* RestoreRelationTask::renewBuffer(BurpGlobals* tdgbl)
 {
-	// table writer needs new dirty buffer with records 
+	// table writer needs new dirty buffer with records
 
 	fb_assert(!tdgbl->master);
 
@@ -1028,7 +1028,7 @@ IOBuffer* RestoreRelationTask::renewBuffer(BurpGlobals* tdgbl)
 
 	if (newBuf)
 		newBuf->lock();
-	else 
+	else
 		newBuf = task->getDirtyBuffer();
 
 	if (!newBuf)

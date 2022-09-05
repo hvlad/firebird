@@ -24,6 +24,7 @@
 #define CLASSES_DOUBLY_LINKED_LIST_H
 
 #include "../common/classes/alloc.h"
+#include <initializer_list>
 #include <list>
 #include <utility>
 
@@ -44,6 +45,11 @@ public:
 public:
 	explicit DoublyLinkedList(MemoryPool& p)
 		: stdList(p)
+	{
+	}
+
+	DoublyLinkedList(MemoryPool& p, std::initializer_list<T> items)
+		: stdList(std::move(items), p)
 	{
 	}
 
@@ -98,6 +104,11 @@ public:
 		return stdList.cend();
 	}
 
+	constexpr FB_SIZE_T getCount() const noexcept
+	{
+		return stdList.size();
+	}
+
 	constexpr bool isEmpty() const noexcept
 	{
 		return stdList.empty();
@@ -128,6 +139,18 @@ public:
 		stdList.push_back(std::move(value));
 	}
 
+	constexpr void splice(ConstIterator pos, DoublyLinkedList<T>& other)
+	{
+		fb_assert(stdList.get_allocator() == other.stdList.get_allocator());
+		stdList.splice(pos, other.stdList);
+	}
+
+	constexpr void splice(ConstIterator pos, DoublyLinkedList<T>&& other)
+	{
+		fb_assert(stdList.get_allocator() == other.stdList.get_allocator());
+		stdList.splice(pos, std::move(other.stdList));
+	}
+
 	constexpr void splice(ConstIterator pos, DoublyLinkedList<T>& other, ConstIterator it)
 	{
 		fb_assert(stdList.get_allocator() == other.stdList.get_allocator());
@@ -138,6 +161,18 @@ public:
 	{
 		fb_assert(stdList.get_allocator() == other.stdList.get_allocator());
 		stdList.splice(pos, std::move(other.stdList), it);
+	}
+
+	constexpr void splice(ConstIterator pos, DoublyLinkedList<T>& other, ConstIterator first, ConstIterator last)
+	{
+		fb_assert(stdList.get_allocator() == other.stdList.get_allocator());
+		stdList.splice(pos, other.stdList, first, last);
+	}
+
+	constexpr void splice(ConstIterator pos, DoublyLinkedList<T>&& other, ConstIterator first, ConstIterator last)
+	{
+		fb_assert(stdList.get_allocator() == other.stdList.get_allocator());
+		stdList.splice(pos, std::move(other.stdList), first, last);
 	}
 
 private:

@@ -133,7 +133,7 @@ void TraceSvcJrd::startSession(TraceSession& session, bool interactive)
 			char* buff = session.ses_logfile.getBuffer(GUID_BUFF_SIZE);
 			GuidToString(buff, &guid);
 
-			session.ses_logfile.insert(0, "fb_trace.");
+			session.ses_logfile.insert(0, FB_TRACE_FILE);
 		}
 
 		storage->addSession(session);
@@ -210,7 +210,7 @@ bool TraceSvcJrd::changeFlags(ULONG id, int setFlags, int clearFlags)
 			session.ses_flags |= setFlags;
 			session.ses_flags &= ~clearFlags;
 
-			if (saveFlags != session.ses_flags) 
+			if (saveFlags != session.ses_flags)
 				storage->updateFlags(session);
 
 			return true;

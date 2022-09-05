@@ -142,6 +142,10 @@ void		MET_get_domain(Jrd::thread_db*, MemoryPool& csbPool, const Jrd::MetaName&,
 Jrd::MetaName MET_get_relation_field(Jrd::thread_db*, MemoryPool& csbPool,
 	const Jrd::MetaName&, const Jrd::MetaName&, dsc*, Jrd::FieldInfo*);
 void		MET_update_partners(Jrd::thread_db*);
+
+void MET_store_dependencies(Jrd::thread_db*, Firebird::Array<Jrd::CompilerScratch::Dependency>& dependencies,
+	const Jrd::jrd_rel*, const Jrd::MetaName&, int, Jrd::jrd_tra*);
+
 int			MET_get_linger(Jrd::thread_db*);
 Nullable<bool>	MET_get_ss_definer(Jrd::thread_db*);
 

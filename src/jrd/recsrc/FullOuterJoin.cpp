@@ -38,7 +38,9 @@ using namespace Jrd;
 // ----------------------------
 
 FullOuterJoin::FullOuterJoin(CompilerScratch* csb, RecordSource* arg1, RecordSource* arg2)
-	: m_arg1(arg1), m_arg2(arg2)
+	: RecordSource(csb),
+	  m_arg1(arg1),
+	  m_arg2(arg2)
 {
 	fb_assert(m_arg1 && m_arg2);
 
@@ -46,7 +48,7 @@ FullOuterJoin::FullOuterJoin(CompilerScratch* csb, RecordSource* arg1, RecordSou
 	m_cardinality = arg1->getCardinality() + arg2->getCardinality();
 }
 
-void FullOuterJoin::open(thread_db* tdbb) const
+void FullOuterJoin::internalOpen(thread_db* tdbb) const
 {
 	Request* const request = tdbb->getRequest();
 	Impure* const impure = request->getImpure<Impure>(m_impure);
@@ -75,7 +77,7 @@ void FullOuterJoin::close(thread_db* tdbb) const
 	}
 }
 
-bool FullOuterJoin::getRecord(thread_db* tdbb) const
+bool FullOuterJoin::internalGetRecord(thread_db* tdbb) const
 {
 	JRD_reschedule(tdbb);
 
@@ -111,21 +113,31 @@ bool FullOuterJoin::lockRecord(thread_db* tdbb) const
 	return false; // compiler silencer
 }
 
-void FullOuterJoin::print(thread_db* tdbb, string& plan, bool detailed, unsigned level) const
+void FullOuterJoin::getChildren(Array<const RecordSource*>& children) const
+{
+	children.add(m_arg1);
+	children.add(m_arg2);
+}
+
+void FullOuterJoin::print(thread_db* tdbb, string& plan, bool detailed, unsigned level, bool recurse) const
 {
 	if (detailed)
 	{
 		plan += printIndent(++level) + "Full Outer Join";
-		m_arg1->print(tdbb, plan, true, level);
-		m_arg2->print(tdbb, plan, true, level);
+
+		if (recurse)
+		{
+			m_arg1->print(tdbb, plan, true, level, recurse);
+			m_arg2->print(tdbb, plan, true, level, recurse);
+		}
 	}
 	else
 	{
 		level++;
 		plan += "JOIN (";
-		m_arg1->print(tdbb, plan, false, level);
+		m_arg1->print(tdbb, plan, false, level, recurse);
 		plan += ", ";
-		m_arg2->print(tdbb, plan, false, level);
+		m_arg2->print(tdbb, plan, false, level, recurse);
 		plan += ")";
 	}
 }

@@ -53,6 +53,7 @@ RE2_BUILD_FLG=@RE2_BUILD@
 SYSTEM_BOOST_FLG=@SYSTEM_BOOST@
 
 FB_BUILD=$(GEN_ROOT)/$(TARGET)/firebird
+
 ifeq ($(IsCross), Y)
   FIREBIRD=$(GEN_ROOT)/Native/firebird
 else
@@ -71,6 +72,7 @@ LIB=$(FB_BUILD)/lib
 BIN=$(FB_BUILD)/bin
 PLUGINS=$(FB_BUILD)/plugins
 RBIN=$(FIREBIRD)/bin
+FB_TESTS_DIR=$(FB_BUILD)/tests
 
 # This picks up the current directory and maps it to the equivalent module
 # in the src and gen area.
@@ -200,7 +202,6 @@ EXE_LINK = $(CXX) $(GLOB_OPTIONS) $(CXXFLAGS) -static-libstdc++
 endif
 
 STATICLIB_LINK = $(AR) crus
-STATICEXE_LINK = $(CXX) $(GLOB_OPTIONS) $(CXXFLAGS) -static-libstdc++
 
 LINK_LIBS = @LIBS@ $(DECLIB) $(RE2LIB) $(I128LIB) $(LIBCDSLIB)
 SO_LINK_LIBS = @LIBS@ $(DECLIB) $(RE2LIB) $(I128LIB) $(LIBCDSLIB)
@@ -255,6 +256,7 @@ LIBFIREBIRD_BASENAME = $(LIB)/$(LibrarySoName)
 EngineFileName=libEngine${OdsVersion}
 EngineSoName=$(EngineFileName).${SHRLIB_EXT}
 ENGINE_SONAME = $(PLUGINS)/$(EngineSoName)
+ENGINE_TEST = $(FB_TESTS_DIR)/$(EngineFileName)_test$(EXEC_EXT)
 
 # intl will load dynamically, and having the whole soname set with version
 # confuses the dynamic load process.  So we only have the .$(SHRLIB_EXT) file
@@ -393,6 +395,7 @@ LINK_PLUG_LIBS = -L$(LIB) $(SO_LINK_LIBS)
 # Pay attention - we place common library into obj, not lib dir
 # It's just a set of object files, prepared to be used by ld, not an output library
 COMMON_LIB	= $(OBJ)/common.a
+COMMON_TEST = $(FB_TESTS_DIR)/common_test$(EXEC_EXT)
 
 # From utilities
 CREATE_DB	= $(RBIN)/create_db$(EXEC_EXT)

@@ -1059,9 +1059,12 @@ ULONG Decimal128::makeIndexKey(vary* buf)
 	unsigned char coeff[DECQUAD_Pmax + 2];
 	int sign = decQuadGetCoefficient(&dec, coeff);
 	int exp = decQuadGetExponent(&dec);
-	const int bias = DECQUAD_Bias;
-	const unsigned pMax = DECQUAD_Pmax;
 
+	return makeBcdKey(buf, coeff, sign, exp, DECQUAD_Bias, DECQUAD_Pmax);
+}
+
+ULONG Decimal128::makeBcdKey(vary* buf, unsigned char *coeff, int sign, int exp, const int bias, const unsigned pMax)
+{
 	// normalize coeff & exponent
 	unsigned dig = digits(pMax, coeff, exp);
 

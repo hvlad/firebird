@@ -553,6 +553,18 @@ public:
 			!Cmp::greaterThan(KeyOfValue::generate(this->data[lowBound]), item);
 	}
 
+	bool findAndRemove(const Key& item)
+	{
+		size_type pos;
+		if (find(item, pos))
+		{
+			this->remove(pos);
+			return true;
+		}
+
+		return false;
+	}
+
 	bool exist(const Key& item) const
 	{
 		size_type pos;	// ignored

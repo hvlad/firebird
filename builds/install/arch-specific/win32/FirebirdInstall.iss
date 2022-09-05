@@ -23,9 +23,9 @@
 
 ;   Usage Notes:
 ;
-;   This script has been designed to work with Inno Setup v6.1.2
+;   This script has been designed to work with Inno Setup v6.2.1
 ;   It is available as a quick start pack from here:
-;     http://www.jrsoftware.org/isdl.php
+;     https://www.jrsoftware.org/isdl.php
 ;
 ;
 ;   Known bugs and problems etc etc.
@@ -77,8 +77,8 @@
 #define PackageNumber "0"
 #endif
 #define FilenameSuffix GetEnv("FBBUILD_FILENAME_SUFFIX")
-#if FilenameSuffix != "" && pos('_',FilenameSuffix) == 0
-#define FilenameSuffix "_" + FilenameSuffix
+#if FilenameSuffix != "" && pos('-',FilenameSuffix) == 0
+#define FilenameSuffix "-" + FilenameSuffix
 #endif
 
 ;-------Start of Innosetup script debug flags section
@@ -117,8 +117,9 @@
 ;We speed up compilation (and hence testing) by not compressing contents.
 #undef compression
 
-;Default to x64 for testing
+;Default to x64_release for testing
 #define PlatformTarget "x64"
+#define ConfigurationTarget "release"
 #endif
 ;-------#ifdef iss_debug
 
@@ -216,6 +217,15 @@
 #endif
 #endif
 
+;---- If we haven't already set ConfigurationTarget then pick it up from the environment.
+#ifndef ConfigurationTarget
+#define ConfigurationTarget GetEnv("FBBUILD_BUILDTYPE")
+#endif
+#if ConfigurationTarget == ""
+;Assume release
+#define ConfigurationTarget "release"
+#endif
+
 #if FB_BUILD_TYPE == "T"
 ;If we are still under development we can ignore some missing files.
 #define SkipFileIfDevStatus " skipifsourcedoesntexist "
@@ -224,7 +234,7 @@
 #endif
 
 ;This location is relative to SourceDir (declared below)
-#define FilesDir="output_" + PlatformTarget
+#define FilesDir="output_" + PlatformTarget + "_" + ConfigurationTarget
 #if PlatformTarget == "x64"
 #define WOW64Dir="output_win32"
 #endif
@@ -252,12 +262,12 @@
 
 ;Some more strings to distinguish the name of final executable
 #ifdef ship_pdb
-#define pdb_str="_pdb"
+#define pdb_str="-pdb"
 #else
 #define pdb_str=""
 #endif
 #if GetEnv("FBBUILD_BUILDTYPE") == "debug"
-#define debug_str="_debug"
+#define debug_str="-debug"
 #else
 #define debug_str=""
 #endif
@@ -281,8 +291,8 @@ AppVersion={#MyAppVerString}
 VersionInfoVersion={#MyAppVerString}
 
 SourceDir={#Root}
-OutputBaseFilename={#MyAppName}-{#MyAppVerString}_{#PackageNumber}_{#PlatformTarget}{#debug_str}{#pdb_str}{#FilenameSuffix}
-;OutputManifestFile={#MyAppName}-{#MyAppVerString}_{#PackageNumber}_{#PlatformTarget}{#debug_str}{#pdb_str}{#FilenameSuffix}_Setup-Manifest.txt
+OutputBaseFilename={#MyAppName}-{#MyAppVerString}-{#PackageNumber}-{#PlatformTarget}{#debug_str}{#pdb_str}{#FilenameSuffix}
+;OutputManifestFile={#MyAppName}-{#MyAppVerString}-{#PackageNumber}-{#PlatformTarget}{#debug_str}{#pdb_str}{#FilenameSuffix}-Setup-Manifest.txt
 OutputDir=builds\install_images
 ;!!! These directories are as seen from SourceDir !!!
 #define ScriptsDir "builds\install\arch-specific\win32"
@@ -397,7 +407,7 @@ Filename: {app}\instreg.exe; Parameters: "install "; StatusMsg: {cm:instreg}; Mi
 Filename: {app}\instclient.exe; Parameters: "install fbclient"; StatusMsg: {cm:instclientCopyFbClient}; MinVersion: {#MinVer}; Components: ClientComponent; Flags: runminimized; Check: CopyFBClientLib;
 Filename: {app}\instclient.exe; Parameters: "install gds32"; StatusMsg: {cm:instclientGenGds32}; MinVersion: {#MinVer}; Components: ClientComponent; Flags: runminimized; Check: CopyGds32
 #if PlatformTarget == "x64"
-Filename: {app}\WOW64\instclient.exe; Parameters: "install fbclient"; StatusMsg: {cm:instclientCopyFbClient}; MinVersion: {#MinVer}; Components: ClientComponent; Flags: runminimized 32bit; Check: CopyFBClientLib;
+Filename: {app}\WOW64\instclient.exe; Parameters: "install fbclient"; StatusMsg: {cm:instclientCopyFbClient}; MinVersion: {#MinVer}; Components: ClientComponent; Flags: runminimized 32bit; Check: CopyFBClientLib
 Filename: {app}\WOW64\instclient.exe; Parameters: "install gds32"; StatusMsg: {cm:instclientGenGds32}; MinVersion: {#MinVer}; Components: ClientComponent; Flags: runminimized 32bit; Check: CopyGds32
 #endif
 
@@ -500,10 +510,10 @@ Source: {#FilesDir}\icuin??.dll; DestDir: {app}; Components: ClientComponent; Fl
 Source: {#FilesDir}\icudt??.dll; DestDir: {app}; Components: ClientComponent; Flags: sharedfile ignoreversion
 Source: {#FilesDir}\icudt*.dat;  DestDir: {app}; Components: ClientComponent; Flags: sharedfile ignoreversion
 #if PlatformTarget == "x64"
-Source: {#WOW64Dir}\icuuc??.dll; DestDir: {app}\WOW64; Components: ClientComponent; Flags: sharedfile ignoreversion
-Source: {#WOW64Dir}\icuin??.dll; DestDir: {app}\WOW64; Components: ClientComponent; Flags: sharedfile ignoreversion
-Source: {#WOW64Dir}\icudt??.dll; DestDir: {app}\WOW64; Components: ClientComponent; Flags: sharedfile ignoreversion
-Source: {#WOW64Dir}\icudt*.dat;  DestDir: {app}\WOW64; Components: ClientComponent; Flags: sharedfile ignoreversion
+Source: {#WOW64Dir}\icuuc??.dll; DestDir: {app}\WOW64; Components: ClientComponent; Flags: sharedfile ignoreversion {#SkipFileIfDevStatus}
+Source: {#WOW64Dir}\icuin??.dll; DestDir: {app}\WOW64; Components: ClientComponent; Flags: sharedfile ignoreversion {#SkipFileIfDevStatus}
+Source: {#WOW64Dir}\icudt??.dll; DestDir: {app}\WOW64; Components: ClientComponent; Flags: sharedfile ignoreversion {#SkipFileIfDevStatus}
+Source: {#WOW64Dir}\icudt*.dat;  DestDir: {app}\WOW64; Components: ClientComponent; Flags: sharedfile ignoreversion {#SkipFileIfDevStatus}
 #endif
 
 #if PlatformTarget =="Win32"
@@ -512,7 +522,7 @@ Source: {#FilesDir}\fbrmclib.dll; DestDir: {app}; Components: ServerComponent; F
 
 Source: {#FilesDir}\zlib1.dll; DestDir: {app}; Components: ClientComponent; Flags: sharedfile ignoreversion
 #if PlatformTarget == "x64"
-Source: {#WOW64Dir}\zlib1.dll; DestDir: {app}\WOW64; Components: ClientComponent; Flags: sharedfile ignoreversion
+Source: {#WOW64Dir}\zlib1.dll; DestDir: {app}\WOW64; Components: ClientComponent; Flags: sharedfile ignoreversion {#SkipFileIfDevStatus}
 #endif
 
 ;Rules for installation of MS runtimes are simplified with MSVC10
@@ -549,7 +559,7 @@ Source: {#FilesDir}\doc\sql.extensions\*.*; DestDir: {app}\doc\sql.extensions; C
 Source: {#FilesDir}\include\*.*; DestDir: {app}\include; Components: DevAdminComponent; Flags: ignoreversion recursesubdirs createallsubdirs;
 Source: {#FilesDir}\intl\fbintl.dll; DestDir: {app}\intl; Components: ServerComponent; Flags: sharedfile ignoreversion;
 Source: {#FilesDir}\intl\fbintl.conf; DestDir: {app}\intl; Components: ServerComponent; Flags: onlyifdoesntexist
-Source: {#FilesDir}\lib\*.*; DestDir: {app}\lib; Components: DevAdminComponent; Flags: ignoreversion;
+Source: {#FilesDir}\lib\*.lib; DestDir: {app}\lib; Components: DevAdminComponent; Flags: ignoreversion;
 #if PlatformTarget == "x64"
 Source: {#WOW64Dir}\lib\*.lib; DestDir: {app}\WOW64\lib; Components: DevAdminComponent; Flags: ignoreversion {#SkipFileIfDevStatus}
 #endif
@@ -566,7 +576,7 @@ Source: {#FilesDir}\plugins\chacha.dll; DestDir: {app}\plugins; Components: Clie
 Source: {#FilesDir}\plugins\*.conf; DestDir: {app}\plugins; Components: ServerComponent; Flags: ignoreversion;
 Source: {#FilesDir}\plugins\udr\*.*; DestDir: {app}\plugins\udr; Components: ServerComponent; Flags: ignoreversion;
 #if PlatformTarget == "x64"
-Source: {#WOW64Dir}\plugins\chacha*.dll; DestDir: {app}\WOW64\plugins; Components: ClientComponent; Flags: ignoreversion;
+Source: {#WOW64Dir}\plugins\chacha*.dll; DestDir: {app}\WOW64\plugins; Components: ClientComponent; Flags: ignoreversion {#SkipFileIfDevStatus};
 #endif
 
 Source: {#FilesDir}\misc\*.*; DestDir: {app}\misc; Components: ServerComponent; Flags: ignoreversion createallsubdirs recursesubdirs ;
@@ -588,7 +598,7 @@ Source: {#FilesDir}\gfix.pdb; DestDir: {app}; Components: DevAdminComponent;
 Source: {#FilesDir}\isql.pdb; DestDir: {app}; Components: ClientComponent;
 Source: {#FilesDir}\plugins\*.pdb; DestDir: {app}\plugins; Components: ServerComponent;
 #if PlatformTarget == "x64"
-Source: {#WOW64Dir}\fbclient.pdb; DestDir: {app}\WOW64; Components: ClientComponent;
+Source: {#WOW64Dir}\fbclient.pdb; DestDir: {app}\WOW64; Components: ClientComponent; Flags: {#SkipFileIfDevStatus};
 #endif
 #endif
 

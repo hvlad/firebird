@@ -460,3 +460,7 @@ NAME("RDB$KEYWORD_RESERVED", nam_keyword_reserved)
 
 NAME("MON$COMPILED_STATEMENTS", nam_mon_compiled_statements)
 NAME("MON$COMPILED_STATEMENT_ID", nam_mon_cmp_stmt_id)
+
+NAME("RDB$SHORT_DESCRIPTION", nam_short_description)
+NAME("RDB$SECONDS_INTERVAL", nam_seconds_interval)
+NAME("RDB$PROFILE_SESSION_ID", nam_prof_ses_id)

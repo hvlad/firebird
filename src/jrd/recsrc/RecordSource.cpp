@@ -25,6 +25,7 @@
 #include "../jrd/btr.h"
 #include "../jrd/intl.h"
 #include "../jrd/req.h"
+#include "../jrd/ProfilerManager.h"
 #include "../jrd/cmp_proto.h"
 #include "../jrd/dpm_proto.h"
 #include "../jrd/err_proto.h"
@@ -45,6 +46,72 @@ using namespace Jrd;
 
 // Record source class
 // -------------------
+
+RecordSource::RecordSource(CompilerScratch* csb)
+	: m_cursorProfileId(csb->csb_currentCursorProfileId),
+	  m_recSourceProfileId(csb->csb_nextRecSourceProfileId++)
+{
+}
+
+void RecordSource::open(thread_db* tdbb) const
+{
+	const auto attachment = tdbb->getAttachment();
+	const auto request = tdbb->getRequest();
+
+	const auto profilerManager = attachment->isProfilerActive() && !request->hasInternalStatement() ?
+		attachment->getProfilerManager(tdbb) :
+		nullptr;
+
+	const SINT64 lastPerfCounter = profilerManager ?
+		fb_utils::query_performance_counter() :
+		0;
+
+	if (profilerManager)
+	{
+		profilerManager->prepareRecSource(tdbb, request, this);
+		profilerManager->beforeRecordSourceOpen(request, this);
+	}
+
+	internalOpen(tdbb);
+
+	if (profilerManager)
+	{
+		const SINT64 currentPerfCounter = fb_utils::query_performance_counter();
+		ProfilerManager::Stats stats(currentPerfCounter - lastPerfCounter);
+		profilerManager->afterRecordSourceOpen(request, this, stats);
+	}
+}
+
+bool RecordSource::getRecord(thread_db* tdbb) const
+{
+	const auto attachment = tdbb->getAttachment();
+	const auto request = tdbb->getRequest();
+
+	const auto profilerManager = attachment->isProfilerActive() && !request->hasInternalStatement() ?
+		attachment->getProfilerManager(tdbb) :
+		nullptr;
+
+	const SINT64 lastPerfCounter = profilerManager ?
+		fb_utils::query_performance_counter() :
+		0;
+
+	if (profilerManager)
+	{
+		profilerManager->prepareRecSource(tdbb, request, this);
+		profilerManager->beforeRecordSourceGetRecord(request, this);
+	}
+
+	const auto ret = internalGetRecord(tdbb);
+
+	if (profilerManager)
+	{
+		const SINT64 currentPerfCounter = fb_utils::query_performance_counter();
+		ProfilerManager::Stats stats(currentPerfCounter - lastPerfCounter);
+		profilerManager->afterRecordSourceGetRecord(request, this, stats);
+	}
+
+	return ret;
+}
 
 string RecordSource::printName(thread_db* tdbb, const string& name, bool quote)
 {
@@ -194,7 +261,9 @@ RecordSource::~RecordSource()
 // ------------------
 
 RecordStream::RecordStream(CompilerScratch* csb, StreamType stream, const Format* format)
-	: m_stream(stream), m_format(format ? format : csb->csb_rpt[stream].csb_format)
+	: RecordSource(csb),
+	  m_stream(stream),
+	  m_format(format ? format : csb->csb_rpt[stream].csb_format)
 {
 	fb_assert(m_format);
 }

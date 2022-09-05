@@ -32,7 +32,7 @@ RUN \
 	curl -SL --output gcc-${GCC_VERSION}.tar.xz https://ftp.gnu.org/gnu/gcc/gcc-${GCC_VERSION}/gcc-${GCC_VERSION}.tar.xz && \
 	curl -SL --output libtool-${LIBTOOL_VERSION}.tar.gz https://ftpmirror.gnu.org/libtool/libtool-${LIBTOOL_VERSION}.tar.gz && \
 	curl -SL --output make-${MAKE_VERSION}.tar.bz2 https://ftp.gnu.org/gnu/make/make-${MAKE_VERSION}.tar.gz && \
-	curl -SL --output binutils-${BINUTILS_VERSION}.tar.bz2 https://mirror.nbtelecom.com.br/gnu/binutils/binutils-${BINUTILS_VERSION}.tar.bz2 && \
+	curl -SL --output binutils-${BINUTILS_VERSION}.tar.bz2 https://ftpmirror.gnu.org/gnu/binutils/binutils-${BINUTILS_VERSION}.tar.bz2 && \
 	curl -SL --output ncurses-${NCURSES_VERSION}.tar.gz https://ftp.gnu.org/pub/gnu/ncurses/ncurses-${NCURSES_VERSION}.tar.gz && \
 	curl -SL --output icu4c-${ICU_VERSION}-src.tgz https://github.com/unicode-org/icu/releases/download/release-`echo ${ICU_VERSION} | tr _ -`/icu4c-${ICU_VERSION}-src.tgz
 

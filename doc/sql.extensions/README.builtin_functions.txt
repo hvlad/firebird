@@ -433,6 +433,8 @@ Notes:
     3) WEEKDAY and YEARDAY cannot be used. It doesn't make sense.
     4) YEAR, MONTH and DAY could not be used with time values.
     5) All timestamp_part values could be used with timestamp values.
+    6) In Firebird 3.0.8 and 4.0.1 the return type for unit MILLISECOND was changed
+       from BIGINT to NUMERIC(18, 1).
 
 Example:
     select datediff(week from cast('yesterday' as timestamp) - 7 to current_timestamp)

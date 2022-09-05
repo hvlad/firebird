@@ -161,7 +161,7 @@ Isql enhancements in Firebird v3.
 
 9) SET KEEP_TRAN_PARAMS option.
 
-Author: Vladyslav Khorsun <hvlad at users sourcefoege net>
+Author: Vladyslav Khorsun <hvlad at users sourceforge net>
 
 When set to ON, isql keeps text of following successful SET TRANSACTION statement and
 new DML transactions is started using the same SQL text (instead of defaul CONCURRENCY
@@ -253,3 +253,74 @@ It requires server v4.0.1 or greater to work.
 Warning: this feature is very tied to engine internals and its usage is discouraged
 if you do not understand very well how these internals are subject to change between
 versions.
+
+
+
+Isql enhancements in Firebird v5.
+---------------------------------
+
+11) SET PER_TABLE_STATS option.
+
+Author: Vladyslav Khorsun <hvlad at users sourceforge net>
+
+When set to ON show per-table run-time statistics after query execution.
+It is set to OFF by default. Also, it is independent of SET STATS option.
+The name PER_TABLE_STATS could be shortened up to PER_TAB. Tables in output
+are sorted by its relation id's.
+
+Example:
+
+-- check current value
+SQL> SET;
+...
+Print per-table stats:   OFF
+...
+
+-- turn per-table stats on
+SQL> SET PER_TABLE_STATS ON;
+SQL>
+SQL> SELECT COUNT(*) FROM RDB$RELATIONS JOIN RDB$RELATION_FIELDS USING (RDB$RELATION_NAME);
+
+                COUNT
+=====================
+                  534
+
+Per table statistics:
+--------------------------------+---------+---------+---------+---------+---------+---------+---------+---------+
+ Table name                     | Natural | Index   | Insert  | Update  | Delete  | Backout | Purge   | Expunge |
+--------------------------------+---------+---------+---------+---------+---------+---------+---------+---------+
+RDB$INDICES                     |         |        3|         |         |         |         |         |         |
+RDB$RELATION_FIELDS             |         |      534|         |         |         |         |         |         |
+RDB$RELATIONS                   |       59|         |         |         |         |         |         |         |
+RDB$SECURITY_CLASSES            |         |        3|         |         |         |         |         |         |
+--------------------------------+---------+---------+---------+---------+---------+---------+---------+---------+
+
+Note, here are present some system tables that was not listed in query - it is
+because engine reads some metadata when preparing the query.
+
+-- turn common stats on
+SQL> SET STATS ON;
+SQL> SELECT COUNT(*) FROM RDB$RELATIONS JOIN RDB$RELATION_FIELDS USING (RDB$RELATION_NAME);
+
+                COUNT
+=====================
+                  534
+
+Current memory = 3828960
+Delta memory = 208
+Max memory = 3858576
+Elapsed time = 0.001 sec
+Buffers = 256
+Reads = 0
+Writes = 0
+Fetches = 715
+Per table statistics:
+--------------------------------+---------+---------+---------+---------+---------+---------+---------+---------+
+ Table name                     | Natural | Index   | Insert  | Update  | Delete  | Backout | Purge   | Expunge |
+--------------------------------+---------+---------+---------+---------+---------+---------+---------+---------+
+RDB$RELATION_FIELDS             |         |      534|         |         |         |         |         |         |
+RDB$RELATIONS                   |       59|         |         |         |         |         |         |         |
+--------------------------------+---------+---------+---------+---------+---------+---------+---------+---------+
+
+-- turn per-table stats off, using shortened name
+SQL> SET PER_TAB OFF;

@@ -216,8 +216,12 @@ namespace Replication
 		void linkSelf();
 		bool unlinkSelf();
 
-		bool initialize(Firebird::SharedMemoryBase* shmem, bool init);
-		void mutexBug(int osErrorCode, const char* text);
+		bool initialize(Firebird::SharedMemoryBase* shmem, bool init) override;
+		void mutexBug(int osErrorCode, const char* text) override;
+
+		USHORT getType() const override { return Firebird::SharedMemoryBase::SRAM_CHANGELOG_STATE; }
+		USHORT getVersion() const override { return STATE_VERSION; };
+		const char* getName() const override { return "ChangeLog"; }
 
 		bool validateSegment(const Segment* segment)
 		{

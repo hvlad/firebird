@@ -3314,11 +3314,11 @@ static rhd* locate_space(thread_db* tdbb,
 	if ((type == DPM_primary) && relPages->rel_last_free_pri_dp ||
 		isBlob && relPages->rel_last_free_blb_dp)
 	{
-		window->win_page = (type == DPM_primary) ? relPages->rel_last_free_pri_dp : 
+		window->win_page = (type == DPM_primary) ? relPages->rel_last_free_pri_dp :
 												   relPages->rel_last_free_blb_dp;
 		data_page* dpage = (data_page*) CCH_FETCH(tdbb, window, LCK_write, pag_undefined);
 
-		const UCHAR wrongFlags = dpg_orphan | 
+		const UCHAR wrongFlags = dpg_orphan |
 			((type == DPM_primary) ? dpg_secondary | dpg_large : 0);
 
 		const bool pageOk =

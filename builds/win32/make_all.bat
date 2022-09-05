@@ -2,16 +2,14 @@
 set ERRLEV=0
 
 :: Set env vars
-@call setenvvar.bat
+@call setenvvar.bat %*
 
 @if errorlevel 1 (call :ERROR Executing setenvvar.bat failed & goto :EOF)
 
 :: verify that boot was run before
 
-@if not exist %FB_GEN_DIR%\firebird.msg (goto :HELP_BOOT & goto :EOF)
+@if not exist %FB_BIN_DIR%\firebird.msg (goto :HELP_BOOT & goto :EOF)
 
-
-@call set_build_target.bat %*
 
 ::==========
 :: MAIN
@@ -30,11 +28,8 @@ if errorlevel 1 call :ERROR build failed - see make_all_%FB_TARGET_PLATFORM%.log
 
 ::===========
 :MOVE
-@echo Copying files to output
-@set FB_OUTPUT_DIR=%FB_ROOT_PATH%\output_%FB_TARGET_PLATFORM%
-@del %FB_ROOT_PATH%\temp\%FB_OBJ_DIR%\firebird\*.exp 2>nul
-@del %FB_ROOT_PATH%\temp\%FB_OBJ_DIR%\firebird\*.lib 2>nul
-@rmdir /q /s %FB_OUTPUT_DIR% 2>nul
+@echo Cleaning output directory
+@rmdir /S /Q "%FB_OUTPUT_DIR%" 2>nul
 
 :: short delay to let OS complete actions by rmdir above
 @timeout 1 >nul
@@ -46,6 +41,7 @@ if errorlevel 1 call :ERROR build failed - see make_all_%FB_TARGET_PLATFORM%.log
 @mkdir %FB_OUTPUT_DIR%\doc\sql.extensions 2>nul
 @mkdir %FB_OUTPUT_DIR%\include 2>nul
 @mkdir %FB_OUTPUT_DIR%\include\firebird 2>nul
+@mkdir %FB_OUTPUT_DIR%\include\firebird\impl 2>nul
 @mkdir %FB_OUTPUT_DIR%\lib 2>nul
 @mkdir %FB_OUTPUT_DIR%\system32 2>nul
 @mkdir %FB_OUTPUT_DIR%\plugins 2>nul
@@ -60,8 +56,8 @@ if errorlevel 1 call :ERROR build failed - see make_all_%FB_TARGET_PLATFORM%.log
 @copy %FB_ROOT_PATH%\temp\%FB_OBJ_DIR%\yvalve\fbclient.lib %FB_OUTPUT_DIR%\lib\fbclient_ms.lib >nul
 @copy %FB_ROOT_PATH%\temp\%FB_OBJ_DIR%\ib_util\ib_util.lib %FB_OUTPUT_DIR%\lib\ib_util_ms.lib >nul
 
-for %%v in (gpre_boot build_msg) do (
-@del %FB_OUTPUT_DIR%\%%v.* 2>nul
+for %%v in (gpre_boot build_msg common_test engine_test) do (
+  @del %FB_OUTPUT_DIR%\%%v.* 2>nul
 )
 
 :: Firebird.conf, etc
@@ -91,9 +87,10 @@ copy %FB_ROOT_PATH%\src\extlib\ib_util.h %FB_OUTPUT_DIR%\include > nul
 copy %FB_ROOT_PATH%\src\jrd\perf.h %FB_OUTPUT_DIR%\include >nul
 copy %FB_ROOT_PATH%\src\include\ibase.h %FB_OUTPUT_DIR%\include > nul
 copy %FB_ROOT_PATH%\src\include\iberror.h %FB_OUTPUT_DIR%\include > nul
+copy %FB_GEN_DIR%\iberror_c.h %FB_OUTPUT_DIR%\include\firebird\impl > nul
 
 :: New API headers
-xcopy %FB_ROOT_PATH%\src\include\firebird %FB_OUTPUT_DIR%\include\firebird /e > nul
+xcopy /y %FB_ROOT_PATH%\src\include\firebird %FB_OUTPUT_DIR%\include\firebird /e > nul
 
 :: UDR
 copy %FB_ROOT_PATH%\src\extlib\*.sql %FB_OUTPUT_DIR%\plugins\udr > nul

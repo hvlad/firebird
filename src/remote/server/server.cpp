@@ -3009,6 +3009,8 @@ void rem_port::disconnect(PACKET* sendL, PACKET* receiveL)
 
 	if (rdb->rdb_svc.hasData() && rdb->rdb_svc->svc_iface)
 	{
+		RefMutexGuard portGuard(*port_cancel_sync, FB_FUNCTION);
+
 		rdb->rdb_svc->svc_iface->detach(&status_vector);
 		rdb->rdb_svc->svc_iface = NULL;
 	}
@@ -6255,12 +6257,15 @@ ISC_STATUS rem_port::service_end(P_RLSE* /*release*/, PACKET* sendL)
 	if (bad_service(&status_vector, rdb))
 		return this->send_response(sendL, 0, 0, &status_vector, false);
 
-	rdb->rdb_svc->svc_iface->detach(&status_vector);
+	{ // scope
+		RefMutexGuard portGuard(*port_cancel_sync, FB_FUNCTION);
+		rdb->rdb_svc->svc_iface->detach(&status_vector);
 
-	if (!(status_vector.getState() & Firebird::IStatus::STATE_ERRORS))
-	{
-		port_flags |= PORT_detached;
-		rdb->rdb_svc->svc_iface = NULL;
+		if (!(status_vector.getState() & Firebird::IStatus::STATE_ERRORS))
+		{
+			port_flags |= PORT_detached;
+			rdb->rdb_svc->svc_iface = NULL;
+		}
 	}
 
 	return this->send_response(sendL, 0, 0, &status_vector, false);

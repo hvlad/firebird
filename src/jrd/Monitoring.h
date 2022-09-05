@@ -319,8 +319,12 @@ public:
 	explicit MonitoringData(Database*);
 	~MonitoringData();
 
-	bool initialize(Firebird::SharedMemoryBase*, bool);
-	void mutexBug(int osErrorCode, const char* text);
+	bool initialize(Firebird::SharedMemoryBase*, bool) override;
+	void mutexBug(int osErrorCode, const char* text) override;
+
+	USHORT getType() const override { return Firebird::SharedMemoryBase::SRAM_DATABASE_SNAPSHOT; }
+	USHORT getVersion() const override { return MONITOR_VERSION; }
+	const char* getName() const override { return "MonitoringData"; }
 
 	void initSharedFile();
 

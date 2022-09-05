@@ -558,12 +558,13 @@ bool isGlobalKernelPrefix()
 }
 
 
-// Incapsulates Windows private namespace 
+// Incapsulates Windows private namespace
 class PrivateNamespace
 {
 public:
 	PrivateNamespace(MemoryPool& pool) :
-		m_hNamespace(NULL)
+		m_hNamespace(NULL),
+		m_hTestEvent(NULL)
 	{
 		try
 		{
@@ -579,12 +580,14 @@ public:
 	{
 		if (m_hNamespace != NULL)
 			ClosePrivateNamespace(m_hNamespace, 0);
+		if (m_hTestEvent != NULL)
+			CloseHandle(m_hTestEvent);
 	}
 
 	// Add namespace prefix to the name, returns true on success.
 	bool addPrefix(char* name, size_t bufsize)
 	{
-		if (m_hNamespace == NULL)
+		if (!isReady())
 			return false;
 
 		if (strchr(name, '\\') != 0)
@@ -603,7 +606,7 @@ public:
 
 	bool isReady() const
 	{
-		return (m_hNamespace != NULL);
+		return (m_hNamespace != NULL) || (m_hTestEvent != NULL);
 	}
 
 private:
@@ -648,7 +651,7 @@ private:
 			raiseError("ConvertStringSecurityDescriptorToSecurityDescriptor");
 		}
 
-		Firebird::Cleanup cleanSecDesc( [&sa] { 
+		Firebird::Cleanup cleanSecDesc( [&sa] {
 				LocalFree(sa.lpSecurityDescriptor);
 			});
 
@@ -667,19 +670,29 @@ private:
 
 		if (m_hNamespace == NULL)
 		{
-			const DWORD err = GetLastError();
-			if (err == ERROR_ALREADY_EXISTS)
-			{
-				m_hNamespace = OpenPrivateNamespace(hBoundaryDesc, sPrivateNameSpace);
-				if (m_hNamespace == NULL)
-					raiseError("OpenPrivateNamespace");
-			}
-			else
+			DWORD err = GetLastError();
+			if (err != ERROR_ALREADY_EXISTS)
 				raiseError("CreatePrivateNamespace");
+
+			m_hNamespace = OpenPrivateNamespace(hBoundaryDesc, sPrivateNameSpace);
+			if (m_hNamespace == NULL)
+			{
+				err = GetLastError();
+				if (err != ERROR_DUP_NAME)
+					raiseError("OpenPrivateNamespace");
+
+				Firebird::string name(sPrivateNameSpace);
+				name.append("\\test");
+
+				m_hTestEvent = CreateEvent(ISC_get_security_desc(), TRUE, TRUE, name.c_str());
+				if (m_hTestEvent == NULL)
+					raiseError("CreateEvent");
+			}
 		}
 	}
 
 	HANDLE m_hNamespace;
+	HANDLE m_hTestEvent;
 };
 
 static Firebird::InitInstance<PrivateNamespace> privateNamespace;

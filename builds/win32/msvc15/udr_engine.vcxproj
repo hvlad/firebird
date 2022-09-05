@@ -125,7 +125,6 @@
     </ClCompile>
     <Link>
       <AdditionalDependencies>comctl32.lib;ws2_32.lib;mpr.lib;version.lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <OutputFile>..\..\..\temp\$(Platform)\$(Configuration)\firebird\plugins\$(ProjectName).dll</OutputFile>
       <ModuleDefinitionFile>..\defs\plugin.def</ModuleDefinitionFile>
       <RandomizedBaseAddress>false</RandomizedBaseAddress>
       <DataExecutionPrevention>
@@ -145,7 +144,6 @@
     </ClCompile>
     <Link>
       <AdditionalDependencies>comctl32.lib;ws2_32.lib;mpr.lib;version.lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <OutputFile>..\..\..\temp\$(Platform)\$(Configuration)\firebird\plugins\$(ProjectName).dll</OutputFile>
       <ModuleDefinitionFile>..\defs\plugin.def</ModuleDefinitionFile>
       <RandomizedBaseAddress>false</RandomizedBaseAddress>
       <DataExecutionPrevention>
@@ -169,7 +167,6 @@
     </ClCompile>
     <Link>
       <AdditionalDependencies>comctl32.lib;ws2_32.lib;mpr.lib;version.lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <OutputFile>..\..\..\temp\$(Platform)\$(Configuration)\firebird\plugins\$(ProjectName).dll</OutputFile>
       <ModuleDefinitionFile>..\defs\plugin.def</ModuleDefinitionFile>
       <RandomizedBaseAddress>false</RandomizedBaseAddress>
       <DataExecutionPrevention>
@@ -192,7 +189,6 @@
     </ClCompile>
     <Link>
       <AdditionalDependencies>comctl32.lib;ws2_32.lib;mpr.lib;version.lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <OutputFile>..\..\..\temp\$(Platform)\$(Configuration)\firebird\plugins\$(ProjectName).dll</OutputFile>
       <ModuleDefinitionFile>..\defs\plugin.def</ModuleDefinitionFile>
       <RandomizedBaseAddress>false</RandomizedBaseAddress>
       <DataExecutionPrevention>

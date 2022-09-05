@@ -109,6 +109,7 @@
 #include "../jrd/recsrc/RecordSource.h"
 #include "../jrd/recsrc/Cursor.h"
 #include "../jrd/Function.h"
+#include "../jrd/ProfilerManager.h"
 
 
 using namespace Jrd;
@@ -899,6 +900,8 @@ void EXE_start(thread_db* tdbb, Request* request, jrd_tra* transaction)
 
 	request->req_records_affected.clear();
 
+	request->req_profiler_time = 0;
+
 	// Store request start time for timestamp work
 	request->validateTimeStamp();
 
@@ -988,6 +991,14 @@ void EXE_unwind(thread_db* tdbb, Request* request)
 		}
 
 		release_blobs(tdbb, request);
+
+		const auto attachment = request->req_attachment;
+
+		if (attachment->isProfilerActive() && !request->hasInternalStatement())
+		{
+			ProfilerManager::Stats stats(request->req_profiler_time);
+			attachment->getProfilerManager(tdbb)->onRequestFinish(request, stats);
+		}
 	}
 
 	request->req_sorts.unlinkAll();
@@ -1363,10 +1374,10 @@ const StmtNode* EXE_looper(thread_db* tdbb, Request* request, const StmtNode* no
 		ERR_post(Arg::Gds(isc_req_no_trans));
 
 	SET_TDBB(tdbb);
-	Database* dbb = tdbb->getDatabase();
+	const auto dbb = tdbb->getDatabase();
+	const auto attachment = tdbb->getAttachment();
 
-	// ASF: It's already a StmtNode, so do not do a virtual call in execution.
-	if (!node)	/// if (!node || node->getKind() != DmlNode::KIND_STATEMENT
+	if (!node)
 		BUGCHECK(147);
 
 	// Save the old pool and request to restore on exit
@@ -1379,6 +1390,25 @@ const StmtNode* EXE_looper(thread_db* tdbb, Request* request, const StmtNode* no
 	tdbb->tdbb_flags &= ~(TDBB_stack_trace_done | TDBB_sys_error);
 
 	// Execute stuff until we drop
+
+	SINT64 initialPerfCounter = fb_utils::query_performance_counter();
+	SINT64 lastPerfCounter = initialPerfCounter;
+	const StmtNode* profileNode = nullptr;
+
+	const auto profilerCallAfterPsqlLineColumn = [&] {
+		const SINT64 currentPerfCounter = fb_utils::query_performance_counter();
+
+		if (profileNode)
+		{
+			ProfilerManager::Stats stats(currentPerfCounter - lastPerfCounter);
+
+			attachment->getProfilerManager(tdbb)->afterPsqlLineColumn(request,
+				profileNode->line, profileNode->column,
+				stats);
+		}
+
+		return currentPerfCounter;
+	};
 
 	while (node && !(request->req_flags & req_stall))
 	{
@@ -1393,12 +1423,33 @@ const StmtNode* EXE_looper(thread_db* tdbb, Request* request, const StmtNode* no
 					request->req_src_line = node->line;
 					request->req_src_column = node->column;
 				}
+
+				if (attachment->isProfilerActive() && !request->hasInternalStatement())
+				{
+					if (node->hasLineColumn &&
+						node->isProfileAware() &&
+						(!profileNode ||
+						 !(node->line == profileNode->line && node->column == profileNode->column)))
+					{
+						lastPerfCounter = profilerCallAfterPsqlLineColumn();
+
+						profileNode = node;
+
+						attachment->getProfilerManager(tdbb)->beforePsqlLineColumn(request,
+							profileNode->line, profileNode->column);
+					}
+				}
 			}
 
 			node = node->execute(tdbb, request, &exeState);
 
 			if (exeState.exit)
+			{
+				if (attachment->isProfilerActive() && !request->hasInternalStatement())
+					request->req_profiler_time += profilerCallAfterPsqlLineColumn() - initialPerfCounter;
+
 				return node;
+			}
 		}	// try
 		catch (const Firebird::Exception& ex)
 		{
@@ -1437,6 +1488,9 @@ const StmtNode* EXE_looper(thread_db* tdbb, Request* request, const StmtNode* no
 		}
 	} // while()
 
+	if (attachment->isProfilerActive() && !request->hasInternalStatement())
+		request->req_profiler_time += profilerCallAfterPsqlLineColumn() - initialPerfCounter;
+
 	request->adjustCallerStats();
 
 	fb_assert(request->req_auto_trans.getCount() == 0);
@@ -1461,6 +1515,12 @@ const StmtNode* EXE_looper(thread_db* tdbb, Request* request, const StmtNode* no
 		request->req_flags &= ~(req_active | req_reserved);
 		request->invalidateTimeStamp();
 		release_blobs(tdbb, request);
+
+		if (attachment->isProfilerActive() && !request->hasInternalStatement())
+		{
+			ProfilerManager::Stats stats(request->req_profiler_time);
+			attachment->getProfilerManager(tdbb)->onRequestFinish(request, stats);
+		}
 	}
 
 	request->req_next = node;

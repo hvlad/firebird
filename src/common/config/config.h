@@ -125,7 +125,6 @@ enum ConfigKey
 	KEY_CPU_AFFINITY_MASK,
 	KEY_TCP_REMOTE_BUFFER_SIZE,
 	KEY_TCP_NO_NAGLE,
-	KEY_TCP_LOOPBACK_FAST_PATH,
 	KEY_DEFAULT_DB_CACHE_PAGES,
 	KEY_CONNECTION_TIMEOUT,
 	KEY_DUMMY_PACKET_INTERVAL,
@@ -162,6 +161,7 @@ enum ConfigKey
 	KEY_PLUG_AUTH_SERVER,
 	KEY_PLUG_AUTH_CLIENT,
 	KEY_PLUG_AUTH_MANAGE,
+	KEY_PLUG_PROFILER,
 	KEY_PLUG_TRACE,
 	KEY_SECURITY_DATABASE,
 	KEY_SERVER_MODE,
@@ -223,7 +223,6 @@ constexpr ConfigEntry entries[MAX_CONFIG_KEY] =
 	{TYPE_INTEGER,	"CpuAffinityMask",			true,	0},
 	{TYPE_INTEGER,	"TcpRemoteBufferSize",		true,	8192},		// bytes
 	{TYPE_BOOLEAN,	"TcpNoNagle",				false,	true},
-	{TYPE_BOOLEAN,	"TcpLoopbackFastPath",		false,	true},
 	{TYPE_INTEGER,	"DefaultDbCachePages",		false,	-1},		// pages
 	{TYPE_INTEGER,	"ConnectionTimeout",		false,	180},		// seconds
 	{TYPE_INTEGER,	"DummyPacketInterval",		false,	0},			// seconds
@@ -273,6 +272,7 @@ constexpr ConfigEntry entries[MAX_CONFIG_KEY] =
 	{TYPE_STRING,	"AuthClient",				false,	"Srp256, Srp, Legacy_Auth"},
 #endif
 	{TYPE_STRING,	"UserManager",				false,	"Srp"},
+	{TYPE_STRING,	"DefaultProfilerPlugin",	false,	"Default_Profiler"},
 	{TYPE_STRING,	"TracePlugin",				false,	"fbtrace"},
 	{TYPE_STRING,	"SecurityDatabase",			false,	nullptr},	// sec/db alias - rely on ConfigManager::getDefaultSecurityDb(
 	{TYPE_STRING,	"ServerMode",				true,	nullptr},	// actual value differs in boot/regular cases and set at setupDefaultConfig(
@@ -489,9 +489,6 @@ public:
 
 	// Disable Nagle algorithm
 	CONFIG_GET_PER_DB_BOOL(getTcpNoNagle, KEY_TCP_NO_NAGLE);
-
-	// Enable or disable the TCP Loopback Fast Path option
-	CONFIG_GET_PER_DB_BOOL(getTcpLoopbackFastPath, KEY_TCP_LOOPBACK_FAST_PATH);
 
 	// Let IPv6 socket accept only IPv6 packets
 	CONFIG_GET_PER_DB_BOOL(getIPv6V6Only, KEY_IPV6_V6ONLY);

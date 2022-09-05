@@ -111,7 +111,7 @@ bool GlobalRWLock::lockWrite(thread_db* tdbb, SSHORT wait)
 
 		while (readers > 0 )
 		{
-			EngineCheckout cout(tdbb, FB_FUNCTION, true);
+			EngineCheckout cout(tdbb, FB_FUNCTION, EngineCheckout::UNNECESSARY);
 			noReaders.wait(counterMutex);
 		}
 
@@ -120,7 +120,7 @@ bool GlobalRWLock::lockWrite(thread_db* tdbb, SSHORT wait)
 
 		while (currentWriter || pendingLock)
 		{
-			EngineCheckout cout(tdbb, FB_FUNCTION, true);
+			EngineCheckout cout(tdbb, FB_FUNCTION, EngineCheckout::UNNECESSARY);
 			writerFinished.wait(counterMutex);
 		}
 
@@ -237,7 +237,7 @@ bool GlobalRWLock::lockRead(thread_db* tdbb, SSHORT wait, const bool queueJump)
 
 			while (pendingWriters > 0 || currentWriter)
 			{
-				EngineCheckout cout(tdbb, FB_FUNCTION, true);
+				EngineCheckout cout(tdbb, FB_FUNCTION, EngineCheckout::UNNECESSARY);
 				writerFinished.wait(counterMutex);
 			}
 
@@ -248,7 +248,7 @@ bool GlobalRWLock::lockRead(thread_db* tdbb, SSHORT wait, const bool queueJump)
 				break;
 
 			MutexUnlockGuard cout(counterMutex, FB_FUNCTION);
-			EngineCheckout cout2(tdbb, FB_FUNCTION, true);
+			EngineCheckout cout2(tdbb, FB_FUNCTION, EngineCheckout::UNNECESSARY);
 			Thread::yield();
 		}
 

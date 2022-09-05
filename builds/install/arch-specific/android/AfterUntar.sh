@@ -7,7 +7,7 @@ runAndCheckExit() {
     Cmd=$2
 
 	echo $Msg please wait...
-    $Cmd
+    eval $Cmd
     ExitCode=$?
 
     if [ $ExitCode -ne 0 ]
@@ -18,8 +18,9 @@ runAndCheckExit() {
     fi
 }
 
-runAndCheckExit "Build messages file (firebird.msg)" bin/build_file
-runAndCheckExit "Restore security database" "bin/gbak -rep security5.gbak security5.fdb"
-runAndCheckExit "Restore examples database (employee)" "bin/gbak -rep examples/empbuild/employee.gbak examples/empbuild/employee.fdb"
+runAndCheckExit "Build messages file (firebird.msg)" "bin/build_file -f firebird.msg"
+runAndCheckExit "Creating security database" "echo create database \'security5.fdb\'^ | bin/isql -q -term ^"
+runAndCheckExit "Creating security database metadata" "bin/isql -q security5.fdb -i security.sql"
+runAndCheckExit "Restore examples database (employee)" "(cd examples/empbuild ; ../../bin/isql -q -i ../../employe2.sql)"
 
-rm -f security5.gbak examples/empbuild/employee.gbak AfterUntar.sh
+rm -f security.sql employe2.sql bin/build_file AfterUntar.sh

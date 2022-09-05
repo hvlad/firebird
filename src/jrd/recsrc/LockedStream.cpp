@@ -35,7 +35,8 @@ using namespace Jrd;
 // ------------------------------------
 
 LockedStream::LockedStream(CompilerScratch* csb, RecordSource* next)
-	: m_next(next)
+	: RecordSource(csb),
+	  m_next(next)
 {
 	fb_assert(m_next);
 
@@ -43,7 +44,7 @@ LockedStream::LockedStream(CompilerScratch* csb, RecordSource* next)
 	m_cardinality = next->getCardinality();
 }
 
-void LockedStream::open(thread_db* tdbb) const
+void LockedStream::internalOpen(thread_db* tdbb) const
 {
 	Request* const request = tdbb->getRequest();
 	Impure* const impure = request->getImpure<Impure>(m_impure);
@@ -69,7 +70,7 @@ void LockedStream::close(thread_db* tdbb) const
 	}
 }
 
-bool LockedStream::getRecord(thread_db* tdbb) const
+bool LockedStream::internalGetRecord(thread_db* tdbb) const
 {
 	JRD_reschedule(tdbb);
 
@@ -103,7 +104,12 @@ bool LockedStream::lockRecord(thread_db* tdbb) const
 	return m_next->lockRecord(tdbb);
 }
 
-void LockedStream::print(thread_db* tdbb, string& plan, bool detailed, unsigned level) const
+void LockedStream::getChildren(Array<const RecordSource*>& children) const
+{
+	children.add(m_next);
+}
+
+void LockedStream::print(thread_db* tdbb, string& plan, bool detailed, unsigned level, bool recurse) const
 {
 	if (detailed)
 	{
@@ -111,7 +117,8 @@ void LockedStream::print(thread_db* tdbb, string& plan, bool detailed, unsigned 
 		printOptInfo(plan);
 	}
 
-	m_next->print(tdbb, plan, detailed, level);
+	if (recurse)
+		m_next->print(tdbb, plan, detailed, level, recurse);
 }
 
 void LockedStream::markRecursive()

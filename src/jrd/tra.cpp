@@ -827,7 +827,7 @@ void TRA_invalidate(thread_db* tdbb, ULONG mask)
 
 	Database* const database = tdbb->getDatabase();
 
-	EngineCheckout cout(tdbb, FB_FUNCTION, true);
+	EngineCheckout cout(tdbb, FB_FUNCTION, EngineCheckout::UNNECESSARY);
 
 	SyncLockGuard dbbSync(&database->dbb_sync, SYNC_SHARED, "TRA_invalidate");
 

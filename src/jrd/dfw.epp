@@ -481,6 +481,7 @@ static bool check_not_null(thread_db*, SSHORT, DeferredWork*, jrd_tra*);
 static bool store_view_context_type(thread_db*, SSHORT, DeferredWork*, jrd_tra*);
 static bool user_management(thread_db*, SSHORT, DeferredWork*, jrd_tra*);
 static bool drop_package_header(thread_db*, SSHORT, DeferredWork*, jrd_tra*);
+static bool modify_package_header(thread_db*, SSHORT, DeferredWork*, jrd_tra*);
 static bool drop_package_body(thread_db*, SSHORT, DeferredWork*, jrd_tra*);
 static bool grant_privileges(thread_db*, SSHORT, DeferredWork*, jrd_tra*);
 static bool db_crypt(thread_db*, SSHORT, DeferredWork*, jrd_tra*);
@@ -688,9 +689,11 @@ namespace
 			{
 				case 1:
 				case 2:
+				case 3:
+				case 4:
 					return true;
 
-				case 3:
+				case 5:
 				{
 					const bool compile = !work->findArg(dfw_arg_check_blr);
 					getDependencies(work, compile, transaction);
@@ -982,7 +985,13 @@ namespace
 
 			// get any dependencies now by parsing the blr
 
-			if (routine && !blobId.isEmpty())
+			if (!routine)
+				return;
+
+			const MetaName depName(work->dfw_package.isEmpty() ?
+				MetaName(work->dfw_name) : work->dfw_package);
+
+			if (!blobId.isEmpty())
 			{
 				Statement* statement = NULL;
 				// Nickolay Samofatov: allocate statement memory pool...
@@ -992,8 +1001,6 @@ namespace
 				{
 					Jrd::ContextPoolHolder context(tdbb, new_pool);
 
-					const MetaName depName(work->dfw_package.isEmpty() ?
-						MetaName(work->dfw_name) : work->dfw_package);
 					MET_get_dependencies(tdbb, NULL, NULL, 0, NULL, &blobId,
 						(compile ? &statement : NULL),
 						NULL, depName,
@@ -1005,11 +1012,48 @@ namespace
 					else
 						attachment->deletePool(new_pool);
 				}
+			}
+			else
+			{
+				Array<CompilerScratch::Dependency> dependencies;
+
+				const auto allParameters = {&routine->getInputFields(), &routine->getOutputFields()};
+
+				for (const auto parameters : allParameters)
+				{
+					for (const auto parameter : *parameters)
+					{
+						if (parameter->prm_type_of_table.hasData())
+						{
+							CompilerScratch::Dependency dependency(obj_relation);
+							dependency.relation = MET_lookup_relation(tdbb, parameter->prm_type_of_table);
+							dependency.subName = &parameter->prm_type_of_column;
+							dependencies.push(dependency);
+						}
+						else if (!fb_utils::implicit_domain(parameter->prm_field_source.c_str()))
+						{
+							CompilerScratch::Dependency dependency(obj_field);
+							dependency.name = &parameter->prm_field_source;
+							dependencies.push(dependency);
+						}
+
+						if (parameter->prm_text_type.isAssigned())
+						{
+							CompilerScratch::Dependency dependency(obj_collation);
+							dependency.number = parameter->prm_text_type.value;
+							dependencies.push(dependency);
+						}
+					}
+				}
+
+				MET_store_dependencies(tdbb, dependencies, nullptr, depName,
+					(work->dfw_package.isEmpty() ? objType : obj_package_header),
+					transaction);
+			}
 
 #ifdef DEV_BUILD
-				MET_verify_cache(tdbb);
+			MET_verify_cache(tdbb);
 #endif
-			}
 		}
 	};
 
@@ -1211,6 +1255,7 @@ static const deferred_task task_table[] =
 	{ dfw_delete_trigger, delete_trigger },
 	{ dfw_modify_trigger, modify_trigger },
 	{ dfw_drop_package_header, drop_package_header },	// packages should be before procedures
+	{ dfw_modify_package_header, modify_package_header },	// packages should be before procedures
 	{ dfw_drop_package_body, drop_package_body },		// packages should be before procedures
 	{ dfw_create_procedure, ProcedureManager::createRoutine },
 	{ dfw_create_function, FunctionManager::createRoutine },
@@ -1302,8 +1347,9 @@ USHORT DFW_assign_index_type(thread_db* tdbb, const MetaName& name, SSHORT field
 		return idx_boolean;
 	case dtype_dec64:
 	case dtype_dec128:
-	case dtype_int128:
 		return idx_decimal;
+	case dtype_int128:
+		return tdbb->getDatabase()->getEncodedOdsVersion() >= ODS_13_1 ? idx_bcd : idx_decimal;
 	default:
 		return idx_numeric;
 	}
@@ -2611,6 +2657,22 @@ static bool drop_package_header(thread_db* tdbb, SSHORT phase, DeferredWork* wor
 	{
 	case 1:
 		MET_delete_dependencies(tdbb, work->dfw_name, obj_package_body, transaction);
+		MET_delete_dependencies(tdbb, work->dfw_name, obj_package_header, transaction);
+		break;
+	}
+
+	return false;
+}
+
+
+// Drop dependencies of a package header.
+static bool modify_package_header(thread_db* tdbb, SSHORT phase, DeferredWork* work, jrd_tra* transaction)
+{
+	SET_TDBB(tdbb);
+
+	switch (phase)
+	{
+	case 1:
 		MET_delete_dependencies(tdbb, work->dfw_name, obj_package_header, transaction);
 		break;
 	}
@@ -4893,6 +4955,7 @@ static bool delete_relation(thread_db* tdbb, SSHORT phase, DeferredWork* work, j
 	case 4:
 		relation = MET_lookup_relation_id(tdbb, work->dfw_id, true);
 		if (!relation) {
+			fb_assert(false);
 			return false;
 		}
 

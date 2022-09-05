@@ -4390,11 +4390,11 @@ void ReadRelationMeta::setRelation(const burp_rel* relation, bool partition)
 
 	// Build request BLR. There could be two kind of requests :
 	// a) partition == true
-	//		SELECT * FROM relation 
-	//		 WHERE dbkey >= MAKE_DBKEY(rel_id, 0, 0, :loPP) 
-	//		   AND dbkey  < MAKE_DBKEY(rel_id, 0, 0, :hiPP) 
+	//		SELECT * FROM relation
+	//		 WHERE dbkey >= MAKE_DBKEY(rel_id, 0, 0, :loPP)
+	//		   AND dbkey  < MAKE_DBKEY(rel_id, 0, 0, :hiPP)
 	// b) partition = false
-	//		SELECT * FROM relation 
+	//		SELECT * FROM relation
 	// Note, computed fields are not included into results
 
 	// CVC: A signed short isn't enough if the engine allows near 32K fields,
@@ -4426,7 +4426,7 @@ void ReadRelationMeta::setRelation(const burp_rel* relation, bool partition)
 	{
 		add_byte(blr, blr_message);
 		add_byte(blr, m_inMgsNum);		// Message number
-		add_word(blr, 2);				// 
+		add_word(blr, 2);				//
 		add_byte(blr, blr_long);		// loPP
 		add_byte(blr, 0);
 		add_byte(blr, blr_long);		// hiPP

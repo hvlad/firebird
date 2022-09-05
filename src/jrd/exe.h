@@ -90,6 +90,32 @@ enum SortDirection { ORDER_ANY, ORDER_ASC, ORDER_DESC };
 // Types of nulls placement for each column in sort order
 enum NullsPlacement { NULLS_DEFAULT, NULLS_FIRST, NULLS_LAST };
 
+// CompilerScratch.csb_g_flags' values.
+const int csb_internal			= 1;	// "csb_g_flag" switch
+const int csb_get_dependencies	= 2;	// we are retrieving dependencies
+const int csb_ignore_perm		= 4;	// ignore permissions checks
+//const int csb_blr_version4		= 8;	// the BLR is of version 4
+const int csb_pre_trigger		= 16;	// this is a BEFORE trigger
+const int csb_post_trigger		= 32;	// this is an AFTER trigger
+const int csb_validation		= 64;	// we're in a validation expression (RDB hack)
+const int csb_reuse_context		= 128;	// allow context reusage
+const int csb_subroutine		= 256;	// sub routine
+const int csb_reload			= 512;	// request's BLR should be loaded and parsed again
+
+// CompilerScratch.csb_rpt[].csb_flags's values.
+const int csb_active		= 1;		// stream is active
+const int csb_used			= 2;		// context has already been defined (BLR parsing only)
+const int csb_view_update	= 4;		// view update w/wo trigger is in progress
+const int csb_trigger		= 8;		// NEW or OLD context in trigger
+//const int csb_no_dbkey		= 16;		// unused
+const int csb_store			= 32;		// we are processing a store statement
+const int csb_modify		= 64;		// we are processing a modify
+const int csb_sub_stream	= 128;		// a sub-stream of the RSE being processed
+const int csb_erase			= 256;		// we are processing an erase
+const int csb_unmatched		= 512;		// stream has conjuncts unmatched by any index
+const int csb_update		= 1024;		// erase or modify for relation
+const int csb_unstable		= 2048;		// unstable explicit cursor
+
 
 // Aggregate Sort Block (for DISTINCT aggregates)
 
@@ -488,6 +514,17 @@ public:
 		return csb_n_stream++;
 	}
 
+	bool collectingDependencies() const
+	{
+		return (mainCsb ? mainCsb : this)->csb_g_flags & csb_get_dependencies;
+	}
+
+	void addDependency(const Dependency& dependency)
+	{
+		auto& dependencies = mainCsb ? mainCsb->csb_dependencies : csb_dependencies;
+		dependencies.add(dependency);
+	}
+
 #ifdef CMP_DEBUG
 	void dump(const char* format, ...)
 	{
@@ -555,6 +592,10 @@ public:
 	ExprNode*	csb_currentAssignTarget;
 	dsc*		csb_preferredDesc;		// expected by receiving side data format
 
+	ULONG		csb_currentCursorProfileId = 0;
+	ULONG		csb_nextCursorProfileId = 1;
+	ULONG		csb_nextRecSourceProfileId = 1;
+
 	struct csb_repeat
 	{
 		// We must zero-initialize this one
@@ -609,32 +650,6 @@ inline CompilerScratch::csb_repeat::csb_repeat()
 	  csb_rsb_ptr(0)
 {
 }
-
-// CompilerScratch.csb_g_flags' values.
-const int csb_internal			= 1;	// "csb_g_flag" switch
-const int csb_get_dependencies	= 2;	// we are retrieving dependencies
-const int csb_ignore_perm		= 4;	// ignore permissions checks
-//const int csb_blr_version4		= 8;	// the BLR is of version 4
-const int csb_pre_trigger		= 16;	// this is a BEFORE trigger
-const int csb_post_trigger		= 32;	// this is an AFTER trigger
-const int csb_validation		= 64;	// we're in a validation expression (RDB hack)
-const int csb_reuse_context		= 128;	// allow context reusage
-const int csb_subroutine		= 256;	// sub routine
-const int csb_reload			= 512;	// request's BLR should be loaded and parsed again
-
-// CompilerScratch.csb_rpt[].csb_flags's values.
-const int csb_active		= 1;		// stream is active
-const int csb_used			= 2;		// context has already been defined (BLR parsing only)
-const int csb_view_update	= 4;		// view update w/wo trigger is in progress
-const int csb_trigger		= 8;		// NEW or OLD context in trigger
-//const int csb_no_dbkey		= 16;		// unused
-const int csb_store			= 32;		// we are processing a store statement
-const int csb_modify		= 64;		// we are processing a modify
-const int csb_sub_stream	= 128;		// a sub-stream of the RSE being processed
-const int csb_erase			= 256;		// we are processing an erase
-const int csb_unmatched		= 512;		// stream has conjuncts unmatched by any index
-const int csb_update		= 1024;		// erase or modify for relation
-const int csb_unstable		= 2048;		// unstable explicit cursor
 
 inline void CompilerScratch::csb_repeat::activate(bool subStream)
 {

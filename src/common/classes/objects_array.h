@@ -214,6 +214,12 @@ namespace Firebird
 			return inherited::add(dataL);
 		}
 
+		size_type add(T&& item)
+		{
+			T* dataL = FB_NEW_POOL(this->getPool()) T(this->getPool(), std::move(item));
+			return inherited::add(dataL);
+		}
+
 		T& add()
 		{
 			T* dataL = FB_NEW_POOL(this->getPool()) T(this->getPool());

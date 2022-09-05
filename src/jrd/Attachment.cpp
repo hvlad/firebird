@@ -42,7 +42,7 @@
 #include "../jrd/tpc_proto.h"
 
 #include "../jrd/extds/ExtDS.h"
-
+#include "../jrd/ProfilerManager.h"
 #include "../jrd/replication/Applier.h"
 #include "../jrd/replication/Manager.h"
 
@@ -728,6 +728,12 @@ void Jrd::Attachment::initLocks(thread_db* tdbb)
 		lock = FB_NEW_RPT(*att_pool, 0)
 			Lock(tdbb, 0, LCK_repl_tables, this, blockingAstReplSet);
 		att_repl_lock = lock;
+
+		lock = FB_NEW_RPT(*att_pool, 0)
+			Lock(tdbb, sizeof(AttNumber), LCK_profiler_listener, this, ProfilerManager::blockingAst);
+		att_profiler_listener_lock = lock;
+		lock->setKey(att_attachment_id);
+		LCK_lock(tdbb, lock, LCK_EX, LCK_WAIT);
 	}
 }
 
@@ -844,6 +850,9 @@ void Jrd::Attachment::releaseLocks(thread_db* tdbb)
 
 	if (att_repl_lock)
 		LCK_release(tdbb, att_repl_lock);
+
+	if (att_profiler_listener_lock)
+		LCK_release(tdbb, att_profiler_listener_lock);
 
 	// And release the system requests
 
@@ -1153,4 +1162,22 @@ int Attachment::blockingAstReplSet(void* ast_object)
 	{} // no-op
 
 	return 0;
+}
+
+ProfilerManager* Attachment::getProfilerManager(thread_db* tdbb)
+{
+	auto profilerManager = att_profiler_manager.get();
+	if (!profilerManager)
+		att_profiler_manager.reset(profilerManager = ProfilerManager::create(tdbb));
+	return profilerManager;
+}
+
+bool Attachment::isProfilerActive()
+{
+	return att_profiler_manager && att_profiler_manager->isActive();
+}
+
+void Attachment::releaseProfilerManager()
+{
+	att_profiler_manager.reset();
 }

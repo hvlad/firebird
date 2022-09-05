@@ -5,4 +5,6 @@ sed -i 's/AC_CHECK_LIB(atomic, main)/AC_CHECK_LIB(:libatomic.a, main)/g' configu
 
 ./autogen.sh --build=$BUILD_ARCH --prefix=/opt/firebird --enable-binreloc --with-builtin-tomcrypt --with-termlib=:libncurses.a
 make -j${CPUCOUNT}
+make tests -j${CPUCOUNT}
+make run_tests
 make dist

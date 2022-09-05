@@ -508,6 +508,7 @@ enum dfw_t {
 	dfw_begin_backup,
 	dfw_end_backup,
 	dfw_user_management,
+	dfw_modify_package_header,
 	dfw_drop_package_header,
 	dfw_drop_package_body,
 	dfw_check_not_null,

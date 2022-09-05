@@ -2515,7 +2515,7 @@ FB_BOOLEAN TracePluginImpl::trace_dsql_restart(ITraceDatabaseConnection* connect
 {
 	try
 	{
-		log_event_dsql_execute(connection, transaction, statement, true, number, 
+		log_event_dsql_execute(connection, transaction, statement, true, number,
 			ITracePlugin::RESULT_SUCCESS);
 		return true;
 	}

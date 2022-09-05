@@ -1432,6 +1432,10 @@ USHORT BTR_key_length(thread_db* tdbb, jrd_rel* relation, index_desc* idx)
 			length = Decimal128::getIndexKeyLength();
 			break;
 
+		case idx_bcd:
+			length = Int128::getIndexKeyLength();
+			break;
+
 		default:
 			if (idx->idx_flags & idx_expressn)
 			{
@@ -1488,6 +1492,9 @@ USHORT BTR_key_length(thread_db* tdbb, jrd_rel* relation, index_desc* idx)
 			break;
 		case idx_decimal:
 			length = Decimal128::getIndexKeyLength();
+			break;
+		case idx_bcd:
+			length = Int128::getIndexKeyLength();
 			break;
 		default:
 			length = format->fmt_desc[tail->idx_field].dsc_length;
@@ -2504,7 +2511,7 @@ static void compress(thread_db* tdbb,
 	UCHAR* p = key->key_data;
 
 	if (itype == idx_string || itype == idx_byte_array || itype == idx_metadata ||
-		itype == idx_decimal || itype >= idx_first_intl_string)
+		itype == idx_decimal || itype == idx_bcd || itype >= idx_first_intl_string)
 	{
 		temporary_key* root_key = key;
 		bool has_next;
@@ -2519,7 +2526,13 @@ static void compress(thread_db* tdbb,
 			{
 				first_key = false;
 
-				if (itype == idx_decimal)
+				if (itype == idx_bcd)
+				{
+					Int128 i = MOV_get_int128(tdbb, desc, desc->dsc_scale);
+					length = i.makeIndexKey(&buffer, desc->dsc_scale);
+					ptr = reinterpret_cast<UCHAR*>(buffer.vary_string);
+				}
+				else if (itype == idx_decimal)
 				{
 					Decimal128 dec = MOV_get_dec128(tdbb, desc);
 					length = dec.makeIndexKey(&buffer);

@@ -60,6 +60,9 @@ using namespace Firebird;
 using namespace Jrd;
 
 
+static EngineCheckout::Type checkoutType(IExternalEngine* engine);
+
+
 namespace
 {
 	// Internal message node.
@@ -283,10 +286,12 @@ namespace
 			for (USHORT i = 0; i < (fromMessage->format->fmt_count / 2) * 2; i += 2)
 			{
 				ParameterNode* flag = FB_NEW_POOL(pool) ParameterNode(pool);
+				flag->messageNumber = fromMessage->messageNumber;
 				flag->message = fromMessage;
 				flag->argNumber = i + 1;
 
 				ParameterNode* param = FB_NEW_POOL(pool) ParameterNode(pool);
+				param->messageNumber = fromMessage->messageNumber;
 				param->message = fromMessage;
 				param->argNumber = i;
 				param->argFlag = flag;
@@ -296,10 +301,12 @@ namespace
 				statements.add(assign);
 
 				flag = FB_NEW_POOL(pool) ParameterNode(pool);
+				flag->messageNumber = toMessage->messageNumber;
 				flag->message = toMessage;
 				flag->argNumber = i + 1;
 
 				param = FB_NEW_POOL(pool) ParameterNode(pool);
+				param->messageNumber = toMessage->messageNumber;
 				param->message = toMessage;
 				param->argNumber = i;
 				param->argFlag = flag;
@@ -477,8 +484,6 @@ namespace
 }
 
 
-namespace Jrd {
-
 template <typename T> class ExtEngineManager::ContextManager
 {
 public:
@@ -556,7 +561,7 @@ private:
 		char charSetName[MAX_SQL_IDENTIFIER_SIZE];
 
 		{	// scope
-			EngineCheckout cout(tdbb, FB_FUNCTION);
+			EngineCheckout cout(tdbb, FB_FUNCTION, checkoutType(attInfo->engine));
 
 			FbLocalStatus status;
 			obj->getCharSet(&status, attInfo->context, charSetName, MAX_SQL_IDENTIFIER_LEN);
@@ -736,7 +741,7 @@ void ExtEngineManager::Function::execute(thread_db* tdbb, UCHAR* inMsg, UCHAR* o
 			CallerName(obj_udf, udf->getName().identifier, userName) :
 			CallerName(obj_package_header, udf->getName().package, userName)));
 
-	EngineCheckout cout(tdbb, FB_FUNCTION);
+	EngineCheckout cout(tdbb, FB_FUNCTION, checkoutType(attInfo->engine));
 
 	FbLocalStatus status;
 	function->execute(&status, attInfo->context, inMsg, outMsg);
@@ -792,7 +797,7 @@ ExtEngineManager::ResultSet::ResultSet(thread_db* tdbb, UCHAR* inMsg, UCHAR* out
 
 	charSet = attachment->att_charset;
 
-	EngineCheckout cout(tdbb, FB_FUNCTION);
+	EngineCheckout cout(tdbb, FB_FUNCTION, checkoutType(attInfo->engine));
 
 	FbLocalStatus status;
 	resultSet = procedure->procedure->open(&status, attInfo->context, inMsg, outMsg);
@@ -804,7 +809,7 @@ ExtEngineManager::ResultSet::~ResultSet()
 {
 	if (resultSet)
 	{
-		EngineCheckout cout(JRD_get_thread_data(), FB_FUNCTION);
+		EngineCheckout cout(JRD_get_thread_data(), FB_FUNCTION, checkoutType(attInfo->engine));
 		resultSet->dispose();
 	}
 }
@@ -824,7 +829,7 @@ bool ExtEngineManager::ResultSet::fetch(thread_db* tdbb)
 			CallerName(obj_procedure, procedure->prc->getName().identifier, userName) :
 			CallerName(obj_package_header, procedure->prc->getName().package, userName)));
 
-	EngineCheckout cout(tdbb, FB_FUNCTION);
+	EngineCheckout cout(tdbb, FB_FUNCTION, checkoutType(attInfo->engine));
 
 	FbLocalStatus status;
 	bool ret = resultSet->fetch(&status);
@@ -914,7 +919,7 @@ void ExtEngineManager::Trigger::execute(thread_db* tdbb, Request* request, unsig
 		setValues(tdbb, request, newMsg, newRpb);
 
 	{	// scope
-		EngineCheckout cout(tdbb, FB_FUNCTION);
+		EngineCheckout cout(tdbb, FB_FUNCTION, checkoutType(attInfo->engine));
 
 		FbLocalStatus status;
 		trigger->execute(&status, attInfo->context, action,
@@ -1232,7 +1237,7 @@ void ExtEngineManager::closeAttachment(thread_db* tdbb, Attachment* attachment)
 			enginesCopy.put(accessor.current()->first, accessor.current()->second);
 	}
 
-	EngineCheckout cout(tdbb, FB_FUNCTION, true);
+	EngineCheckout cout(tdbb, FB_FUNCTION, EngineCheckout::UNNECESSARY);
 
 	EnginesMap::Accessor accessor(&enginesCopy);
 	for (bool found = accessor.getFirst(); found; found = accessor.getNext())
@@ -1313,7 +1318,7 @@ void ExtEngineManager::makeFunction(thread_db* tdbb, CompilerScratch* csb, Jrd::
 	RefPtr<IMessageMetadata> extInputParameters, extOutputParameters;
 
 	{	// scope
-		EngineCheckout cout(tdbb, FB_FUNCTION);
+		EngineCheckout cout(tdbb, FB_FUNCTION, checkoutType(attInfo->engine));
 
 		externalFunction = attInfo->engine->makeFunction(&status, attInfo->context, metadata,
 			inBuilder, outBuilder);
@@ -1404,7 +1409,7 @@ void ExtEngineManager::makeFunction(thread_db* tdbb, CompilerScratch* csb, Jrd::
 	}
 	catch (...)
 	{
-		EngineCheckout cout(tdbb, FB_FUNCTION);
+		EngineCheckout cout(tdbb, FB_FUNCTION, checkoutType(attInfo->engine));
 		externalFunction->dispose();
 		throw;
 	}
@@ -1449,7 +1454,7 @@ void ExtEngineManager::makeProcedure(thread_db* tdbb, CompilerScratch* csb, jrd_
 	RefPtr<IMessageMetadata> extInputParameters, extOutputParameters;
 
 	{	// scope
-		EngineCheckout cout(tdbb, FB_FUNCTION);
+		EngineCheckout cout(tdbb, FB_FUNCTION, checkoutType(attInfo->engine));
 
 		externalProcedure = attInfo->engine->makeProcedure(&status, attInfo->context, metadata,
 			inBuilder, outBuilder);
@@ -1547,7 +1552,7 @@ void ExtEngineManager::makeProcedure(thread_db* tdbb, CompilerScratch* csb, jrd_
 	}
 	catch (...)
 	{
-		EngineCheckout cout(tdbb, FB_FUNCTION);
+		EngineCheckout cout(tdbb, FB_FUNCTION, checkoutType(attInfo->engine));
 		externalProcedure->dispose();
 		throw;
 	}
@@ -1608,7 +1613,7 @@ void ExtEngineManager::makeTrigger(thread_db* tdbb, CompilerScratch* csb, Jrd::T
 	IExternalTrigger* externalTrigger;
 
 	{	// scope
-		EngineCheckout cout(tdbb, FB_FUNCTION);
+		EngineCheckout cout(tdbb, FB_FUNCTION, checkoutType(attInfo->engine));
 
 		FbLocalStatus status;
 		externalTrigger = attInfo->engine->makeTrigger(&status, attInfo->context, metadata,
@@ -1646,7 +1651,7 @@ void ExtEngineManager::makeTrigger(thread_db* tdbb, CompilerScratch* csb, Jrd::T
 	}
 	catch (...)
 	{
-		EngineCheckout cout(tdbb, FB_FUNCTION);
+		EngineCheckout cout(tdbb, FB_FUNCTION, checkoutType(attInfo->engine));
 		externalTrigger->dispose();
 		throw;
 	}
@@ -1755,7 +1760,7 @@ ExtEngineManager::EngineAttachmentInfo* ExtEngineManager::getEngineAttachment(
 			enginesAttachments.put(key, attInfo);
 
 			ContextManager<IExternalFunction> ctxManager(tdbb, attInfo, attInfo->adminCharSet);
-			EngineCheckout cout(tdbb, FB_FUNCTION);
+			EngineCheckout cout(tdbb, FB_FUNCTION, checkoutType(attInfo->engine));
 			FbLocalStatus status;
 			engine->openAttachment(&status, attInfo->context);	//// FIXME: log status
 		}
@@ -1798,4 +1803,10 @@ void ExtEngineManager::setupAdminCharSet(thread_db* tdbb, IExternalEngine* engin
 }
 
 
-}	// namespace Jrd
+//---------------------
+
+
+static EngineCheckout::Type checkoutType(IExternalEngine* engine)
+{
+	return engine == SystemEngine::INSTANCE ? EngineCheckout::AVOID : EngineCheckout::REQUIRED;
+}

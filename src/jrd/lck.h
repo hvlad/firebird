@@ -75,7 +75,8 @@ enum lck_t {
 	LCK_alter_database,			// ALTER DATABASE lock
 	LCK_repl_state,				// Replication state lock
 	LCK_repl_tables,			// Replication set lock
-	LCK_dsql_statement_cache	// DSQL statement cache lock
+	LCK_dsql_statement_cache,	// DSQL statement cache lock
+	LCK_profiler_listener		// Remote profiler listener
 };
 
 // Lock owner types

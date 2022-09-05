@@ -30,6 +30,7 @@
 #include "../common/classes/objects_array.h"
 #include "../jrd/constants.h"
 #include "../jrd/ini.h"
+#include "../jrd/jrd.h"
 #include "firebird/Interface.h"
 #include <initializer_list>
 #include <functional>
@@ -236,6 +237,41 @@ namespace Jrd
 	>
 	struct SystemProcedureFactory
 	{
+		class SystemResultSet :
+			public
+				Firebird::DisposeIface<
+					Firebird::IExternalResultSetImpl<
+						SystemResultSet,
+						Firebird::ThrowStatusExceptionWrapper
+					>
+				>
+		{
+		public:
+			SystemResultSet(Attachment* aAttachment, Firebird::IExternalResultSet* aResultSet)
+				: attachment(aAttachment),
+				  resultSet(aResultSet)
+			{
+			}
+
+		public:
+			void dispose() override
+			{
+				delete this;
+			}
+
+		public:
+			FB_BOOLEAN fetch(Firebird::ThrowStatusExceptionWrapper* status) override
+			{
+				Firebird::AutoSetRestore<bool> autoInSystemPackage(&attachment->att_in_system_routine, true);
+
+				return resultSet->fetch(status);
+			}
+
+		private:
+			Attachment* attachment;
+			Firebird::AutoDispose<Firebird::IExternalResultSet> resultSet;
+		};
+
 		class SystemProcedureImpl :
 			public
 				Firebird::DisposeIface<
@@ -249,6 +285,9 @@ namespace Jrd
 			SystemProcedureImpl(Firebird::ThrowStatusExceptionWrapper* status,
 				Firebird::IMetadataBuilder* inBuilder, Firebird::IMetadataBuilder* outBuilder)
 			{
+				const auto tdbb = JRD_get_thread_data();
+				attachment = tdbb->getAttachment();
+
 				Input::setup(status, inBuilder);
 				Output::setup(status, outBuilder);
 			}
@@ -269,10 +308,17 @@ namespace Jrd
 			Firebird::IExternalResultSet* open(Firebird::ThrowStatusExceptionWrapper* status,
 				Firebird::IExternalContext* context, void* inMsg, void* outMsg) override
 			{
-				return OpenFunction(status, context,
+				Firebird::AutoSetRestore<bool> autoInSystemPackage(&attachment->att_in_system_routine, true);
+
+				const auto resultSet = OpenFunction(status, context,
 					static_cast<typename Input::Type*>(inMsg),
 					static_cast<typename Output::Type*>(outMsg));
+
+				return resultSet ? FB_NEW SystemResultSet(attachment, resultSet) : nullptr;
 			}
+
+		private:
+			Attachment* attachment;
 		};
 
 		SystemProcedureImpl* operator()(
@@ -311,6 +357,9 @@ namespace Jrd
 			SystemFunctionImpl(Firebird::ThrowStatusExceptionWrapper* status,
 				Firebird::IMetadataBuilder* inBuilder, Firebird::IMetadataBuilder* outBuilder)
 			{
+				const auto tdbb = JRD_get_thread_data();
+				attachment = tdbb->getAttachment();
+
 				Input::setup(status, inBuilder);
 				Output::setup(status, outBuilder);
 			}
@@ -325,10 +374,15 @@ namespace Jrd
 			void execute(Firebird::ThrowStatusExceptionWrapper* status,
 				Firebird::IExternalContext* context, void* inMsg, void* outMsg) override
 			{
+				Firebird::AutoSetRestore<bool> autoInSystemPackage(&attachment->att_in_system_routine, true);
+
 				ExecFunction(status, context,
 					static_cast<typename Input::Type*>(inMsg),
 					static_cast<typename Output::Type*>(outMsg));
 			}
+
+		private:
+			Attachment* attachment;
 		};
 
 		SystemFunctionImpl* operator()(

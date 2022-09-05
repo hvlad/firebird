@@ -150,11 +150,18 @@
 
 #ifdef MIPSEL
 #define FB_CPU CpuMipsel
+#define RISC_ALIGNMENT
 #endif /* mipsel */
 
 #ifdef MIPSEB
 #define FB_CPU CpuMips
+#define RISC_ALIGNMENT
 #endif /* mips */
+
+#ifdef MIPS64EL
+#define FB_CPU CpuMips64el
+#define RISC_ALIGNMENT
+#endif /* mips64el */
 
 #ifdef IA64
 #define FB_CPU CpuIa64
@@ -262,7 +269,7 @@
 
 
 /*****************************************************
-* FreeBSD for Intel platforms
+* FreeBSD
 *****************************************************/
 #ifdef FREEBSD
 
@@ -274,7 +281,13 @@
 
 #ifdef AMD64
 #define FB_CPU CpuAmd
-#else
+#endif
+
+#ifdef PPC64EL
+#define FB_CPU CpuPowerPc64el
+#endif
+
+#if defined(i386) || defined(__i386) || defined(__i386__)
 #define I386
 #define FB_CPU CpuIntel
 #endif

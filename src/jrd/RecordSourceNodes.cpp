@@ -627,7 +627,7 @@ RelationSourceNode* RelationSourceNode::parse(thread_db* tdbb, CompilerScratch* 
 		csb->csb_rpt[node->stream].csb_relation = node->relation;
 		csb->csb_rpt[node->stream].csb_alias = aliasString;
 
-		if (csb->csb_g_flags & csb_get_dependencies)
+		if (csb->collectingDependencies())
 			PAR_dependency(tdbb, csb, node->stream, (SSHORT) -1, "");
 	}
 	else
@@ -1000,7 +1000,7 @@ ProcedureSourceNode* ProcedureSourceNode::parse(thread_db* tdbb, CompilerScratch
 	PAR_procedure_parms(tdbb, csb, procedure, node->in_msg.getAddress(),
 		node->sourceList.getAddress(), node->targetList.getAddress(), true);
 
-	if (csb->csb_g_flags & csb_get_dependencies)
+	if (csb->collectingDependencies())
 		PAR_dependency(tdbb, csb, node->stream, (SSHORT) -1, "");
 
 	return node;

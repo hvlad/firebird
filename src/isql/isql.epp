@@ -121,6 +121,7 @@ enum literal_string_type
 #include "../isql/PtrSentry.h"
 #include "../common/classes/UserBlob.h"
 #include "../common/classes/MsgPrint.h"
+#include "../common/classes/array.h"
 
 using Firebird::PathName;
 using Firebird::TempFile;
@@ -584,6 +585,7 @@ public:
 		ISQL_charset[0] = 0;
 		KeepTranParams = true;
 		TranParams->assign(DEFAULT_DML_TRANS_SQL);
+		PerTableStats = false;
 	}
 
 	ColList global_Cols;
@@ -607,6 +609,7 @@ public:
 	unsigned int StmtTimeout;
 	SCHAR ISQL_charset[MAXCHARSET_SIZE];
 	bool KeepTranParams;
+	bool PerTableStats;
 };
 
 static SetValues setValues;
@@ -645,6 +648,74 @@ static const SCHAR* alpha_months[] =
 	"NOV",
 	"DEC"
 };
+
+class PerTableStats
+{
+public:
+	PerTableStats(Firebird::MemoryPool& pool) :
+		m_initialized(false),
+		m_stat(pool),
+		m_relNames(pool)
+	{}
+
+	void getStats(Firebird::IAttachment* att, bool initial);
+	void reset();
+
+private:
+	void printStats(Firebird::IAttachment* att);
+	unsigned loadRelNames(Firebird::IAttachment* att);
+
+	struct StatItem
+	{
+		StatItem() :
+			relId(0),
+			statId(0),
+			value(0)
+		{}
+
+		StatItem(USHORT aRelId, UCHAR  aStatID) :
+			relId(aRelId),
+			statId(aStatID),
+			value(0)
+		{}
+
+		USHORT relId;
+		UCHAR  statId;
+		SINT64 value;
+
+		static bool greaterThan(const StatItem& i1, const StatItem& i2)
+		{
+			if (i1.relId < i2.relId)
+				return false;
+
+			if (i1.relId > i2.relId)
+				return true;
+
+			if (i1.statId <= i2.statId)
+				return false;
+
+			return true;
+		}
+	};
+
+	using StatArray = Firebird::SortedArray<
+		StatItem,
+		Firebird::EmptyStorage<StatItem>,
+		StatItem,
+		Firebird::DefaultKeyValue<StatItem>,
+		StatItem>;
+
+	bool m_initialized;		// initial (before) stats loaded OK
+	StatArray m_stat;
+	Firebird::GenericMap<Firebird::Right<USHORT, Firebird::string>> m_relNames;
+
+	static const int ITEM_COUNT = 8;
+	static const unsigned char m_items[ITEM_COUNT + 1];
+	static const char* m_itemNames[ITEM_COUNT];
+};
+
+static Firebird::GlobalPtr<PerTableStats> perTableStats;
+
 
 static UCHAR predefined_blob_subtype_bpb[] =
 {
@@ -5320,7 +5391,7 @@ static processing_state frontend_set(const char* cmd, const char* const* parms,
 			exec_path_display,
 			sql, warning, sqlCont, heading, bail,
 			bulk_insert, maxrows, stmtTimeout,
-			keepTranParams,
+			keepTranParams,	perTableStats,
 			wrong
 		};
 		SetOptions(const optionsMap* inmap, size_t insize, int wrongval)
@@ -5361,6 +5432,7 @@ static processing_state frontend_set(const char* cmd, const char* const* parms,
 		{SetOptions::stmtTimeout, "LOCAL_TIMEOUT", 0},
 		{SetOptions::sqlCont, "DECFLOAT", 0},
 		{SetOptions::keepTranParams, "KEEP_TRAN_PARAMS", 9},
+		{SetOptions::perTableStats, "PER_TABLE_STATS", 7}
 	};
 
 	// Display current set options
@@ -5594,6 +5666,10 @@ static processing_state frontend_set(const char* cmd, const char* const* parms,
 				TranParams->assign(setValues.KeepTranParams ? DEFAULT_DML_TRANS_SQL : "");
 		}
 
+		break;
+
+	case SetOptions::perTableStats:
+		ret = do_set_command(parms[2], &setValues.PerTableStats);
 		break;
 
 	default:
@@ -6386,6 +6462,7 @@ static processing_state print_sets()
  **************************************/
 
 	print_set("Print statistics:", setValues.Stats);
+	print_set("Print per-table stats:", setValues.PerTableStats);
 	print_set("Echo commands:", setValues.Echo);
 	print_set("List format:", setValues.List);
 	print_set("Show Row Count:", setValues.Docount);
@@ -6491,8 +6568,10 @@ static processing_state help(const TEXT* what)
 		HLP_SETECHO,			//	SET ECHO				-- toggle command echo on/off
 		HLP_SETEXPLAIN,			//	SET EXPLAIN				-- toggle display of query plan in the explained form
 		HLP_SETHEADING,			//  SET HEADING 	        -- toggle column titles display on/off
+		HLP_SETKEEPTRAN,		//	SET KEEP_TRAN_params	-- toggle to keep or not to keep text of following successful SET TRANSACTION statement
 		HLP_SETLIST,			//	SET LIST				-- toggle column or table display format
 		HLP_SETNAMES,			//	SET NAMES <csname>		-- set name of runtime character set
+		HLP_SETPERTAB,			//	SET PER_TABle_stats		-- toggle display of detailed per-table statistics
 		HLP_SETPLAN,			//	SET PLAN				-- toggle display of query access plan
 		HLP_SETPLANONLY,		//	SET PLANONLY			-- toggle display of query plan without executing
 		HLP_SETSQLDIALECT,		//	SET SQL DIALECT <n>		-- set sql dialect to <n>
@@ -6837,6 +6916,8 @@ static processing_state newdb(TEXT* dbname,
 		// No use in cancel when running non-end-user operators
 		DB->cancelOperation(fbStatus, fb_cancel_disable);
 	} // scope
+
+	perTableStats->reset();
 
 	ISQL_get_version(false);
 
@@ -8989,6 +9070,9 @@ static processing_state process_statement(const TEXT* str2)
 		}
 	}
 
+	if (setValues.PerTableStats)
+		perTableStats->getStats(DB, true);
+
 	// Prepare the dynamic query stored in string.
 	// But put this on the DDL transaction to get maximum visibility of
 	// metadata.
@@ -9132,6 +9216,10 @@ static processing_state process_statement(const TEXT* str2)
 
 			if (setValues.Stats && (print_performance(perf_before) == ps_ERR))
 				ret = ps_ERR;
+
+			if (setValues.PerTableStats)
+				perTableStats->getStats(DB, false);
+
 			return ret;
 		}
 
@@ -9147,6 +9235,10 @@ static processing_state process_statement(const TEXT* str2)
 
 			if (setValues.Stats && (print_performance(perf_before) == ps_ERR))
 				ret = ps_ERR;
+
+			if (setValues.PerTableStats)
+				perTableStats->getStats(DB, false);
+
 			return ret;
 		}
 
@@ -9190,6 +9282,10 @@ static processing_state process_statement(const TEXT* str2)
 
 		if (setValues.Stats && (print_performance(perf_before) == ps_ERR))
 			ret = ps_ERR;
+
+		if (setValues.PerTableStats)
+			perTableStats->getStats(DB, false);
+
 		return ret;
 	}
 
@@ -9381,6 +9477,9 @@ static processing_state process_statement(const TEXT* str2)
 
 	if (setValues.Stats && (print_performance(perf_before) == ps_ERR))
 		ret = ps_ERR;
+
+	if (setValues.PerTableStats)
+		perTableStats->getStats(DB, false);
 
 	if (pad)
 		ISQL_FREE(pad);
@@ -9618,4 +9717,264 @@ static const char* charset_to_string(unsigned charset)
 		return text->c_str();
 
 	return UNKNOWN;
+}
+
+
+/// class PerTableStats
+
+const unsigned char PerTableStats::m_items[] =
+{
+	isc_info_read_seq_count, isc_info_read_idx_count,
+	isc_info_insert_count, isc_info_update_count, isc_info_delete_count,
+	isc_info_backout_count, isc_info_purge_count, isc_info_expunge_count,
+	isc_info_end
+};
+
+const char* PerTableStats::m_itemNames[] =
+{
+	" Natural", " Index",
+	" Insert",  " Update", " Delete",
+	" Backout", " Purge",  " Expunge"
+};
+
+
+void PerTableStats::getStats(Firebird::IAttachment* att, bool initial)
+{
+	if (initial)
+		m_stat.clear();
+	else if (!m_initialized)
+		return;
+
+	Firebird::Array<unsigned char> buffer(*getDefaultMemoryPool(), 32 * 1024);
+	unsigned char* buff = buffer.begin();
+
+	att->getInfo(fbStatus, sizeof(m_items), m_items, buffer.getCapacity(), buff);
+
+	if (ISQL_errmsg(fbStatus))
+		return;
+
+	const unsigned char* p = buff;
+	const unsigned char* end = buff + buffer.getCapacity();
+	while (p < end)
+	{
+		StatItem item;
+
+		item.statId = *p++;
+		if (item.statId == isc_info_end)
+			break;
+
+		const FB_SIZE_T len = isc_portable_integer(p, 2);
+		p += 2;
+		const unsigned char* const end2 = p + len;
+		while (p < end2)
+		{
+			item.relId = isc_portable_integer(p, 2);
+			p += 2;
+			item.value = isc_portable_integer(p, 4);
+			p += 4;
+
+			if (initial)
+			{
+				if (item.value)
+					m_stat.add(item);
+			}
+			else
+			{
+				FB_SIZE_T pos;
+				if (m_stat.find(item, pos))
+				{
+					m_stat[pos].value = item.value - m_stat[pos].value;
+					if (m_stat[pos].value == 0)
+						m_stat.remove(pos);
+				}
+				else if (item.value)
+					m_stat.add(item);
+			}
+		}
+	}
+
+	if (!initial)
+	{
+		printStats(att);
+		m_stat.clear();
+	}
+	m_initialized = initial;
+}
+
+void PerTableStats::reset()
+{
+	m_relNames.clear();
+}
+
+void PerTableStats::printStats(Firebird::IAttachment* att)
+{
+	if (m_stat.isEmpty())
+		return;
+
+	unsigned maxTabLen = loadRelNames(att);
+
+	IUTILS_printf2(Diag, "Per table statistics:%s", NEWLINE);
+
+	Firebird::string h;
+
+	unsigned lenTable = maxTabLen < 32 ? 32 : FB_ALIGN(maxTabLen, 4);
+	unsigned lenValue = 9;
+
+	h.append(lenTable, '-');
+	h.append(1, '+');
+
+	for (int i = 0; i < ITEM_COUNT; i++)
+	{
+		h.append(lenValue, '-');
+		h.append(1, '+');
+	}
+
+	IUTILS_printf2(Diag, "%s%s", h.c_str(), NEWLINE);
+
+	Firebird::string s;
+	s.printf("%-*s|", lenTable, " Table name");
+
+	for (int i = 0; i < ITEM_COUNT; i++)
+	{
+		Firebird::string l;
+		l.printf("%-*s|", lenValue, m_itemNames[i]);
+
+		s.append(l);
+	}
+	IUTILS_printf2(Diag, "%s%s", s.c_str(), NEWLINE);
+
+	s = h;
+	USHORT relId = MAX_USHORT;
+	FB_SIZE_T lenName;
+	for (StatItem* item = m_stat.begin(); item < m_stat.end(); item++)
+	{
+		if (relId != item->relId)
+		{
+			IUTILS_printf2(Diag, "%s%s", s.c_str(), NEWLINE);
+
+			relId = item->relId;
+
+			if (Firebird::string* relName = m_relNames.get(relId))
+			{
+				IcuUtil::pad(s.getBuffer(lenTable * 4 + 1), isqlGlob.att_charset,
+							 relName->length(), relName->c_str(),
+							 lenTable, false);
+				s.recalculate_length();
+				lenName = s.length();
+				s += '|';
+			}
+			else
+				s.printf("%-*d|", lenTable, item->relId);
+
+			for (int i = 0; i < ITEM_COUNT; i++)
+			{
+				s.append(lenValue, ' ');
+				s.append(1, '|');
+			}
+		}
+
+		for (int i = 0; i < sizeof(m_items) - 1; i++)
+		{
+			if (m_items[i] == item->statId)
+			{
+				Firebird::string v;
+				v.printf("%*" UQUADFORMAT, lenValue, item->value);
+
+				FB_SIZE_T pos = lenName + 1 + (lenValue + 1) * i;
+				pos += lenValue - v.length();
+				s.replace(pos, v.length(), v.begin(), v.length());
+			}
+		}
+	}
+
+	if (relId)
+	{
+		IUTILS_printf2(Diag, "%s%s", s.c_str(), NEWLINE);
+		IUTILS_printf2(Diag, "%s%s", h.c_str(), NEWLINE);
+	}
+}
+
+unsigned PerTableStats::loadRelNames(Firebird::IAttachment* att)
+{
+	Firebird::string sIds;
+
+	unsigned maxLen = 0;
+	USHORT relId = MAX_USHORT;
+	for (StatItem* item = m_stat.begin(); item < m_stat.end(); item++)
+	{
+		if (relId == item->relId)
+			continue;
+
+		relId = item->relId;
+
+		if (m_relNames.exist(relId))
+		{
+			const auto str = m_relNames.get(relId);
+			const unsigned len = IcuUtil::charLength(isqlGlob.att_charset, str->length(), str->c_str());
+			if (maxLen < len)
+				maxLen = len;
+
+			continue;
+		}
+
+		Firebird::string s;
+		s.printf("%u", relId);
+
+		if (!sIds.isEmpty())
+			sIds.append(", ");
+		sIds.append(s);
+	}
+
+	if (sIds.isEmpty())
+		return maxLen;
+
+	if (!frontendTransaction())
+		return maxLen; // ?
+
+	Firebird::string sql;
+	sql.printf("SELECT RDB$RELATION_ID, RDB$RELATION_NAME FROM RDB$RELATIONS WHERE RDB$RELATION_ID IN (%s)",
+				sIds.c_str());
+
+	Firebird::IResultSet* rs = att->openCursor(fbStatus, fbTrans,
+		sql.length(), sql.c_str(), SQL_DIALECT_CURRENT,
+		NULL, NULL, NULL, NULL,
+		Firebird::IStatement::PREPARE_PREFETCH_METADATA);
+
+	Firebird::IMessageMetadata* outMeta = rs->getMetadata(fbStatus);
+
+	unsigned msgLen = outMeta->getMessageLength(fbStatus);
+	Firebird::HalfStaticArray<char, 512> buff(msgLen);
+
+	char* msg = buff.getBuffer(msgLen);
+
+	if (outMeta->getType(fbStatus, 0) != SQL_SHORT)
+		return maxLen;
+	if (outMeta->getType(fbStatus, 1) != SQL_TEXT)
+		return maxLen;
+
+	SSHORT* pRelID = (SSHORT*) (msg + outMeta->getOffset(fbStatus, 0));
+	SSHORT* pRelID_Null = (SSHORT*)(msg + outMeta->getNullOffset(fbStatus, 0));
+
+	char* pRelName = msg + outMeta->getOffset(fbStatus, 1);
+	SSHORT* pRelName_Null = (SSHORT*)(msg + outMeta->getNullOffset(fbStatus, 1));
+	const unsigned relNameSize = outMeta->getLength(fbStatus, 1);
+
+	while (rs->fetchNext(fbStatus, msg) != Firebird::IStatus::RESULT_NO_DATA)
+	{
+		if (*pRelID_Null == FB_TRUE || *pRelName_Null == FB_TRUE)
+			continue;
+
+		pRelName[relNameSize] = 0;
+		char* name = fb_utils::exact_name(pRelName);
+		const unsigned len = IcuUtil::charLength(isqlGlob.att_charset, strlen(name), pRelName);
+		if (maxLen < len)
+			maxLen = len;
+
+		m_relNames.put(*pRelID, name);
+	}
+
+	outMeta->release();
+	rs->release();
+
+	return maxLen;
 }

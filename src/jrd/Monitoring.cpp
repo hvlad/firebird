@@ -190,16 +190,15 @@ void MonitoringData::initSharedFile()
 	{
 		m_sharedMemory.reset(FB_NEW_POOL(getPool())
 			SharedMemory<MonitoringHeader>(name.c_str(), DEFAULT_SIZE, this));
+
+		const auto header = m_sharedMemory->getHeader();
+		checkHeader(header);
 	}
 	catch (const Exception& ex)
 	{
 		iscLogException("MonitoringData: Cannot initialize the shared memory region", ex);
 		throw;
 	}
-
-	fb_assert(m_sharedMemory->getHeader()->mhb_type == SharedMemoryBase::SRAM_DATABASE_SNAPSHOT);
-	fb_assert(m_sharedMemory->getHeader()->mhb_header_version == MemoryHeader::HEADER_VERSION);
-	fb_assert(m_sharedMemory->getHeader()->mhb_version == MONITOR_VERSION);
 }
 
 
@@ -389,7 +388,7 @@ bool MonitoringData::initialize(SharedMemoryBase* sm, bool initialize)
 		MonitoringHeader* const header = reinterpret_cast<MonitoringHeader*>(sm->sh_mem_header);
 
 		// Initialize the shared data header
-		header->init(SharedMemoryBase::SRAM_DATABASE_SNAPSHOT, MONITOR_VERSION);
+		initHeader(header);
 
 		header->used = alignOffset(sizeof(Header));
 		header->allocated = sm->sh_mem_length_mapped;

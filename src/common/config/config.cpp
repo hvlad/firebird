@@ -655,6 +655,12 @@ const char* Config::getPlugins(unsigned int type) const
 			aKey = key;
 			break;
 		}
+		case IPluginManager::TYPE_PROFILER:
+		{
+			DECLARE_PER_DB_KEY(KEY_PLUG_PROFILER);
+			aKey = key;
+			break;
+		}
 		case IPluginManager::TYPE_TRACE:
 		{
 			DECLARE_PER_DB_KEY(KEY_PLUG_TRACE);

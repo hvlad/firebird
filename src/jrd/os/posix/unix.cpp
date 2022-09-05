@@ -318,7 +318,7 @@ void PIO_extend(thread_db* tdbb, jrd_file* main_file, const ULONG extPages, cons
 
 #if defined(HAVE_LINUX_FALLOC_H) && defined(HAVE_FALLOCATE)
 
-	EngineCheckout cout(tdbb, FB_FUNCTION, true);
+	EngineCheckout cout(tdbb, FB_FUNCTION, EngineCheckout::UNNECESSARY);
 
 	ULONG leftPages = extPages;
 	for (jrd_file* file = main_file; file && leftPages; file = file->fil_next)
@@ -388,7 +388,7 @@ void PIO_flush(thread_db* tdbb, jrd_file* main_file)
 	// Since all SUPERSERVER_V2 database and shadow I/O is synchronous, this is a no-op.
 #ifndef SUPERSERVER_V2
 
-	EngineCheckout cout(tdbb, FB_FUNCTION, true);
+	EngineCheckout cout(tdbb, FB_FUNCTION, EngineCheckout::UNNECESSARY);
 	MutexLockGuard guard(main_file->fil_mutex, FB_FUNCTION);
 
 	for (jrd_file* file = main_file; file; file = file->fil_next)
@@ -608,7 +608,7 @@ USHORT PIO_init_data(thread_db* tdbb, jrd_file* main_file, FbStatusVector* statu
 
 	FB_UINT64 offset;
 
-	EngineCheckout cout(tdbb, FB_FUNCTION, true);
+	EngineCheckout cout(tdbb, FB_FUNCTION, EngineCheckout::UNNECESSARY);
 
 	jrd_file* file = seek_file(main_file, &bdb, &offset, status_vector);
 
@@ -756,7 +756,7 @@ bool PIO_read(thread_db* tdbb, jrd_file* file, BufferDesc* bdb, Ods::pag* page, 
 
 	Database* const dbb = tdbb->getDatabase();
 
-	EngineCheckout cout(tdbb, FB_FUNCTION, true);
+	EngineCheckout cout(tdbb, FB_FUNCTION, EngineCheckout::UNNECESSARY);
 
 	const SLONG size = dbb->dbb_page_size;
 
@@ -808,7 +808,7 @@ bool PIO_write(thread_db* tdbb, jrd_file* file, BufferDesc* bdb, Ods::pag* page,
 
 	Database* const dbb = tdbb->getDatabase();
 
-	EngineCheckout cout(tdbb, FB_FUNCTION, true);
+	EngineCheckout cout(tdbb, FB_FUNCTION, EngineCheckout::UNNECESSARY);
 
 	const SLONG size = dbb->dbb_page_size;
 

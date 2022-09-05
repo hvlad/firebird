@@ -1273,7 +1273,7 @@ SLONG get_compressed(BurpGlobals* tdgbl, UCHAR* buffer, SLONG length)
 				count = -length;
 			}
 			const UCHAR c = *p = get(tdgbl);
-			*p++;
+			++p;
 			length -= -count;
 		}
 	}
@@ -3092,7 +3092,7 @@ static void commit_relation_data(BurpGlobals* tdgbl, burp_rel* relation)
 				BURP_print_status(false, &tdgbl->status_vector);
 
 				FOR(REQUEST_HANDLE req_handle)
-					IDX IN RDB$INDICES 
+					IDX IN RDB$INDICES
 					WITH IDX.RDB$INDEX_NAME EQ index_name
 				{
 					MODIFY IDX USING
@@ -12183,7 +12183,7 @@ bool RestoreRelationTask::fileReader(Item& item)
 	{
 		// get record length and decide if it fits into the current buffer
 		// blobs\arrays is not accounted here
-		// record is 
+		// record is
 		//	<att_data_length> <len>
 		//	<att_xdr_length> <xdrLen> (optional)
 		//	<att_data_data> <data>
@@ -12242,7 +12242,7 @@ bool RestoreRelationTask::fileReader(Item& item)
 			buf += sizeof(SLONG);
 		}
 
-		*buf++ = att_data_data; 
+		*buf++ = att_data_data;
 
 		if (tdgbl->gbl_sw_compress)
 			len = get_compressed(tdgbl, buf, len);

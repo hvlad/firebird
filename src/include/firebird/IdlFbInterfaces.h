@@ -121,6 +121,9 @@ namespace Firebird
 	class IReplicatedRecord;
 	class IReplicatedTransaction;
 	class IReplicatedSession;
+	class IProfilerPlugin;
+	class IProfilerSession;
+	class IProfilerStats;
 
 	// Interfaces declarations
 
@@ -825,7 +828,8 @@ namespace Firebird
 		static const unsigned TYPE_DB_CRYPT = 9;
 		static const unsigned TYPE_KEY_HOLDER = 10;
 		static const unsigned TYPE_REPLICATOR = 11;
-		static const unsigned TYPE_COUNT = 12;
+		static const unsigned TYPE_PROFILER = 12;
+		static const unsigned TYPE_COUNT = 13;
 
 		void registerPluginFactory(unsigned pluginType, const char* defaultName, IPluginFactory* factory)
 		{
@@ -6679,6 +6683,200 @@ namespace Firebird
 			StatusType::clearException(status);
 			static_cast<VTable*>(this->cloopVTable)->setSequence(this, status, name, value);
 			StatusType::checkException(status);
+		}
+	};
+
+	class IProfilerPlugin : public IPluginBase
+	{
+	public:
+		struct VTable : public IPluginBase::VTable
+		{
+			void (CLOOP_CARG *init)(IProfilerPlugin* self, IStatus* status, IAttachment* attachment) throw();
+			IProfilerSession* (CLOOP_CARG *startSession)(IProfilerPlugin* self, IStatus* status, const char* description, const char* options, ISC_TIMESTAMP_TZ timestamp) throw();
+			void (CLOOP_CARG *flush)(IProfilerPlugin* self, IStatus* status) throw();
+		};
+
+	protected:
+		IProfilerPlugin(DoNotInherit)
+			: IPluginBase(DoNotInherit())
+		{
+		}
+
+		~IProfilerPlugin()
+		{
+		}
+
+	public:
+		static const unsigned VERSION = 4;
+
+		template <typename StatusType> void init(StatusType* status, IAttachment* attachment)
+		{
+			StatusType::clearException(status);
+			static_cast<VTable*>(this->cloopVTable)->init(this, status, attachment);
+			StatusType::checkException(status);
+		}
+
+		template <typename StatusType> IProfilerSession* startSession(StatusType* status, const char* description, const char* options, ISC_TIMESTAMP_TZ timestamp)
+		{
+			StatusType::clearException(status);
+			IProfilerSession* ret = static_cast<VTable*>(this->cloopVTable)->startSession(this, status, description, options, timestamp);
+			StatusType::checkException(status);
+			return ret;
+		}
+
+		template <typename StatusType> void flush(StatusType* status)
+		{
+			StatusType::clearException(status);
+			static_cast<VTable*>(this->cloopVTable)->flush(this, status);
+			StatusType::checkException(status);
+		}
+	};
+
+	class IProfilerSession : public IDisposable
+	{
+	public:
+		struct VTable : public IDisposable::VTable
+		{
+			ISC_INT64 (CLOOP_CARG *getId)(IProfilerSession* self) throw();
+			unsigned (CLOOP_CARG *getFlags)(IProfilerSession* self) throw();
+			void (CLOOP_CARG *cancel)(IProfilerSession* self, IStatus* status) throw();
+			void (CLOOP_CARG *finish)(IProfilerSession* self, IStatus* status, ISC_TIMESTAMP_TZ timestamp) throw();
+			void (CLOOP_CARG *defineStatement)(IProfilerSession* self, IStatus* status, ISC_INT64 statementId, ISC_INT64 parentStatementId, const char* type, const char* packageName, const char* routineName, const char* sqlText) throw();
+			void (CLOOP_CARG *defineRecordSource)(IProfilerSession* self, ISC_INT64 statementId, unsigned cursorId, unsigned recSourceId, const char* accessPath, unsigned parentRecSourceId) throw();
+			void (CLOOP_CARG *onRequestStart)(IProfilerSession* self, IStatus* status, ISC_INT64 requestId, ISC_INT64 statementId, ISC_INT64 callerRequestId, ISC_TIMESTAMP_TZ timestamp) throw();
+			void (CLOOP_CARG *onRequestFinish)(IProfilerSession* self, IStatus* status, ISC_INT64 requestId, ISC_TIMESTAMP_TZ timestamp, IProfilerStats* stats) throw();
+			void (CLOOP_CARG *beforePsqlLineColumn)(IProfilerSession* self, ISC_INT64 requestId, unsigned line, unsigned column) throw();
+			void (CLOOP_CARG *afterPsqlLineColumn)(IProfilerSession* self, ISC_INT64 requestId, unsigned line, unsigned column, IProfilerStats* stats) throw();
+			void (CLOOP_CARG *beforeRecordSourceOpen)(IProfilerSession* self, ISC_INT64 requestId, unsigned cursorId, unsigned recSourceId) throw();
+			void (CLOOP_CARG *afterRecordSourceOpen)(IProfilerSession* self, ISC_INT64 requestId, unsigned cursorId, unsigned recSourceId, IProfilerStats* stats) throw();
+			void (CLOOP_CARG *beforeRecordSourceGetRecord)(IProfilerSession* self, ISC_INT64 requestId, unsigned cursorId, unsigned recSourceId) throw();
+			void (CLOOP_CARG *afterRecordSourceGetRecord)(IProfilerSession* self, ISC_INT64 requestId, unsigned cursorId, unsigned recSourceId, IProfilerStats* stats) throw();
+		};
+
+	protected:
+		IProfilerSession(DoNotInherit)
+			: IDisposable(DoNotInherit())
+		{
+		}
+
+		~IProfilerSession()
+		{
+		}
+
+	public:
+		static const unsigned VERSION = 3;
+
+		static const unsigned FLAG_BEFORE_EVENTS = 0x1;
+		static const unsigned FLAG_AFTER_EVENTS = 0x2;
+
+		ISC_INT64 getId()
+		{
+			ISC_INT64 ret = static_cast<VTable*>(this->cloopVTable)->getId(this);
+			return ret;
+		}
+
+		unsigned getFlags()
+		{
+			unsigned ret = static_cast<VTable*>(this->cloopVTable)->getFlags(this);
+			return ret;
+		}
+
+		template <typename StatusType> void cancel(StatusType* status)
+		{
+			StatusType::clearException(status);
+			static_cast<VTable*>(this->cloopVTable)->cancel(this, status);
+			StatusType::checkException(status);
+		}
+
+		template <typename StatusType> void finish(StatusType* status, ISC_TIMESTAMP_TZ timestamp)
+		{
+			StatusType::clearException(status);
+			static_cast<VTable*>(this->cloopVTable)->finish(this, status, timestamp);
+			StatusType::checkException(status);
+		}
+
+		template <typename StatusType> void defineStatement(StatusType* status, ISC_INT64 statementId, ISC_INT64 parentStatementId, const char* type, const char* packageName, const char* routineName, const char* sqlText)
+		{
+			StatusType::clearException(status);
+			static_cast<VTable*>(this->cloopVTable)->defineStatement(this, status, statementId, parentStatementId, type, packageName, routineName, sqlText);
+			StatusType::checkException(status);
+		}
+
+		void defineRecordSource(ISC_INT64 statementId, unsigned cursorId, unsigned recSourceId, const char* accessPath, unsigned parentRecSourceId)
+		{
+			static_cast<VTable*>(this->cloopVTable)->defineRecordSource(this, statementId, cursorId, recSourceId, accessPath, parentRecSourceId);
+		}
+
+		template <typename StatusType> void onRequestStart(StatusType* status, ISC_INT64 requestId, ISC_INT64 statementId, ISC_INT64 callerRequestId, ISC_TIMESTAMP_TZ timestamp)
+		{
+			StatusType::clearException(status);
+			static_cast<VTable*>(this->cloopVTable)->onRequestStart(this, status, requestId, statementId, callerRequestId, timestamp);
+			StatusType::checkException(status);
+		}
+
+		template <typename StatusType> void onRequestFinish(StatusType* status, ISC_INT64 requestId, ISC_TIMESTAMP_TZ timestamp, IProfilerStats* stats)
+		{
+			StatusType::clearException(status);
+			static_cast<VTable*>(this->cloopVTable)->onRequestFinish(this, status, requestId, timestamp, stats);
+			StatusType::checkException(status);
+		}
+
+		void beforePsqlLineColumn(ISC_INT64 requestId, unsigned line, unsigned column)
+		{
+			static_cast<VTable*>(this->cloopVTable)->beforePsqlLineColumn(this, requestId, line, column);
+		}
+
+		void afterPsqlLineColumn(ISC_INT64 requestId, unsigned line, unsigned column, IProfilerStats* stats)
+		{
+			static_cast<VTable*>(this->cloopVTable)->afterPsqlLineColumn(this, requestId, line, column, stats);
+		}
+
+		void beforeRecordSourceOpen(ISC_INT64 requestId, unsigned cursorId, unsigned recSourceId)
+		{
+			static_cast<VTable*>(this->cloopVTable)->beforeRecordSourceOpen(this, requestId, cursorId, recSourceId);
+		}
+
+		void afterRecordSourceOpen(ISC_INT64 requestId, unsigned cursorId, unsigned recSourceId, IProfilerStats* stats)
+		{
+			static_cast<VTable*>(this->cloopVTable)->afterRecordSourceOpen(this, requestId, cursorId, recSourceId, stats);
+		}
+
+		void beforeRecordSourceGetRecord(ISC_INT64 requestId, unsigned cursorId, unsigned recSourceId)
+		{
+			static_cast<VTable*>(this->cloopVTable)->beforeRecordSourceGetRecord(this, requestId, cursorId, recSourceId);
+		}
+
+		void afterRecordSourceGetRecord(ISC_INT64 requestId, unsigned cursorId, unsigned recSourceId, IProfilerStats* stats)
+		{
+			static_cast<VTable*>(this->cloopVTable)->afterRecordSourceGetRecord(this, requestId, cursorId, recSourceId, stats);
+		}
+	};
+
+	class IProfilerStats : public IVersioned
+	{
+	public:
+		struct VTable : public IVersioned::VTable
+		{
+			ISC_UINT64 (CLOOP_CARG *getElapsedTime)(IProfilerStats* self) throw();
+		};
+
+	protected:
+		IProfilerStats(DoNotInherit)
+			: IVersioned(DoNotInherit())
+		{
+		}
+
+		~IProfilerStats()
+		{
+		}
+
+	public:
+		static const unsigned VERSION = 2;
+
+		ISC_UINT64 getElapsedTime()
+		{
+			ISC_UINT64 ret = static_cast<VTable*>(this->cloopVTable)->getElapsedTime(this);
+			return ret;
 		}
 	};
 
@@ -19856,6 +20054,450 @@ namespace Firebird
 		virtual IReplicatedTransaction* startTransaction(StatusType* status, ITransaction* transaction, ISC_INT64 number) = 0;
 		virtual void cleanupTransaction(StatusType* status, ISC_INT64 number) = 0;
 		virtual void setSequence(StatusType* status, const char* name, ISC_INT64 value) = 0;
+	};
+
+	template <typename Name, typename StatusType, typename Base>
+	class IProfilerPluginBaseImpl : public Base
+	{
+	public:
+		typedef IProfilerPlugin Declaration;
+
+		IProfilerPluginBaseImpl(DoNotInherit = DoNotInherit())
+		{
+			static struct VTableImpl : Base::VTable
+			{
+				VTableImpl()
+				{
+					this->version = Base::VERSION;
+					this->addRef = &Name::cloopaddRefDispatcher;
+					this->release = &Name::cloopreleaseDispatcher;
+					this->setOwner = &Name::cloopsetOwnerDispatcher;
+					this->getOwner = &Name::cloopgetOwnerDispatcher;
+					this->init = &Name::cloopinitDispatcher;
+					this->startSession = &Name::cloopstartSessionDispatcher;
+					this->flush = &Name::cloopflushDispatcher;
+				}
+			} vTable;
+
+			this->cloopVTable = &vTable;
+		}
+
+		static void CLOOP_CARG cloopinitDispatcher(IProfilerPlugin* self, IStatus* status, IAttachment* attachment) throw()
+		{
+			StatusType status2(status);
+
+			try
+			{
+				static_cast<Name*>(self)->Name::init(&status2, attachment);
+			}
+			catch (...)
+			{
+				StatusType::catchException(&status2);
+			}
+		}
+
+		static IProfilerSession* CLOOP_CARG cloopstartSessionDispatcher(IProfilerPlugin* self, IStatus* status, const char* description, const char* options, ISC_TIMESTAMP_TZ timestamp) throw()
+		{
+			StatusType status2(status);
+
+			try
+			{
+				return static_cast<Name*>(self)->Name::startSession(&status2, description, options, timestamp);
+			}
+			catch (...)
+			{
+				StatusType::catchException(&status2);
+				return static_cast<IProfilerSession*>(0);
+			}
+		}
+
+		static void CLOOP_CARG cloopflushDispatcher(IProfilerPlugin* self, IStatus* status) throw()
+		{
+			StatusType status2(status);
+
+			try
+			{
+				static_cast<Name*>(self)->Name::flush(&status2);
+			}
+			catch (...)
+			{
+				StatusType::catchException(&status2);
+			}
+		}
+
+		static void CLOOP_CARG cloopsetOwnerDispatcher(IPluginBase* self, IReferenceCounted* r) throw()
+		{
+			try
+			{
+				static_cast<Name*>(self)->Name::setOwner(r);
+			}
+			catch (...)
+			{
+				StatusType::catchException(0);
+			}
+		}
+
+		static IReferenceCounted* CLOOP_CARG cloopgetOwnerDispatcher(IPluginBase* self) throw()
+		{
+			try
+			{
+				return static_cast<Name*>(self)->Name::getOwner();
+			}
+			catch (...)
+			{
+				StatusType::catchException(0);
+				return static_cast<IReferenceCounted*>(0);
+			}
+		}
+
+		static void CLOOP_CARG cloopaddRefDispatcher(IReferenceCounted* self) throw()
+		{
+			try
+			{
+				static_cast<Name*>(self)->Name::addRef();
+			}
+			catch (...)
+			{
+				StatusType::catchException(0);
+			}
+		}
+
+		static int CLOOP_CARG cloopreleaseDispatcher(IReferenceCounted* self) throw()
+		{
+			try
+			{
+				return static_cast<Name*>(self)->Name::release();
+			}
+			catch (...)
+			{
+				StatusType::catchException(0);
+				return static_cast<int>(0);
+			}
+		}
+	};
+
+	template <typename Name, typename StatusType, typename Base = IPluginBaseImpl<Name, StatusType, Inherit<IReferenceCountedImpl<Name, StatusType, Inherit<IVersionedImpl<Name, StatusType, Inherit<IProfilerPlugin> > > > > > >
+	class IProfilerPluginImpl : public IProfilerPluginBaseImpl<Name, StatusType, Base>
+	{
+	protected:
+		IProfilerPluginImpl(DoNotInherit = DoNotInherit())
+		{
+		}
+
+	public:
+		virtual ~IProfilerPluginImpl()
+		{
+		}
+
+		virtual void init(StatusType* status, IAttachment* attachment) = 0;
+		virtual IProfilerSession* startSession(StatusType* status, const char* description, const char* options, ISC_TIMESTAMP_TZ timestamp) = 0;
+		virtual void flush(StatusType* status) = 0;
+	};
+
+	template <typename Name, typename StatusType, typename Base>
+	class IProfilerSessionBaseImpl : public Base
+	{
+	public:
+		typedef IProfilerSession Declaration;
+
+		IProfilerSessionBaseImpl(DoNotInherit = DoNotInherit())
+		{
+			static struct VTableImpl : Base::VTable
+			{
+				VTableImpl()
+				{
+					this->version = Base::VERSION;
+					this->dispose = &Name::cloopdisposeDispatcher;
+					this->getId = &Name::cloopgetIdDispatcher;
+					this->getFlags = &Name::cloopgetFlagsDispatcher;
+					this->cancel = &Name::cloopcancelDispatcher;
+					this->finish = &Name::cloopfinishDispatcher;
+					this->defineStatement = &Name::cloopdefineStatementDispatcher;
+					this->defineRecordSource = &Name::cloopdefineRecordSourceDispatcher;
+					this->onRequestStart = &Name::clooponRequestStartDispatcher;
+					this->onRequestFinish = &Name::clooponRequestFinishDispatcher;
+					this->beforePsqlLineColumn = &Name::cloopbeforePsqlLineColumnDispatcher;
+					this->afterPsqlLineColumn = &Name::cloopafterPsqlLineColumnDispatcher;
+					this->beforeRecordSourceOpen = &Name::cloopbeforeRecordSourceOpenDispatcher;
+					this->afterRecordSourceOpen = &Name::cloopafterRecordSourceOpenDispatcher;
+					this->beforeRecordSourceGetRecord = &Name::cloopbeforeRecordSourceGetRecordDispatcher;
+					this->afterRecordSourceGetRecord = &Name::cloopafterRecordSourceGetRecordDispatcher;
+				}
+			} vTable;
+
+			this->cloopVTable = &vTable;
+		}
+
+		static ISC_INT64 CLOOP_CARG cloopgetIdDispatcher(IProfilerSession* self) throw()
+		{
+			try
+			{
+				return static_cast<Name*>(self)->Name::getId();
+			}
+			catch (...)
+			{
+				StatusType::catchException(0);
+				return static_cast<ISC_INT64>(0);
+			}
+		}
+
+		static unsigned CLOOP_CARG cloopgetFlagsDispatcher(IProfilerSession* self) throw()
+		{
+			try
+			{
+				return static_cast<Name*>(self)->Name::getFlags();
+			}
+			catch (...)
+			{
+				StatusType::catchException(0);
+				return static_cast<unsigned>(0);
+			}
+		}
+
+		static void CLOOP_CARG cloopcancelDispatcher(IProfilerSession* self, IStatus* status) throw()
+		{
+			StatusType status2(status);
+
+			try
+			{
+				static_cast<Name*>(self)->Name::cancel(&status2);
+			}
+			catch (...)
+			{
+				StatusType::catchException(&status2);
+			}
+		}
+
+		static void CLOOP_CARG cloopfinishDispatcher(IProfilerSession* self, IStatus* status, ISC_TIMESTAMP_TZ timestamp) throw()
+		{
+			StatusType status2(status);
+
+			try
+			{
+				static_cast<Name*>(self)->Name::finish(&status2, timestamp);
+			}
+			catch (...)
+			{
+				StatusType::catchException(&status2);
+			}
+		}
+
+		static void CLOOP_CARG cloopdefineStatementDispatcher(IProfilerSession* self, IStatus* status, ISC_INT64 statementId, ISC_INT64 parentStatementId, const char* type, const char* packageName, const char* routineName, const char* sqlText) throw()
+		{
+			StatusType status2(status);
+
+			try
+			{
+				static_cast<Name*>(self)->Name::defineStatement(&status2, statementId, parentStatementId, type, packageName, routineName, sqlText);
+			}
+			catch (...)
+			{
+				StatusType::catchException(&status2);
+			}
+		}
+
+		static void CLOOP_CARG cloopdefineRecordSourceDispatcher(IProfilerSession* self, ISC_INT64 statementId, unsigned cursorId, unsigned recSourceId, const char* accessPath, unsigned parentRecSourceId) throw()
+		{
+			try
+			{
+				static_cast<Name*>(self)->Name::defineRecordSource(statementId, cursorId, recSourceId, accessPath, parentRecSourceId);
+			}
+			catch (...)
+			{
+				StatusType::catchException(0);
+			}
+		}
+
+		static void CLOOP_CARG clooponRequestStartDispatcher(IProfilerSession* self, IStatus* status, ISC_INT64 requestId, ISC_INT64 statementId, ISC_INT64 callerRequestId, ISC_TIMESTAMP_TZ timestamp) throw()
+		{
+			StatusType status2(status);
+
+			try
+			{
+				static_cast<Name*>(self)->Name::onRequestStart(&status2, requestId, statementId, callerRequestId, timestamp);
+			}
+			catch (...)
+			{
+				StatusType::catchException(&status2);
+			}
+		}
+
+		static void CLOOP_CARG clooponRequestFinishDispatcher(IProfilerSession* self, IStatus* status, ISC_INT64 requestId, ISC_TIMESTAMP_TZ timestamp, IProfilerStats* stats) throw()
+		{
+			StatusType status2(status);
+
+			try
+			{
+				static_cast<Name*>(self)->Name::onRequestFinish(&status2, requestId, timestamp, stats);
+			}
+			catch (...)
+			{
+				StatusType::catchException(&status2);
+			}
+		}
+
+		static void CLOOP_CARG cloopbeforePsqlLineColumnDispatcher(IProfilerSession* self, ISC_INT64 requestId, unsigned line, unsigned column) throw()
+		{
+			try
+			{
+				static_cast<Name*>(self)->Name::beforePsqlLineColumn(requestId, line, column);
+			}
+			catch (...)
+			{
+				StatusType::catchException(0);
+			}
+		}
+
+		static void CLOOP_CARG cloopafterPsqlLineColumnDispatcher(IProfilerSession* self, ISC_INT64 requestId, unsigned line, unsigned column, IProfilerStats* stats) throw()
+		{
+			try
+			{
+				static_cast<Name*>(self)->Name::afterPsqlLineColumn(requestId, line, column, stats);
+			}
+			catch (...)
+			{
+				StatusType::catchException(0);
+			}
+		}
+
+		static void CLOOP_CARG cloopbeforeRecordSourceOpenDispatcher(IProfilerSession* self, ISC_INT64 requestId, unsigned cursorId, unsigned recSourceId) throw()
+		{
+			try
+			{
+				static_cast<Name*>(self)->Name::beforeRecordSourceOpen(requestId, cursorId, recSourceId);
+			}
+			catch (...)
+			{
+				StatusType::catchException(0);
+			}
+		}
+
+		static void CLOOP_CARG cloopafterRecordSourceOpenDispatcher(IProfilerSession* self, ISC_INT64 requestId, unsigned cursorId, unsigned recSourceId, IProfilerStats* stats) throw()
+		{
+			try
+			{
+				static_cast<Name*>(self)->Name::afterRecordSourceOpen(requestId, cursorId, recSourceId, stats);
+			}
+			catch (...)
+			{
+				StatusType::catchException(0);
+			}
+		}
+
+		static void CLOOP_CARG cloopbeforeRecordSourceGetRecordDispatcher(IProfilerSession* self, ISC_INT64 requestId, unsigned cursorId, unsigned recSourceId) throw()
+		{
+			try
+			{
+				static_cast<Name*>(self)->Name::beforeRecordSourceGetRecord(requestId, cursorId, recSourceId);
+			}
+			catch (...)
+			{
+				StatusType::catchException(0);
+			}
+		}
+
+		static void CLOOP_CARG cloopafterRecordSourceGetRecordDispatcher(IProfilerSession* self, ISC_INT64 requestId, unsigned cursorId, unsigned recSourceId, IProfilerStats* stats) throw()
+		{
+			try
+			{
+				static_cast<Name*>(self)->Name::afterRecordSourceGetRecord(requestId, cursorId, recSourceId, stats);
+			}
+			catch (...)
+			{
+				StatusType::catchException(0);
+			}
+		}
+
+		static void CLOOP_CARG cloopdisposeDispatcher(IDisposable* self) throw()
+		{
+			try
+			{
+				static_cast<Name*>(self)->Name::dispose();
+			}
+			catch (...)
+			{
+				StatusType::catchException(0);
+			}
+		}
+	};
+
+	template <typename Name, typename StatusType, typename Base = IDisposableImpl<Name, StatusType, Inherit<IVersionedImpl<Name, StatusType, Inherit<IProfilerSession> > > > >
+	class IProfilerSessionImpl : public IProfilerSessionBaseImpl<Name, StatusType, Base>
+	{
+	protected:
+		IProfilerSessionImpl(DoNotInherit = DoNotInherit())
+		{
+		}
+
+	public:
+		virtual ~IProfilerSessionImpl()
+		{
+		}
+
+		virtual ISC_INT64 getId() = 0;
+		virtual unsigned getFlags() = 0;
+		virtual void cancel(StatusType* status) = 0;
+		virtual void finish(StatusType* status, ISC_TIMESTAMP_TZ timestamp) = 0;
+		virtual void defineStatement(StatusType* status, ISC_INT64 statementId, ISC_INT64 parentStatementId, const char* type, const char* packageName, const char* routineName, const char* sqlText) = 0;
+		virtual void defineRecordSource(ISC_INT64 statementId, unsigned cursorId, unsigned recSourceId, const char* accessPath, unsigned parentRecSourceId) = 0;
+		virtual void onRequestStart(StatusType* status, ISC_INT64 requestId, ISC_INT64 statementId, ISC_INT64 callerRequestId, ISC_TIMESTAMP_TZ timestamp) = 0;
+		virtual void onRequestFinish(StatusType* status, ISC_INT64 requestId, ISC_TIMESTAMP_TZ timestamp, IProfilerStats* stats) = 0;
+		virtual void beforePsqlLineColumn(ISC_INT64 requestId, unsigned line, unsigned column) = 0;
+		virtual void afterPsqlLineColumn(ISC_INT64 requestId, unsigned line, unsigned column, IProfilerStats* stats) = 0;
+		virtual void beforeRecordSourceOpen(ISC_INT64 requestId, unsigned cursorId, unsigned recSourceId) = 0;
+		virtual void afterRecordSourceOpen(ISC_INT64 requestId, unsigned cursorId, unsigned recSourceId, IProfilerStats* stats) = 0;
+		virtual void beforeRecordSourceGetRecord(ISC_INT64 requestId, unsigned cursorId, unsigned recSourceId) = 0;
+		virtual void afterRecordSourceGetRecord(ISC_INT64 requestId, unsigned cursorId, unsigned recSourceId, IProfilerStats* stats) = 0;
+	};
+
+	template <typename Name, typename StatusType, typename Base>
+	class IProfilerStatsBaseImpl : public Base
+	{
+	public:
+		typedef IProfilerStats Declaration;
+
+		IProfilerStatsBaseImpl(DoNotInherit = DoNotInherit())
+		{
+			static struct VTableImpl : Base::VTable
+			{
+				VTableImpl()
+				{
+					this->version = Base::VERSION;
+					this->getElapsedTime = &Name::cloopgetElapsedTimeDispatcher;
+				}
+			} vTable;
+
+			this->cloopVTable = &vTable;
+		}
+
+		static ISC_UINT64 CLOOP_CARG cloopgetElapsedTimeDispatcher(IProfilerStats* self) throw()
+		{
+			try
+			{
+				return static_cast<Name*>(self)->Name::getElapsedTime();
+			}
+			catch (...)
+			{
+				StatusType::catchException(0);
+				return static_cast<ISC_UINT64>(0);
+			}
+		}
+	};
+
+	template <typename Name, typename StatusType, typename Base = IVersionedImpl<Name, StatusType, Inherit<IProfilerStats> > >
+	class IProfilerStatsImpl : public IProfilerStatsBaseImpl<Name, StatusType, Base>
+	{
+	protected:
+		IProfilerStatsImpl(DoNotInherit = DoNotInherit())
+		{
+		}
+
+	public:
+		virtual ~IProfilerStatsImpl()
+		{
+		}
+
+		virtual ISC_UINT64 getElapsedTime() = 0;
 	};
 };
 

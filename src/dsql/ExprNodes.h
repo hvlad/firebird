@@ -1585,6 +1585,12 @@ public:
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
 	virtual ValueExprNode* dsqlPass(DsqlCompilerScratch* dsqlScratch);
 
+	virtual ParameterNode* dsqlFieldRemapper(FieldRemapper& visitor)
+	{
+		ValueExprNode::dsqlFieldRemapper(visitor);
+		return this;
+	}
+
 	virtual void setParameterName(dsql_par* /*parameter*/) const
 	{
 	}
@@ -1598,17 +1604,19 @@ public:
 	Request* getParamRequest(Request* request) const;
 
 	virtual void getDesc(thread_db* tdbb, CompilerScratch* csb, dsc* desc);
-	virtual ValueExprNode* copy(thread_db* tdbb, NodeCopier& copier) const;
-	virtual ValueExprNode* pass2(thread_db* tdbb, CompilerScratch* csb);
+	virtual ParameterNode* copy(thread_db* tdbb, NodeCopier& copier) const;
+	virtual ParameterNode* pass1(thread_db* tdbb, CompilerScratch* csb);
+	virtual ParameterNode* pass2(thread_db* tdbb, CompilerScratch* csb);
 	virtual dsc* execute(thread_db* tdbb, Request* request) const;
 
 public:
 	dsql_msg* dsqlMessage = nullptr;
 	dsql_par* dsqlParameter = nullptr;
 	NestConst<MessageNode> message;
-	NestConst<ValueExprNode> argFlag;
+	NestConst<ParameterNode> argFlag;
 	NestConst<ItemInfo> argInfo;
 	USHORT dsqlParameterIndex = 0;
+	USHORT messageNumber = MAX_USHORT;
 	USHORT argNumber = 0;
 	bool outerDecl = false;
 };

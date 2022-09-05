@@ -26,7 +26,7 @@
 #ifndef JRD_VIO_PROTO_H
 #define JRD_VIO_PROTO_H
 
-namespace Jrd 
+namespace Jrd
 {
 	class jrd_rel;
 	class jrd_tra;

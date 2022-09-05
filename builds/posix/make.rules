@@ -34,6 +34,10 @@
 # Please don't use compiler/platform specific flags here - nmcc 02-Nov-2002
 WFLAGS =-I$(SRC_ROOT)/include/gen -I$(SRC_ROOT)/include $(CPPFLAGS) $(LTCSOURCE)
 
+ifneq ($(SYSTEM_BOOST_FLG),Y)
+  WFLAGS += -I$(ROOT)/extern/boost
+endif
+
 WFLAGS += -I$(LIBCDS_INC) -D$(LIBCDS_DEF)
 
 ifeq ($(TOMMATH_BUILD_FLG),Y)

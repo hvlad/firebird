@@ -36,10 +36,14 @@ using namespace Jrd;
 // Data access: predicate driven filter
 // ------------------------------------
 
-FilteredStream::FilteredStream(CompilerScratch* csb, RecordSource* next,
-							   BoolExprNode* boolean, double selectivity)
-	: m_next(next), m_boolean(boolean), m_anyBoolean(NULL),
-	  m_ansiAny(false), m_ansiAll(false), m_ansiNot(false)
+FilteredStream::FilteredStream(CompilerScratch* csb, RecordSource* next, BoolExprNode* boolean, double selectivity)
+	: RecordSource(csb),
+	  m_next(next),
+	  m_boolean(boolean),
+	  m_anyBoolean(NULL),
+	  m_ansiAny(false),
+	  m_ansiAll(false),
+	  m_ansiNot(false)
 {
 	fb_assert(m_next && m_boolean);
 
@@ -50,7 +54,7 @@ FilteredStream::FilteredStream(CompilerScratch* csb, RecordSource* next,
 	m_cardinality = cardinality * selectivity;
 }
 
-void FilteredStream::open(thread_db* tdbb) const
+void FilteredStream::internalOpen(thread_db* tdbb) const
 {
 	Request* const request = tdbb->getRequest();
 	Impure* const impure = request->getImpure<Impure>(m_impure);
@@ -76,7 +80,7 @@ void FilteredStream::close(thread_db* tdbb) const
 	}
 }
 
-bool FilteredStream::getRecord(thread_db* tdbb) const
+bool FilteredStream::internalGetRecord(thread_db* tdbb) const
 {
 	JRD_reschedule(tdbb);
 
@@ -108,7 +112,12 @@ bool FilteredStream::lockRecord(thread_db* tdbb) const
 	return m_next->lockRecord(tdbb);
 }
 
-void FilteredStream::print(thread_db* tdbb, string& plan, bool detailed, unsigned level) const
+void FilteredStream::getChildren(Array<const RecordSource*>& children) const
+{
+	children.add(m_next);
+}
+
+void FilteredStream::print(thread_db* tdbb, string& plan, bool detailed, unsigned level, bool recurse) const
 {
 	if (detailed)
 	{
@@ -116,7 +125,8 @@ void FilteredStream::print(thread_db* tdbb, string& plan, bool detailed, unsigne
 		printOptInfo(plan);
 	}
 
-	m_next->print(tdbb, plan, detailed, level);
+	if (recurse)
+		m_next->print(tdbb, plan, detailed, level, recurse);
 }
 
 void FilteredStream::markRecursive()

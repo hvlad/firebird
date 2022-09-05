@@ -121,6 +121,12 @@ namespace Firebird
 			r.ptr = nullptr;
 		}
 
+		RefPtr(MemoryPool&, RefPtr&& r)
+			: ptr(r.ptr)
+		{
+			r.ptr = nullptr;
+		}
+
 		~RefPtr()
 		{
 			if (ptr)
@@ -210,6 +216,11 @@ namespace Firebird
 		}
 
 		T* getPtr()
+		{
+			return ptr;
+		}
+
+		const T* getPtr() const
 		{
 			return ptr;
 		}

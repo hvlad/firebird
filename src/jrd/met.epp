@@ -126,8 +126,6 @@ static void save_trigger_data(thread_db*, TrigVector**, jrd_rel*, Statement*, bl
 	const TEXT*, FB_UINT64, bool, USHORT, const MetaName&, const string&,
 	const bid*, Nullable<bool> ssDefiner);
 static void scan_partners(thread_db*, jrd_rel*);
-static void store_dependencies(thread_db*, CompilerScratch*, const jrd_rel*,
-	const MetaName&, int, jrd_tra*);
 static bool verify_TRG_ignore_perm(thread_db*, const MetaName&);
 
 
@@ -1712,14 +1710,14 @@ DmlNode* MET_get_dependencies(thread_db* tdbb,
 		if (type != obj_package_body)
 			MET_delete_dependencies(tdbb, domainName, type, transaction);
 
-		store_dependencies(tdbb, csb, relation, domainName, type, transaction);
+		MET_store_dependencies(tdbb, csb->csb_dependencies, relation, domainName, type, transaction);
 	}
 	else
 	{
 		if (type != obj_package_body)
 			MET_delete_dependencies(tdbb, object_name, type, transaction);
 
-		store_dependencies(tdbb, csb, relation, object_name, type, transaction);
+		MET_store_dependencies(tdbb, csb->csb_dependencies, relation, object_name, type, transaction);
 	}
 
 	if (csb_ptr)
@@ -3227,7 +3225,7 @@ void MET_parse_sys_trigger(thread_db* tdbb, jrd_rel* relation)
 
 			statement->triggerName = name;
 
-			statement->flags |= Statement::FLAG_SYS_TRIGGER;
+			statement->flags |= Statement::FLAG_SYS_TRIGGER | Statement::FLAG_INTERNAL;
 			if (trig_flags & TRG_ignore_perm)
 				statement->flags |= Statement::FLAG_IGNORE_PERM;
 
@@ -3462,6 +3460,18 @@ jrd_prc* MET_procedure(thread_db* tdbb, USHORT id, bool noscan, USHORT flags)
 									F.RDB$FIELD_SCALE, F.RDB$FIELD_LENGTH,
 									F.RDB$FIELD_SUB_TYPE, F.RDB$CHARACTER_SET_ID,
 									(pa_collation_id_null ? F.RDB$COLLATION_ID : pa_collation_id));
+
+				if (parameter->prm_desc.isText() && parameter->prm_desc.getTextType() != CS_NONE)
+				{
+					if (!pa_collation_id_null || fb_utils::implicit_domain(PA.RDB$FIELD_SOURCE))
+						parameter->prm_text_type = parameter->prm_desc.getTextType();
+				}
+
+				if (!PA.RDB$RELATION_NAME.NULL)
+					parameter->prm_type_of_table = PA.RDB$RELATION_NAME;
+
+				if (!PA.RDB$FIELD_NAME.NULL)
+					parameter->prm_type_of_column = PA.RDB$FIELD_NAME;
 
 				if (PA.RDB$PARAMETER_TYPE == 0 &&
 					(!pa_default_value_null ||
@@ -4035,6 +4045,7 @@ void MET_scan_relation(thread_db* tdbb, jrd_rel* relation)
 					field->fld_default_value = NULL;
 					field->fld_validation = NULL;
 					field->fld_not_null = NULL;
+					field->fld_generator_name = NULL;
 				}
 
 				array = NULL;
@@ -4078,7 +4089,7 @@ void MET_scan_relation(thread_db* tdbb, jrd_rel* relation)
 					csb->csb_g_flags |= csb_get_dependencies;
 					field->fld_source = PAR_make_field(tdbb, csb, view_context, (TEXT*) p);
 					const MetaName depName(REL.RDB$RELATION_NAME);
-					store_dependencies(tdbb, csb, 0, depName, obj_view, depTrans);
+					MET_store_dependencies(tdbb, csb->csb_dependencies, 0, depName, obj_view, depTrans);
 				}
 				else
 					field->fld_source = PAR_make_field(tdbb, csb, view_context, (TEXT*) p);
@@ -4457,7 +4468,7 @@ static int blocking_ast_relation(void* ast_object)
 
 			if (relation->rel_use_count)
 				relation->rel_flags |= REL_blocking;
-			else
+			else if (!(relation->rel_flags & REL_deleting))
 			{
 				relation->rel_flags &= ~REL_blocking;
 				relation->rel_flags |= REL_check_existence;
@@ -5183,8 +5194,8 @@ void scan_partners(thread_db* tdbb, jrd_rel* relation)
 }
 
 
-static void store_dependencies(thread_db* tdbb,
-							   CompilerScratch* csb,
+void MET_store_dependencies(thread_db* tdbb,
+							   Array<CompilerScratch::Dependency>& dependencies,
 							   const jrd_rel* dep_rel,
 							   const MetaName& object_name,
 							   int dependency_type,
@@ -5219,9 +5230,9 @@ static void store_dependencies(thread_db* tdbb,
 			(t = findTrigger(dep_rel->rel_post_store, object_name))
 		) && t && (t->sysTrigger);
 
-	while (csb->csb_dependencies.hasData())
+	while (dependencies.hasData())
 	{
-		CompilerScratch::Dependency dependency = csb->csb_dependencies.pop();
+		CompilerScratch::Dependency dependency = dependencies.pop();
 
 		if (!dependency.relation && !dependency.function && !dependency.procedure &&
 			!dependency.name && !dependency.number)

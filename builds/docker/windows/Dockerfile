@@ -44,7 +44,7 @@ RUN `
     refreshenv && `
     setx PATH "%PATH%;C:\Program Files\Git\usr\bin"
 
-ENV SEVENZIP='"C:\Program Files\7-Zip"'
-ENV INNO6_SETUP_PATH='"C:\Program Files (x86)\Inno Setup 6"'
+ENV SEVENZIP='C:\Program Files\7-Zip'
+ENV INNO6_SETUP_PATH='C:\Program Files (x86)\Inno Setup 6'
 
 COPY scripts\* C:\fbscripts\

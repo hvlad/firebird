@@ -80,6 +80,7 @@ static NodeParseFunc blr_parsers[256] = {NULL};
 static void par_error(BlrReader& blrReader, const Arg::StatusVector& v, bool isSyntaxError = true);
 static PlanNode* par_plan(thread_db*, CompilerScratch*);
 static void getBlrVersion(CompilerScratch* csb);
+static void parseSubRoutines(thread_db* tdbb, CompilerScratch* csb);
 
 
 namespace
@@ -186,6 +187,8 @@ DmlNode* PAR_blr(thread_db* tdbb, jrd_rel* relation, const UCHAR* blr, ULONG blr
 
 	if (csb->csb_blr_reader.getByte() != (UCHAR) blr_eoc)
 		PAR_syntax_error(csb, "end_of_command");
+
+	parseSubRoutines(tdbb, csb);
 
 	if (statementPtr)
 		*statementPtr = Statement::makeStatement(tdbb, csb, false);
@@ -469,11 +472,11 @@ USHORT PAR_desc(thread_db* tdbb, CompilerScratch* csb, dsc* desc, ItemInfo* item
 				}
 			}
 
-			if (csb->csb_g_flags & csb_get_dependencies)
+			if (csb->collectingDependencies())
 			{
 				CompilerScratch::Dependency dependency(obj_field);
 				dependency.name = name;
-				csb->csb_dependencies.push(dependency);
+				csb->addDependency(dependency);
 			}
 
 			break;
@@ -534,12 +537,12 @@ USHORT PAR_desc(thread_db* tdbb, CompilerScratch* csb, dsc* desc, ItemInfo* item
 				}
 			}
 
-			if (csb->csb_g_flags & csb_get_dependencies)
+			if (csb->collectingDependencies())
 			{
 				CompilerScratch::Dependency dependency(obj_relation);
 				dependency.relation = MET_lookup_relation(tdbb, *relationName);
 				dependency.subName = fieldName;
-				csb->csb_dependencies.push(dependency);
+				csb->addDependency(dependency);
 			}
 
 			break;
@@ -551,11 +554,11 @@ USHORT PAR_desc(thread_db* tdbb, CompilerScratch* csb, dsc* desc, ItemInfo* item
 			break;
 	}
 
-	if ((csb->csb_g_flags & csb_get_dependencies) && desc->getTextType() != CS_NONE)
+	if (csb->collectingDependencies() && desc->getTextType() != CS_NONE)
 	{
 		CompilerScratch::Dependency dependency(obj_collation);
 		dependency.number = INTL_TEXT_TYPE(*desc);
-		csb->csb_dependencies.push(dependency);
+		csb->addDependency(dependency);
 	}
 
 	if (itemInfo)
@@ -620,7 +623,7 @@ ValueExprNode* PAR_make_field(thread_db* tdbb, CompilerScratch* csb, USHORT cont
 	if (id < 0)
 		return NULL;
 
-	if (csb->csb_g_flags & csb_get_dependencies)
+	if (csb->collectingDependencies())
 		PAR_dependency(tdbb, csb, stream, id, base_field);
 
 	return PAR_gen_field(tdbb, stream, id);
@@ -699,6 +702,8 @@ CompilerScratch* PAR_parse(thread_db* tdbb, const UCHAR* blr, ULONG blr_length,
 
 	if (csb->csb_blr_reader.getByte() != (UCHAR) blr_eoc)
 		PAR_syntax_error(csb, "end_of_command");
+
+	parseSubRoutines(tdbb, csb);
 
 	return csb.release();
 }
@@ -878,7 +883,7 @@ void PAR_dependency(thread_db* tdbb, CompilerScratch* csb, StreamType stream, SS
  **************************************/
 	SET_TDBB(tdbb);
 
-	if (!(csb->csb_g_flags & csb_get_dependencies))
+	if (!csb->collectingDependencies())
 		return;
 
 	CompilerScratch::Dependency dependency(0);
@@ -907,7 +912,7 @@ void PAR_dependency(thread_db* tdbb, CompilerScratch* csb, StreamType stream, SS
 	else if (id >= 0)
 		dependency.subNumber = id;
 
-	csb->csb_dependencies.push(dependency);
+	csb->addDependency(dependency);
 }
 
 
@@ -1030,11 +1035,11 @@ static PlanNode* par_plan(thread_db* tdbb, CompilerScratch* csb)
 				item.indexId = index_id;
 				item.indexName = name;
 
-				if (csb->csb_g_flags & csb_get_dependencies)
+				if (csb->collectingDependencies())
 				{
 					CompilerScratch::Dependency dependency(obj_index);
 					dependency.name = &item.indexName;
-					csb->csb_dependencies.push(dependency);
+					csb->addDependency(dependency);
 	            }
 
 				if (csb->csb_blr_reader.peekByte() != blr_indices)
@@ -1096,11 +1101,11 @@ static PlanNode* par_plan(thread_db* tdbb, CompilerScratch* csb)
 					item.indexId = index_id;
 					item.indexName = name;
 
-					if (csb->csb_g_flags & csb_get_dependencies)
+					if (csb->collectingDependencies())
 					{
 						CompilerScratch::Dependency dependency(obj_index);
 						dependency.name = &item.indexName;
-						csb->csb_dependencies.push(dependency);
+						csb->addDependency(dependency);
 		            }
 				}
 			}
@@ -1195,10 +1200,12 @@ void PAR_procedure_parms(thread_db* tdbb, CompilerScratch* csb, jrd_prc* procedu
 				*sourcePtr++ = PAR_parse_value(tdbb, csb);
 
 			ParameterNode* paramNode = FB_NEW_POOL(csb->csb_pool) ParameterNode(csb->csb_pool);
+			paramNode->messageNumber = message->messageNumber;
 			paramNode->message = message;
 			paramNode->argNumber = i++;
 
 			ParameterNode* paramFlagNode = FB_NEW_POOL(csb->csb_pool) ParameterNode(csb->csb_pool);
+			paramFlagNode->messageNumber = message->messageNumber;
 			paramFlagNode->message = message;
 			paramFlagNode->argNumber = i++;
 
@@ -1678,5 +1685,24 @@ static void getBlrVersion(CompilerScratch* csb)
 		PAR_error(csb, Arg::Gds(isc_metadata_corrupt) <<
 				   Arg::Gds(isc_wroblrver2) << Arg::Num(blr_version4) << Arg::Num(blr_version5/*6*/) <<
 						Arg::Num(version));
+	}
+}
+
+
+// Parse subroutines.
+static void parseSubRoutines(thread_db* tdbb, CompilerScratch* csb)
+{
+	for (auto& pair : csb->subFunctions)
+	{
+		const auto node = pair.second;
+		Jrd::ContextPoolHolder context(tdbb, &node->subCsb->csb_pool);
+		PAR_blr(tdbb, nullptr, node->blrStart, node->blrLength, nullptr, &node->subCsb, nullptr, false, 0);
+	}
+
+	for (auto& pair : csb->subProcedures)
+	{
+		const auto node = pair.second;
+		Jrd::ContextPoolHolder context(tdbb, &node->subCsb->csb_pool);
+		PAR_blr(tdbb, nullptr, node->blrStart, node->blrLength, nullptr, &node->subCsb, nullptr, false, 0);
 	}
 }

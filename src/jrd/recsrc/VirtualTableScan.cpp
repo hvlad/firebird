@@ -44,7 +44,7 @@ VirtualTableScan::VirtualTableScan(CompilerScratch* csb, const string& alias,
 	m_cardinality = csb->csb_rpt[stream].csb_cardinality;
 }
 
-void VirtualTableScan::open(thread_db* tdbb) const
+void VirtualTableScan::internalOpen(thread_db* tdbb) const
 {
 	Request* const request = tdbb->getRequest();
 	Impure* const impure = request->getImpure<Impure>(m_impure);
@@ -71,7 +71,7 @@ void VirtualTableScan::close(thread_db* tdbb) const
 		impure->irsb_flags &= ~irsb_open;
 }
 
-bool VirtualTableScan::getRecord(thread_db* tdbb) const
+bool VirtualTableScan::internalGetRecord(thread_db* tdbb) const
 {
 	JRD_reschedule(tdbb);
 
@@ -110,7 +110,11 @@ bool VirtualTableScan::lockRecord(thread_db* /*tdbb*/) const
 	return false; // compiler silencer
 }
 
-void VirtualTableScan::print(thread_db* tdbb, string& plan, bool detailed, unsigned level) const
+void VirtualTableScan::getChildren(Array<const RecordSource*>& children) const
+{
+}
+
+void VirtualTableScan::print(thread_db* tdbb, string& plan, bool detailed, unsigned level, bool recurse) const
 {
 	if (detailed)
 	{

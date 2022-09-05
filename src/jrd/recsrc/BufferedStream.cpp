@@ -40,7 +40,9 @@ using namespace Jrd;
 // --------------------------
 
 BufferedStream::BufferedStream(CompilerScratch* csb, RecordSource* next)
-	: m_next(next), m_map(csb->csb_pool)
+	: BaseBufferedStream(csb),
+	  m_next(next),
+	  m_map(csb->csb_pool)
 {
 	fb_assert(m_next);
 
@@ -113,7 +115,7 @@ BufferedStream::BufferedStream(CompilerScratch* csb, RecordSource* next)
 	m_format = format;
 }
 
-void BufferedStream::open(thread_db* tdbb) const
+void BufferedStream::internalOpen(thread_db* tdbb) const
 {
 	Request* const request = tdbb->getRequest();
 	Impure* const impure = request->getImpure<Impure>(m_impure);
@@ -148,7 +150,7 @@ void BufferedStream::close(thread_db* tdbb) const
 	}
 }
 
-bool BufferedStream::getRecord(thread_db* tdbb) const
+bool BufferedStream::internalGetRecord(thread_db* tdbb) const
 {
 	JRD_reschedule(tdbb);
 
@@ -312,7 +314,12 @@ bool BufferedStream::lockRecord(thread_db* tdbb) const
 	return m_next->lockRecord(tdbb);
 }
 
-void BufferedStream::print(thread_db* tdbb, string& plan, bool detailed, unsigned level) const
+void BufferedStream::getChildren(Array<const RecordSource*>& children) const
+{
+	children.add(m_next);
+}
+
+void BufferedStream::print(thread_db* tdbb, string& plan, bool detailed, unsigned level, bool recurse) const
 {
 	if (detailed)
 	{
@@ -323,7 +330,8 @@ void BufferedStream::print(thread_db* tdbb, string& plan, bool detailed, unsigne
 		printOptInfo(plan);
 	}
 
-	m_next->print(tdbb, plan, detailed, level);
+	if (recurse)
+		m_next->print(tdbb, plan, detailed, level, recurse);
 }
 
 void BufferedStream::markRecursive()

@@ -4,8 +4,25 @@
 :: FB_DB_PATH unix format path of the main directory
 :: (This is used by gpre and preprocess.bat)
 :: VS_VER VisualStudio version (msvc15)
+:: FB_OBJ_DIR
+:: FB_BIN_DIR
+set FB_LIBCDS=
 
 @echo off
+
+set FB_CLEAN=
+
+for %%v in ( %* )  do (
+  ( if /I "%%v"=="DEBUG" ( (set FB_DBG=TRUE) && (set FB_CONFIG=debug) ) )
+  ( if /I "%%v"=="CLEAN" (set FB_CLEAN=:rebuild) )
+  ( if /I "%%v"=="RELEASE" ( (set FB_DBG=) && (set FB_CONFIG=release) ) )
+  ( if /I "%%v"=="LIBCDS" ( (set FB_LIBCDS=1) ) )
+)
+
+@if not defined FB_CONFIG (
+  set FB_DBG=
+  set FB_CONFIG=release
+)
 
 :: Default target CPU architecture is the native environment
 @if NOT DEFINED FB_PROCESSOR_ARCHITECTURE (
@@ -117,7 +134,7 @@
 @if "%FB_PROCESSOR_ARCHITECTURE%"=="AMD64" (set FB_TARGET_PLATFORM=x64)
 
 
-@set FB_OUTPUT_DIR=%FB_ROOT_PATH%\output_%FB_TARGET_PLATFORM%
+@set FB_OUTPUT_DIR=%FB_ROOT_PATH%\output_%FB_TARGET_PLATFORM%_%FB_CONFIG%
 @set FB_TEMP_DIR=%FB_ROOT_PATH%\temp\%FB_TARGET_PLATFORM%
 @set FB_INSTALL_SCRIPTS=%FB_ROOT_PATH%\builds\install\arch-specific\win32
 @set FB_GEN_DIR=%FB_ROOT_PATH%\gen
@@ -125,7 +142,8 @@
 @set FB_ICU_SOURCE_BIN=%FB_ROOT_PATH%\extern\icu\%FB_TARGET_PLATFORM%\release\bin\
 @set FIREBIRD_BOOT_BUILD=1
 
-
+@set FB_OBJ_DIR=%FB_TARGET_PLATFORM%\%FB_CONFIG%
+@set FB_BIN_DIR=%FB_ROOT_PATH%\temp\%FB_OBJ_DIR%\firebird
 
 
 goto :END

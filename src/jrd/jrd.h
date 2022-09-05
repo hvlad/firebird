@@ -287,14 +287,19 @@ public:
 	NestConst<ValueExprNode>	prm_default_value;
 	bool		prm_nullable;
 	prm_mech_t	prm_mechanism;
-	MetaName prm_name;			// asciiz name
+	MetaName prm_name;
 	MetaName prm_field_source;
+	MetaName prm_type_of_column;
+	MetaName prm_type_of_table;
+	Nullable<USHORT> prm_text_type;
 	FUN_T		prm_fun_mechanism;
 
 public:
 	explicit Parameter(MemoryPool& p)
 		: prm_name(p),
-		  prm_field_source(p)
+		  prm_field_source(p),
+		  prm_type_of_column(p),
+		  prm_type_of_table(p)
 	{
 	}
 };
@@ -1036,6 +1041,37 @@ namespace Jrd {
 		BackgroundContextHolder& operator=(const BackgroundContextHolder&);
 	};
 
+	class AttachmentHolder
+	{
+	public:
+		static const unsigned ATT_LOCK_ASYNC			= 1;
+		static const unsigned ATT_DONT_LOCK				= 2;
+		static const unsigned ATT_NO_SHUTDOWN_CHECK		= 4;
+		static const unsigned ATT_NON_BLOCKING			= 8;
+
+		AttachmentHolder(thread_db* tdbb, StableAttachmentPart* sa, unsigned lockFlags, const char* from);
+		~AttachmentHolder();
+
+	private:
+		Firebird::RefPtr<StableAttachmentPart> sAtt;
+		bool async;			// async mutex should be locked instead normal
+		bool nolock; 		// if locked manually, no need to take lock recursively
+		bool blocking;		// holder instance is blocking other instances
+
+	private:
+		// copying is prohibited
+		AttachmentHolder(const AttachmentHolder&);
+		AttachmentHolder& operator =(const AttachmentHolder&);
+	};
+
+	class EngineContextHolder final : public ThreadContextHolder, private AttachmentHolder, private DatabaseContextHolder
+	{
+	public:
+		template <typename I>
+		EngineContextHolder(Firebird::CheckStatusWrapper* status, I* interfacePtr, const char* from,
+							unsigned lockFlags = 0);
+	};
+
 	class AstLockHolder : public Firebird::ReadLockGuard
 	{
 	public:
@@ -1085,18 +1121,28 @@ namespace Jrd {
 	class EngineCheckout
 	{
 	public:
-		EngineCheckout(thread_db* tdbb, const char* from, bool optional = false)
+		enum Type
+		{
+			REQUIRED,
+			UNNECESSARY,
+			AVOID
+		};
+
+		EngineCheckout(thread_db* tdbb, const char* from, Type type = REQUIRED)
 			: m_tdbb(tdbb), m_from(from)
 		{
-			Attachment* const att = tdbb ? tdbb->getAttachment() : NULL;
+			if (type != AVOID)
+			{
+				Attachment* const att = tdbb ? tdbb->getAttachment() : NULL;
 
-			if (att)
-				m_ref = att->getStable();
+				if (att)
+					m_ref = att->getStable();
 
-			fb_assert(optional || m_ref.hasData());
+				fb_assert(type == UNNECESSARY || m_ref.hasData());
 
-			if (m_ref.hasData())
-				m_ref->getSync()->leave();
+				if (m_ref.hasData())
+					m_ref->getSync()->leave();
+			}
 		}
 
 		EngineCheckout(Attachment* att, const char* from, bool optional = false)
@@ -1142,7 +1188,7 @@ namespace Jrd {
 		{
 			if (!m_mutex.tryEnter(from))
 			{
-				EngineCheckout cout(tdbb, from, optional);
+				EngineCheckout cout(tdbb, from, optional ? EngineCheckout::UNNECESSARY : EngineCheckout::REQUIRED);
 				m_mutex.enter(from);
 			}
 		}
@@ -1170,7 +1216,7 @@ namespace Jrd {
 		{
 			if (!m_sync.lockConditional(type, from))
 			{
-				EngineCheckout cout(tdbb, from, optional);
+				EngineCheckout cout(tdbb, from, optional ? EngineCheckout::UNNECESSARY : EngineCheckout::REQUIRED);
 				m_sync.lock(type);
 			}
 		}

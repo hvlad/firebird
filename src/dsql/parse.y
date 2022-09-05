@@ -5651,6 +5651,8 @@ comment
 		{ $$ = newNode<CommentOnNode>($3, *$4, "", *$6); }
 	| comment_on_user
 		{ $$ = $1; }
+	| comment_on_mapping
+		{ $$ = $1; }
 	;
 
 %type <createAlterUserNode> comment_on_user
@@ -7304,6 +7306,28 @@ drop_map_clause($global)
  			MappingNode* node = newNode<MappingNode>(MappingNode::MAP_DROP, *$1);
 			node->global = $global;
 			$$ = node;
+		}
+	;
+
+%type <mappingNode> comment_on_mapping
+comment_on_mapping
+	: COMMENT ON MAPPING map_comment(false)
+		{
+			$$ = $4;
+		}
+	| COMMENT ON GLOBAL MAPPING map_comment(true)
+		{
+			$$ = $5;
+		}
+	;
+
+%type <mappingNode> map_comment(<boolVal>)
+map_comment($global)
+	: map_name IS ddl_desc
+		{
+ 			$$ = newNode<MappingNode>(MappingNode::MAP_COMMENT, *$1);
+			$$->global = $global;
+			$$->comment = $3;
 		}
 	;
 

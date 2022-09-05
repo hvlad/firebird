@@ -250,8 +250,9 @@ interface PluginManager : Versioned
 	const uint TYPE_DB_CRYPT = 9;
 	const uint TYPE_KEY_HOLDER = 10;
 	const uint TYPE_REPLICATOR = 11;
-	const uint TYPE_COUNT = 12;	// keep in sync
-	//// TODO: TYPE_COUNT is not count. And these constants starts from 1, different than DIR_* ones.
+	const uint TYPE_PROFILER = 12;
+	const uint TYPE_COUNT = 13;	// keep in sync
+	//// TYPE_COUNT is not count. And these constants starts from 1, different than DIR_* ones.
 
 	// Main function called by plugin modules in firebird_plugin()
 	void registerPluginFactory(uint pluginType, const string defaultName, PluginFactory factory);
@@ -1712,3 +1713,55 @@ interface ReplicatedSession : PluginBase
 	void setSequence(Status status, const string name, int64 value);
 }
 
+// Profiler interfaces
+
+interface ProfilerPlugin : PluginBase
+{
+	void init(Status status, Attachment attachment);
+
+	ProfilerSession startSession(Status status, const string description,
+		const string options, ISC_TIMESTAMP_TZ timestamp);
+
+	void flush(Status status);
+}
+
+interface ProfilerSession : Disposable
+{
+	const uint FLAG_BEFORE_EVENTS = 0x1;
+	const uint FLAG_AFTER_EVENTS = 0x2;
+
+	int64 getId();
+	uint getFlags();
+
+	// When closing an attachment, the engine is free to dispose the ProfilerPlugin without call this method in advance.
+	void cancel(Status status);
+
+	void finish(Status status, ISC_TIMESTAMP_TZ timestamp);
+
+	void defineStatement(Status status, int64 statementId, int64 parentStatementId,
+		const string type, const string packageName, const string routineName, const string sqlText);
+
+	//// TODO: Add defineCursor with line/column
+
+	void defineRecordSource(int64 statementId, uint cursorId, uint recSourceId,
+		const string accessPath, uint parentRecSourceId);
+
+	void onRequestStart(Status status, int64 requestId, int64 statementId, int64 callerRequestId,
+		ISC_TIMESTAMP_TZ timestamp);
+
+	void onRequestFinish(Status status, int64 requestId, ISC_TIMESTAMP_TZ timestamp, ProfilerStats stats);
+
+	void beforePsqlLineColumn(int64 requestId, uint line, uint column);
+	void afterPsqlLineColumn(int64 requestId, uint line, uint column, ProfilerStats stats);
+
+	void beforeRecordSourceOpen(int64 requestId, uint cursorId, uint recSourceId);
+	void afterRecordSourceOpen(int64 requestId, uint cursorId, uint recSourceId, ProfilerStats stats);
+
+	void beforeRecordSourceGetRecord(int64 requestId, uint cursorId, uint recSourceId);
+	void afterRecordSourceGetRecord(int64 requestId, uint cursorId, uint recSourceId, ProfilerStats stats);
+}
+
+interface ProfilerStats : Versioned
+{
+	uint64 getElapsedTime();
+}

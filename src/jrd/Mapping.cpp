@@ -784,26 +784,12 @@ public:
 		}
 		catch (const Exception& ex)
 		{
-			StaticStatusVector s;
-			ex.stuffException(s);
-			if (!fb_utils::containsErrorCode(s.begin(), isc_instance_conflict))
-				iscLogException("MappingIpc: Cannot initialize the shared memory region", ex);
+			iscLogException("MappingIpc: Cannot initialize the shared memory region", ex);
 			throw;
 		}
 
 		MappingHeader* sMem = tempSharedMemory->getHeader();
-
-		if (sMem->mhb_type != SharedMemoryBase::SRAM_MAPPING_RESET ||
-			sMem->mhb_header_version != MemoryHeader::HEADER_VERSION ||
-			sMem->mhb_version != MAPPING_VERSION)
-		{
-			string err;
-			err.printf("MappingIpc: inconsistent shared memory type/version; found %d/%d:%d, expected %d/%d:%d",
-				sMem->mhb_type, sMem->mhb_header_version, sMem->mhb_version,
-				SharedMemoryBase::SRAM_MAPPING_RESET, MemoryHeader::HEADER_VERSION, MAPPING_VERSION);
-
-			(Arg::Gds(isc_random) << Arg::Str(err)).raise();
-		}
+		checkHeader(sMem);
 
 		Guard gShared(tempSharedMemory);
 
@@ -907,14 +893,14 @@ private:
 	}
 
 	// implement pure virtual functions
-	bool initialize(SharedMemoryBase* sm, bool initFlag)
+	bool initialize(SharedMemoryBase* sm, bool initFlag) override
 	{
 		if (initFlag)
 		{
 			MappingHeader* header = reinterpret_cast<MappingHeader*>(sm->sh_mem_header);
 
 			// Initialize the shared data header
-			header->init(SharedMemoryBase::SRAM_MAPPING_RESET, MAPPING_VERSION);
+			initHeader(header);
 
 			header->processes = 0;
 			header->currentProcess = -1;
@@ -923,11 +909,15 @@ private:
 		return true;
 	}
 
-	void mutexBug(int osErrorCode, const char* text)
+	void mutexBug(int osErrorCode, const char* text) override
 	{
 		iscLogStatus("Error when working with user mapping shared memory",
 			(Arg::Gds(isc_sys_request) << text << Arg::OsError(osErrorCode)).value());
 	}
+
+	USHORT getType() const override { return SharedMemoryBase::SRAM_MAPPING_RESET; }
+	USHORT getVersion() const override { return MAPPING_VERSION; }
+	const char* getName() const override { return "MappingIpc"; }
 
 	// copying is prohibited
 	MappingIpc(const MappingIpc&);
@@ -1726,10 +1716,11 @@ RecordBuffer* MappingList::getList(thread_db* tdbb, jrd_rel* relation)
 		Field<Varying> from(mMap, 255);
 		Field<SSHORT> role(mMap);
 		Field<Varying> to(mMap, MAX_SQL_IDENTIFIER_SIZE);
+		Field<ISC_QUAD> desc(mMap);
 
 		curs = att->openCursor(&st, tra, 0,
 			"SELECT RDB$MAP_NAME, RDB$MAP_USING, RDB$MAP_PLUGIN, RDB$MAP_DB, "
-			"	RDB$MAP_FROM_TYPE, RDB$MAP_FROM, RDB$MAP_TO_TYPE, RDB$MAP_TO "
+			"	RDB$MAP_FROM_TYPE, RDB$MAP_FROM, RDB$MAP_TO_TYPE, RDB$MAP_TO, RDB$DESCRIPTION "
 			"FROM RDB$AUTH_MAPPING",
 			3, nullptr, nullptr, mMap.getMetadata(), nullptr, 0);
 		if (st->getState() & IStatus::STATE_ERRORS)
@@ -1797,6 +1788,20 @@ RecordBuffer* MappingList::getList(thread_db* tdbb, jrd_rel* relation)
 			{
 				putField(tdbb, record,
 						 DumpField(f_sec_map_to, VALUE_STRING, to->len, to->data));
+			}
+
+			if (!desc.null)
+			{
+				RefPtr<IBlob> blb(REF_NO_INCR, att->openBlob(&st, tra, &desc, 0, nullptr));
+				check("IAttachment::openBlob", &st);
+				string buf;
+				const FB_SIZE_T FLD_LIMIT = MAX_COLUMN_SIZE;
+				unsigned length = 0;
+				blb->getSegment(&st, FLD_LIMIT, buf.getBuffer(FLD_LIMIT), &length);
+				check("IBlob::getSegment", &st);
+
+				putField(tdbb, record,
+					DumpField(f_sec_map_comment, VALUE_STRING, length, buf.c_str()));
 			}
 
 			buffer->store(record);

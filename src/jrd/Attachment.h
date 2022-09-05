@@ -95,6 +95,7 @@ namespace Jrd
 	class TrigVector;
 	class Function;
 	class Statement;
+	class ProfilerManager;
 	class Validation;
 	class Applier;
 
@@ -558,6 +559,7 @@ public:
 	AttNumber	att_attachment_id;			// Attachment ID
 	Lock*		att_cancel_lock;			// Lock to cancel the active request
 	Lock*		att_monitor_lock;			// Lock for monitoring purposes
+	Lock*		att_profiler_listener_lock;	// Lock for remote profiler listener
 	const ULONG	att_lock_owner_id;			// ID for the lock manager
 	SLONG		att_lock_owner_handle;		// Handle for the lock manager
 	ULONG		att_backup_state_counter;	// Counter of backup state locks for attachment
@@ -569,6 +571,7 @@ public:
 	ULONG		att_flags;					// Flags describing the state of the attachment
 	SSHORT		att_client_charset;			// user's charset specified in dpb
 	SSHORT		att_charset;				// current (client or external) attachment charset
+	bool 		att_in_system_routine = false;	// running a system routine
 	Lock*		att_long_locks;				// outstanding two phased locks
 #ifdef DEBUG_LCK_LIST
 	UCHAR		att_long_locks_type;		// Lock type of the first lock in list
@@ -803,6 +806,10 @@ public:
 	void checkReplSetLock(thread_db* tdbb);
 	void invalidateReplSet(thread_db* tdbb, bool broadcast);
 
+	ProfilerManager* getProfilerManager(thread_db* tdbb);
+	bool isProfilerActive();
+	void releaseProfilerManager();
+
 	JProvider* getProvider()
 	{
 		fb_assert(att_provider);
@@ -820,6 +827,7 @@ private:
 	Firebird::Array<JBatch*> att_batches;
 	InitialOptions att_initial_options;	// Initial session options
 	DebugOptions att_debug_options;
+	Firebird::AutoPtr<ProfilerManager> att_profiler_manager;	// ProfilerManager
 
 	Lock* att_repl_lock;				// Replication set lock
 	JProvider* att_provider;	// Provider which created this attachment
@@ -941,6 +949,11 @@ public:
 	void remove(Iterator& iter)
 	{
 		iter.remove();
+	}
+
+	bool hasData() const
+	{
+		return m_attachments.hasData();
 	}
 
 private:

@@ -1,7 +1,7 @@
 /*
  *	PROGRAM:	JRD Backup and Restore Program
  *	MODULE:		BurpTasks.h
- *	DESCRIPTION:	
+ *	DESCRIPTION:
  *
  * The contents of this file are subject to the Interbase Public
  * License Version 1.0 (the "License"); you may not use this file

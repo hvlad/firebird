@@ -42,8 +42,8 @@ class Worker;
 class Coordinator;
 class WorkerThread;
 
-// Task (probably big one), contains parameters, could break whole task by 
-// smaller items (WorkItem), handle items, track common running state, track 
+// Task (probably big one), contains parameters, could break whole task by
+// smaller items (WorkItem), handle items, track common running state, track
 // results and error happens.
 class Task
 {

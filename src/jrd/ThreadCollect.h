@@ -118,13 +118,13 @@ namespace Jrd {
 			while (thr.hasData())
 			{
 				FB_SIZE_T n = thr.getCount() - 1;
-				Thrd& t = thr[n];
+				Thrd t = thr[n];
+				thr.remove(n);
 				{
 					Firebird::MutexUnlockGuard u(threadsMutex, FB_FUNCTION);
 					Thread::waitForCompletion(t.hndl);
 					fb_assert(t.ending);
 				}
-				thr.remove(n);
 			}
 		}
 

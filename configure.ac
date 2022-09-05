@@ -178,6 +178,16 @@ dnl CPU_TYPE=ppc64
     SHRLIB_EXT=so
     ;;
 
+  powerpc64le-*-freebsd*)
+    MAKEFILE_PREFIX=freebsd_powerpc64el
+    PLATFORM=FREEBSD
+    INSTALL_PREFIX=freebsd
+    AC_DEFINE(FREEBSD, 1, [Define this if OS is FreeBSD])
+    AC_DEFINE(PPC64EL, 1, [Define this if CPU is ppc64el])
+    EDITLINE_FLG=Y
+    SHRLIB_EXT=so
+    ;;
+
   *-gentoo-freebsd*)
     MAKEFILE_PREFIX=freebsd
     PLATFORM=GENTOOFREEBSD
@@ -213,6 +223,15 @@ dnl CPU_TYPE=ppc64
 
   mipsel-*-linux*)
     MAKEFILE_PREFIX=linux_mipsel
+    INSTALL_PREFIX=linux
+    PLATFORM=LINUX
+    AC_DEFINE(LINUX)
+    EDITLINE_FLG=Y
+    SHRLIB_EXT=so
+    ;;
+
+  mips64el-*-linux* | mips*64*el-*-linux*)
+    MAKEFILE_PREFIX=linux_mips64el
     INSTALL_PREFIX=linux
     PLATFORM=LINUX
     AC_DEFINE(LINUX)
@@ -574,6 +593,7 @@ AC_ARG_WITH(system-re2,
   [RE2_BUILD=N])
 AC_SUBST(RE2_BUILD)
 
+dnl This is currently used for internal and public (API headers) needs
 SYSTEM_BOOST=N
 AC_ARG_WITH(system-boost,
   [  --with-system-boost     use system-wide boost library instead of embedded copy],
@@ -1310,6 +1330,7 @@ dnl # output
 	mkdir -p gen/\$fb_tgt/firebird/include/firebird/impl
 	mkdir -p gen/\$fb_tgt/firebird/lib
 	mkdir -p gen/\$fb_tgt/firebird/misc
+	mkdir -p gen/\$fb_tgt/firebird/tests
 
 dnl ### TEMP ### directories for generated .cpp, .o and .d by module name
 	for src_dir in `cd src; ls -R -1 * | grep : | tr -d : | tr "\n" " "; cd ..`; do

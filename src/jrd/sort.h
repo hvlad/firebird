@@ -381,8 +381,8 @@ private:
 
 	SortOwner* m_owner;
 	Firebird::HalfStaticArray<sort_control, 8> m_parts;
-	Firebird::HalfStaticArray<merge_control, 8> m_nodes;	// nodes of merge tree 
-	merge_control* m_merge;				// root of merge tree 
+	Firebird::HalfStaticArray<merge_control, 8> m_nodes;	// nodes of merge tree
+	merge_control* m_merge;				// root of merge tree
 };
 
 

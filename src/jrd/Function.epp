@@ -338,6 +338,21 @@ Function* Function::loadMetadata(thread_db* tdbb, USHORT id, bool noscan, USHORT
 										(collation_id_null ? 0 : collation_id));
 				}
 
+				if (parameter->prm_desc.isText() && parameter->prm_desc.getTextType() != CS_NONE)
+				{
+					if (!collation_id_null ||
+						(!Y.RDB$FIELD_SOURCE.NULL && fb_utils::implicit_domain(Y.RDB$FIELD_SOURCE)))
+					{
+						parameter->prm_text_type = parameter->prm_desc.getTextType();
+					}
+				}
+
+				if (!Y.RDB$RELATION_NAME.NULL)
+					parameter->prm_type_of_table = Y.RDB$RELATION_NAME;
+
+				if (!Y.RDB$FIELD_NAME.NULL)
+					parameter->prm_type_of_column = Y.RDB$FIELD_NAME;
+
 				if (Y.RDB$ARGUMENT_POSITION != X.RDB$RETURN_ARGUMENT && !default_value_null)
 				{
 					function->setDefaultCount(function->getDefaultCount() + 1);

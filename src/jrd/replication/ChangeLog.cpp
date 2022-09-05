@@ -392,9 +392,8 @@ void ChangeLog::initSharedFile()
 	m_sharedMemory.reset(FB_NEW_POOL(getPool())
 		SharedMemory<State>(filename.c_str(), STATE_MAPPING_SIZE, this));
 
-	fb_assert(m_sharedMemory->getHeader()->mhb_type == SharedMemoryBase::SRAM_CHANGELOG_STATE);
-	fb_assert(m_sharedMemory->getHeader()->mhb_header_version == MemoryHeader::HEADER_VERSION);
-	fb_assert(m_sharedMemory->getHeader()->mhb_version == STATE_VERSION);
+	const auto* header = m_sharedMemory->getHeader();
+	checkHeader(header);
 }
 
 void ChangeLog::lockState()
@@ -535,7 +534,7 @@ bool ChangeLog::initialize(SharedMemoryBase* shmem, bool init)
 		const auto state = reinterpret_cast<State*>(shmem->sh_mem_header);
 		memset(state, 0, sizeof(State));
 
-		state->init(SharedMemoryBase::SRAM_CHANGELOG_STATE, STATE_VERSION);
+		initHeader(state);
 
 		state->timestamp = time(NULL);
 		state->sequence = m_sequence;

@@ -371,6 +371,8 @@ $(COMMON_LIB):	$(Common_Objects)
 	-$(RM) $@
 	$(STATICLIB_LINK) $@ $^
 
+$(COMMON_TEST): $(Common_Test_Objects) $(COMMON_LIB)
+	$(EXE_LINK) $(EXE_LINK_OPTIONS) $^ -o $@ -L$(LIB) $(LINK_LIBS)
 
 #___________________________________________________________________________
 # gpre_boot
@@ -379,7 +381,7 @@ $(COMMON_LIB):	$(Common_Objects)
 boot: $(GPRE_BOOT)
 
 $(GPRE_BOOT):	$(GPRE_Boot_Objects) $(COMMON_LIB)
-	$(STATICEXE_LINK) $(EXE_LINK_OPTIONS) $^ -o $@ -L$(LIB) $(LINK_LIBS)
+	$(EXE_LINK) $(EXE_LINK_OPTIONS) $^ -o $@ -L$(LIB) $(LINK_LIBS)
 	-$(RM) $(GPRE_CURRENT)
 	(cd $(@D); $(LN) $(@F) $(notdir $(GPRE_CURRENT)))
 
@@ -413,6 +415,9 @@ engine: $(ENGINE_SONAME)
 
 $(ENGINE_SONAME):	$(Engine_Objects) $(SVC_Objects) $(COMMON_LIB)
 	$(LINK_ENGINE) -o $@ $^ $(LINK_ENGINE_LIBS) $(call LIB_LINK_DARWIN_INSTALL_NAME,plugins/$(EngineSoName))
+
+$(ENGINE_TEST): $(Engine_Objects) $(Engine_Test_Objects) $(SVC_Objects) $(COMMON_LIB)
+	$(EXE_LINK) -o $@ $^ $(EXE_LINK_OPTIONS) $(LINK_ENGINE_LIBS)
 
 
 #___________________________________________________________________________
@@ -553,7 +558,7 @@ $(NBACKUP):		$(NBACKUP_Objects) $(COMMON_LIB)
 # plugins - some of them are required to build examples, use separate entry for them
 #
 
-.PHONY:	udr legacy_user_management legacy_auth_server trace auth_debug udf_compat chacha
+.PHONY:	udr legacy_user_management legacy_auth_server trace auth_debug udf_compat chacha profiler
 UDR_PLUGIN = $(call makePluginName,udr_engine)
 LEGACY_USER_MANAGER = $(call makePluginName,Legacy_UserManager)
 LEGACY_AUTH_SERVER = $(call makePluginName,Legacy_Auth)
@@ -563,13 +568,14 @@ AUTH_DEBUGGER = $(call makePluginName,Auth_Debug)
 UDF_BACKWARD_COMPATIBILITY_BASENAME = $(LIB_PREFIX)udf_compat.$(SHRLIB_EXT)
 UDF_BACKWARD_COMPATIBILITY = $(PLUGINS)/udr/$(UDF_BACKWARD_COMPATIBILITY_BASENAME)
 CHACHA = $(call makePluginName,ChaCha)
+PROFILER = $(call makePluginName,Default_Profiler)
 
 BUILD_DEBUG:=
 ifeq ($(TARGET),Debug)
 	BUILD_DEBUG:=auth_debug
 endif
 
-plugins: udr legacy_user_management legacy_auth_server srp_user_management trace $(BUILD_DEBUG) udf_compat chacha
+plugins: udr legacy_user_management legacy_auth_server srp_user_management trace $(BUILD_DEBUG) udf_compat chacha profiler
 
 udr:	$(UDR_PLUGIN) $(PLUGINS)/udr_engine.conf
 
@@ -597,6 +603,12 @@ legacy_auth_server:	$(LEGACY_AUTH_SERVER)
 $(LEGACY_AUTH_SERVER):	$(LEGACY_AUTH_SERVER_Objects) $(COMMON_LIB)
 	$(LINK_PLUGIN) $(call LIB_LINK_SONAME,$(notdir $@).0) -o $@ $^ $(LINK_PLUG_LIBS) $(FIREBIRD_LIBRARY_LINK)\
  $(call LIB_LINK_DARWIN_INSTALL_NAME,plugins/libLegacy_Auth.$(SHRLIB_EXT))
+
+profiler:	$(PROFILER)
+
+$(PROFILER):	$(Profiler_Objects) $(COMMON_LIB)
+	$(LINK_PLUGIN) $(call LIB_LINK_SONAME,$(notdir $@).0) -o $@ $^ $(LINK_PLUG_LIBS) $(FIREBIRD_LIBRARY_LINK)\
+ $(call LIB_LINK_DARWIN_INSTALL_NAME,plugins/libDefault_Profiler.$(SHRLIB_EXT))
 
 trace:	$(FBTRACE)
 
@@ -719,6 +731,25 @@ Dependencies = $(AllObjects:.o=.d)
 
 install install-embedded silent_install package packages dist:
 	$(MAKE) -f Makefile.install $@
+
+
+#___________________________________________________________________________
+# tests
+#
+
+.PHONY:	tests tests_process run_tests run_tests_process
+
+tests:
+	$(MAKE) TARGET=$(DefaultTarget) tests_process
+
+tests_process: $(COMMON_TEST) $(ENGINE_TEST)
+
+run_tests:
+	$(MAKE) TARGET=$(DefaultTarget) run_tests_process
+
+run_tests_process: tests_process
+	$(COMMON_TEST) --log_level=all
+	$(ENGINE_TEST) --log_level=all
 
 
 #___________________________________________________________________________

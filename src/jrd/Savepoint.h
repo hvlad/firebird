@@ -94,7 +94,7 @@ namespace Jrd
 		UndoItemTree*	vct_undo;		// Data for undo records
 
 		void mergeTo(thread_db* tdbb, jrd_tra* transaction, VerbAction* nextAction);
-		void undo(thread_db* tdbb, jrd_tra* transaction, bool preserveLocks, 
+		void undo(thread_db* tdbb, jrd_tra* transaction, bool preserveLocks,
 				  VerbAction* preserveAction);
 		void garbageCollectIdxLite(thread_db* tdbb, jrd_tra* transaction, SINT64 recordNumber,
 								   VerbAction* nextAction, Record* goingRecord);

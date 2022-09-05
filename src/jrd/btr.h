@@ -100,6 +100,7 @@ const int idx_boolean		= 9;
 const int idx_decimal		= 10;
 const int idx_sql_time_tz	= 11;
 const int idx_timestamp_tz	= 12;
+const int idx_bcd			= 13;	// 128-bit Integer support
 
 // idx_itype space for future expansion
 const int idx_first_intl_string	= 64;	// .. MAX (short) Range of computed key strings

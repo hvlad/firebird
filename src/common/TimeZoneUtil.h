@@ -113,6 +113,13 @@ public:
 	static ISC_TIMESTAMP_TZ getCurrentSystemTimeStamp();
 	static ISC_TIMESTAMP_TZ getCurrentGmtTimeStamp();
 
+	static ISC_TIMESTAMP_TZ getCurrentTimeStamp(USHORT timeZone)
+	{
+		auto tsTz = getCurrentGmtTimeStamp();
+		tsTz.time_zone = timeZone;
+		return tsTz;
+	}
+
 	static void validateGmtTimeStamp(NoThrowTimeStamp& ts);
 
 	static ISC_TIME timeTzToTime(const ISC_TIME_TZ& timeTz, Callbacks* cb);

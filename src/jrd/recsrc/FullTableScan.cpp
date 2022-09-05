@@ -48,7 +48,7 @@ FullTableScan::FullTableScan(CompilerScratch* csb, const string& alias,
 	m_cardinality = csb->csb_rpt[stream].csb_cardinality;
 }
 
-void FullTableScan::open(thread_db* tdbb) const
+void FullTableScan::internalOpen(thread_db* tdbb) const
 {
 	Database* const dbb = tdbb->getDatabase();
 	Attachment* const attachment = tdbb->getAttachment();
@@ -132,7 +132,7 @@ void FullTableScan::close(thread_db* tdbb) const
 	}
 }
 
-bool FullTableScan::getRecord(thread_db* tdbb) const
+bool FullTableScan::internalGetRecord(thread_db* tdbb) const
 {
 	JRD_reschedule(tdbb);
 
@@ -162,7 +162,11 @@ bool FullTableScan::getRecord(thread_db* tdbb) const
 	return false;
 }
 
-void FullTableScan::print(thread_db* tdbb, string& plan, bool detailed, unsigned level) const
+void FullTableScan::getChildren(Array<const RecordSource*>& children) const
+{
+}
+
+void FullTableScan::print(thread_db* tdbb, string& plan, bool detailed, unsigned level, bool recurse) const
 {
 	if (detailed)
 	{

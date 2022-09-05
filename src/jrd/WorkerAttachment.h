@@ -40,7 +40,7 @@
 #include "../jrd/status.h"
 
 
-namespace Jrd 
+namespace Jrd
 {
 
 class WorkerStableAttachment : public SysStableAttachment
@@ -98,7 +98,7 @@ private:
 	void clear(bool checkRefs);
 
 
-	typedef Firebird::GenericMap<Firebird::Pair<Firebird::Left<Firebird::PathName, WorkerAttachment*> > > 
+	typedef Firebird::GenericMap<Firebird::Pair<Firebird::Left<Firebird::PathName, WorkerAttachment*> > >
 		MapDbIdToWorkAtts;
 
 	static Firebird::GlobalPtr<Firebird::Mutex> m_mapMutex;

@@ -74,7 +74,7 @@ void TimerImpl::reset(unsigned int timeout)
 	MutexLockGuard guard(m_mutex, FB_FUNCTION);
 
 	// Start timer if necessary. If timer was already started, don't restart
-	// (or stop) it - handler() will take care about it. 
+	// (or stop) it - handler() will take care about it.
 
 	if (!timeout)
 	{

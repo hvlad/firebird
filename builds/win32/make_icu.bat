@@ -2,9 +2,7 @@
 
 
 :: Set env vars
-@call setenvvar.bat
-
-@call set_build_target.bat %* icu
+@call setenvvar.bat %*
 
 ::==========
 :: MAIN
@@ -14,8 +12,7 @@
 if errorlevel 1 call :ERROR build failed - see make_icu_%FB_TARGET_PLATFORM%.log for details
 
 @echo Extracting tzdata
-mkdir %FB_ROOT_PATH%\temp\%FB_OBJ_DIR%\firebird\tzdata
-unzip -o %FB_ROOT_PATH%\extern\icu\tzdata\le.zip -d %FB_ROOT_PATH%\temp\%FB_OBJ_DIR%\firebird\tzdata
+unzip -o %FB_ROOT_PATH%\extern\icu\tzdata\le.zip -d %FB_ROOT_PATH%\extern\icu\tzdata-extract
 
 @goto :EOF
 

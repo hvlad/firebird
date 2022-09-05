@@ -217,7 +217,7 @@ void WorkerAttachment::shutdown()
 		WorkerAttachment* item = acc.current()->second;
 		item->clear(false);
 		delete item;
-	} 
+	}
 	while (acc.getNext());
 
 	m_map->clear();

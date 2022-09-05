@@ -349,7 +349,7 @@ public:
 				try
 				{
 					WorkerContextHolder holder(tdbb, FB_FUNCTION);
-					m_tra = TRA_start(tdbb, creation->transaction->tra_flags, 
+					m_tra = TRA_start(tdbb, creation->transaction->tra_flags,
 											creation->transaction->tra_lock_timeout);
 				}
 				catch (const Exception& ex)
@@ -532,7 +532,7 @@ bool IndexCreateTask::handler(WorkItem& _item)
 		CompilerScratch* csb = NULL;
 		Jrd::ContextPoolHolder context(tdbb, attachment->createPool());
 
-		idx->idx_expression = static_cast<ValueExprNode*> (MET_parse_blob(tdbb, relation, &m_exprBlob, 
+		idx->idx_expression = static_cast<ValueExprNode*> (MET_parse_blob(tdbb, relation, &m_exprBlob,
 			&csb, &idx->idx_expression_statement, false, false));
 
 		delete csb;
@@ -759,7 +759,7 @@ bool IndexCreateTask::getWorkItem(WorkItem** pItem)
 	if (!item)
 		return false;
 
-	item->m_inuse = (m_nextPP < m_countPP) || 
+	item->m_inuse = (m_nextPP < m_countPP) ||
 		(item->m_sort && item->m_sort->isSorted()) == 0;
 
 	if (item->m_inuse)

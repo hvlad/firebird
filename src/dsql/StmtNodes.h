@@ -195,6 +195,11 @@ public:
 public:
 	static DmlNode* parse(thread_db* tdbb, MemoryPool& pool, CompilerScratch* csb, const UCHAR blrOp);
 
+	virtual bool isProfileAware() const
+	{
+		return false;
+	}
+
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
 	virtual CompoundStmtNode* dsqlPass(DsqlCompilerScratch* dsqlScratch);
 	virtual void genBlr(DsqlCompilerScratch* dsqlScratch);
@@ -390,12 +395,25 @@ public:
 public:
 	static DmlNode* parse(thread_db* tdbb, MemoryPool& pool, CompilerScratch* csb, const UCHAR blrOp);
 
+	virtual bool isProfileAware() const
+	{
+		return false;
+	}
+
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
 	virtual DeclareSubFuncNode* dsqlPass(DsqlCompilerScratch* dsqlScratch);
 	virtual void genBlr(DsqlCompilerScratch* dsqlScratch);
 
-	virtual DeclareSubFuncNode* pass1(thread_db* tdbb, CompilerScratch* csb);
-	virtual DeclareSubFuncNode* pass2(thread_db* tdbb, CompilerScratch* csb);
+	virtual DeclareSubFuncNode* pass1(thread_db* tdbb, CompilerScratch* csb)
+	{
+		return this;
+	}
+
+	virtual DeclareSubFuncNode* pass2(thread_db* tdbb, CompilerScratch* csb)
+	{
+		return this;
+	}
+
 	virtual const StmtNode* execute(thread_db* tdbb, Request* request, ExeState* exeState) const;
 
 private:
@@ -443,12 +461,25 @@ public:
 public:
 	static DmlNode* parse(thread_db* tdbb, MemoryPool& pool, CompilerScratch* csb, const UCHAR blrOp);
 
+	virtual bool isProfileAware() const
+	{
+		return false;
+	}
+
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
 	virtual DeclareSubProcNode* dsqlPass(DsqlCompilerScratch* dsqlScratch);
 	virtual void genBlr(DsqlCompilerScratch* dsqlScratch);
 
-	virtual DeclareSubProcNode* pass1(thread_db* tdbb, CompilerScratch* csb);
-	virtual DeclareSubProcNode* pass2(thread_db* tdbb, CompilerScratch* csb);
+	virtual DeclareSubProcNode* pass1(thread_db* tdbb, CompilerScratch* csb)
+	{
+		return this;
+	}
+
+	virtual DeclareSubProcNode* pass2(thread_db* tdbb, CompilerScratch* csb)
+	{
+		return this;
+	}
+
 	virtual const StmtNode* execute(thread_db* tdbb, Request* request, ExeState* exeState) const;
 
 private:
@@ -1189,10 +1220,7 @@ public:
 	{
 	}
 
-	OuterMapNode* pass1(thread_db* /*tdbb*/, CompilerScratch* /*csb*/) override
-	{
-		return this;
-	}
+	OuterMapNode* pass1(thread_db* /*tdbb*/, CompilerScratch* /*csb*/) override;
 
 	OuterMapNode* pass2(thread_db* /*tdbb*/, CompilerScratch* /*csb*/) override
 	{

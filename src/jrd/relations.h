@@ -685,6 +685,7 @@ RELATION(nam_sec_global_auth_mapping, rel_global_auth_mapping, ODS_12_0, rel_vir
 	FIELD(f_sec_map_from, nam_sec_map_from, fld_map_from, 0, ODS_12_0)
 	FIELD(f_sec_map_to_type, nam_sec_map_to_type, fld_obj_type, 0, ODS_12_0)
 	FIELD(f_sec_map_to, nam_sec_map_to, fld_map_to, 0, ODS_12_0)
+	FIELD(f_sec_map_comment, nam_sec_description, fld_description, 0, ODS_13_1)
 END_RELATION
 
 // Relation 47 (RDB$DB_CREATORS)

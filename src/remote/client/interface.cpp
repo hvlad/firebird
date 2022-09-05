@@ -1083,7 +1083,7 @@ static Rvnt* find_event(rem_port*, SLONG);
 static bool get_new_dpb(ClumpletWriter&, const ParametersSet&);
 static void info(CheckStatusWrapper*, Rdb*, P_OP, USHORT, USHORT, USHORT,
 	const UCHAR*, USHORT, const UCHAR*, ULONG, UCHAR*);
-static void init(CheckStatusWrapper*, ClntAuthBlock&, rem_port*, P_OP, PathName&,
+static bool init(CheckStatusWrapper*, ClntAuthBlock&, rem_port*, P_OP, PathName&,
 	ClumpletWriter&, IntlParametersBlock&, ICryptKeyCallback* cryptCallback);
 static Rtr* make_transaction(Rdb*, USHORT);
 static void mov_dsql_message(const UCHAR*, const rem_fmt*, UCHAR*, const rem_fmt*);
@@ -1194,7 +1194,8 @@ IAttachment* RProvider::attach(CheckStatusWrapper* status, const char* filename,
 
 		IntlDpb intl;
 		HANDSHAKE_DEBUG(fprintf(stderr, "Cli: call init for DB='%s'\n", expanded_name.c_str()));
-		init(status, cBlock, port, op_attach, expanded_name, newDpb, intl, cryptCallback);
+		if (!init(status, cBlock, port, op_attach, expanded_name, newDpb, intl, cryptCallback))
+			return NULL;
 
 		Attachment* a = FB_NEW Attachment(port->port_context, filename);
 		a->addRef();
@@ -1873,7 +1874,8 @@ Firebird::IAttachment* RProvider::create(CheckStatusWrapper* status, const char*
 		add_working_directory(newDpb, node_name);
 
 		IntlDpb intl;
-		init(status, cBlock, port, op_create, expanded_name, newDpb, intl, cryptCallback);
+		if (!init(status, cBlock, port, op_create, expanded_name, newDpb, intl, cryptCallback))
+			return NULL;
 
 		Firebird::IAttachment* a = FB_NEW Attachment(rdb, filename);
 		a->addRef();
@@ -6525,7 +6527,8 @@ Firebird::IService* RProvider::attachSvc(CheckStatusWrapper* status, const char*
 		add_other_params(port, newSpb, spbParam);
 
 		IntlSpb intl;
-		init(status, cBlock, port, op_service_attach, expanded_name, newSpb, intl, cryptCallback);
+		if (!init(status, cBlock, port, op_service_attach, expanded_name, newSpb, intl, cryptCallback))
+			return NULL;
 
 		Firebird::IService* s = FB_NEW Service(rdb);
 		s->addRef();
@@ -7873,7 +7876,6 @@ static void disconnect(rem_port* port, bool rmRef)
 	port->port_flags |= PORT_disconnect;
 	port->disconnect();
 	delete rdb;
-	port->port_context = nullptr;
 
 	// Remove from active ports
 
@@ -8279,7 +8281,7 @@ static void authReceiveResponse(bool havePacket, ClntAuthBlock& cBlock, rem_port
 	(Arg::Gds(isc_login) << Arg::StatusVector(&s)).raise();
 }
 
-static void init(CheckStatusWrapper* status, ClntAuthBlock& cBlock, rem_port* port, P_OP op, PathName& file_name,
+static bool init(CheckStatusWrapper* status, ClntAuthBlock& cBlock, rem_port* port, P_OP op, PathName& file_name,
 	ClumpletWriter& dpb, IntlParametersBlock& intlParametersBlock, ICryptKeyCallback* cryptCallback)
 {
 /**************************************
@@ -8329,12 +8331,23 @@ static void init(CheckStatusWrapper* status, ClntAuthBlock& cBlock, rem_port* po
 		send_packet(port, packet);
 
 		authReceiveResponse(false, cBlock, port, rdb, status, packet, true);
+		return true;
+	}
+	catch (const Exception& ex)
+	{
+		// report primary init error
+		ex.stuffException(status);
+	}
+
+	try
+	{
+		disconnect(port);
 	}
 	catch (const Exception&)
 	{
-		disconnect(port);
-		throw;
+		// ignore secondary error
 	}
+	return false;
 }
 
 

@@ -111,8 +111,12 @@ public:
 	Firebird::Mutex m_localMutex;
 
 private:
-	void mutexBug(int osErrorCode, const char* text);
-	bool initialize(Firebird::SharedMemoryBase*, bool);
+	void mutexBug(int osErrorCode, const char* text) override;
+	bool initialize(Firebird::SharedMemoryBase*, bool) override;
+
+	USHORT getType() const override { return Firebird::SharedMemoryBase::SRAM_TRACE_CONFIG; }
+	USHORT getVersion() const override { return TraceCSHeader::TRACE_STORAGE_VERSION; }
+	const char* getName() const override { return "TraceConfigStorage"; }
 
 	void checkAudit();
 

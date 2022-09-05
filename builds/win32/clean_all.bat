@@ -1,6 +1,6 @@
 @echo off
 
-@call setenvvar.bat
+@call setenvvar.bat %*
 @if errorlevel 1 (goto :END)
 
 set FB_CLEAN_SHARED=
@@ -21,6 +21,11 @@ for %%v in ( %* )  do (
 
 @echo Cleaning icu...
 @rmdir /S /Q "%FB_ROOT_PATH%\extern\icu\%FB_TARGET_PLATFORM%\%FBBUILD_BUILDTYPE%" 2>nul
+
+@echo Cleaning cds...
+@rmdir /S /Q "%FB_ROOT_PATH%\extern\libcds\bin\vc.v141\%FB_TARGET_PLATFORM%-Debug-static" 2>nul
+@rmdir /S /Q "%FB_ROOT_PATH%\extern\libcds\bin\vc.v141\%FB_TARGET_PLATFORM%-Release-static" 2>nul
+@rmdir /S /Q "%FB_ROOT_PATH%\extern\libcds\obj\vc.v141\%FB_TARGET_PLATFORM%" 2>nul
 
 @echo Cleaning decNumber...
 @rmdir /S /Q "%FB_ROOT_PATH%\extern\decNumber\lib\%FB_TARGET_PLATFORM%" 2>nul

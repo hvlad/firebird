@@ -326,6 +326,11 @@ void CreateAlterPackageNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlS
 					Arg::Gds(isc_dyn_package_not_found) << Arg::Str(name));
 			}
 		}
+
+		dsc desc;
+		desc.makeText(name.length(), ttype_metadata,
+			(UCHAR*) const_cast<char*>(name.c_str()));	// safe const_cast
+		DFW_post_work(transaction, dfw_modify_package_header, &desc, 0);
 	}
 	else
 		executeCreate(tdbb, dsqlScratch, transaction);

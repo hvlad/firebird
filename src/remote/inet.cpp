@@ -573,7 +573,6 @@ static int		send_partial(rem_port*, PACKET *);
 
 static RemoteXdr*		xdrinet_create(rem_port*, UCHAR *, USHORT, enum xdr_op);
 static bool		setNoNagleOption(rem_port*);
-static bool		setFastLoopbackOption(rem_port*, SOCKET s = INVALID_SOCKET);
 static bool		setKeepAlive(SOCKET);
 static FPTR_INT	tryStopMainThread = 0;
 
@@ -1039,8 +1038,6 @@ rem_port* INET_connect(const TEXT* name,
 			gds__log("setsockopt: error setting TCP_NODELAY");
 		else
 		{
-			setFastLoopbackOption(port);
-
 			n = connect(port->port_handle, pai->ai_addr, pai->ai_addrlen);
 			if (n != -1)
 			{
@@ -1164,8 +1161,6 @@ static rem_port* listener_socket(rem_port* port, USHORT flag, const addrinfo* pa
 	{
 		inet_error(false, port, "listen", isc_net_connect_listen_err, INET_ERRNO);
 	}
-
-	setFastLoopbackOption(port);
 
 	inet_ports->registerPort(port);
 
@@ -1583,7 +1578,6 @@ static rem_port* aux_connect(rem_port* port, PACKET* packet)
 	}
 
 	setKeepAlive(n);
-	setFastLoopbackOption(new_port, n);
 
 	status = address.connect(n);
 	if (status < 0)
@@ -1673,8 +1667,6 @@ static rem_port* aux_request( rem_port* port, PACKET* packet)
 
 	new_port->port_server_flags = port->port_server_flags;
 	new_port->port_channel = (int) n;
-
-	setFastLoopbackOption(new_port, n);
 
 	P_RESP* response = &packet->p_resp;
 
@@ -3342,26 +3334,6 @@ static bool setNoNagleOption(rem_port* port)
 		}
 	}
 	return true;
-}
-
-bool setFastLoopbackOption(rem_port* port, SOCKET s)
-{
-#ifdef WIN_NT
-	if (port->getPortConfig()->getTcpLoopbackFastPath())
-	{
-		if (s == INVALID_SOCKET)
-			s = port->port_handle;
-
-		int optval = 1;
-		DWORD bytes = 0;
-
-		int ret = WSAIoctl(s, SIO_LOOPBACK_FAST_PATH, &optval, sizeof(optval),
-			NULL, 0, &bytes, 0, 0);
-
-		return (ret == 0);
-	}
-#endif
-	return false;
 }
 
 static bool setKeepAlive(SOCKET s)

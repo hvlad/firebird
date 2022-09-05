@@ -6,22 +6,35 @@ bits=${1}
 arm=""
 [ "$bits" = "64" ] && arm=64
 
+[ -z "$NDK_TOOLCHAIN" ] && NDK_TOOLCHAIN=$NDK/toolchains/llvm/prebuilt/linux-x86_64
+
 MakeVersion=gen/Make.Version
 Build=`grep ^BuildNum ${MakeVersion}|awk '{print $3;}'`
 Version=`grep ^FirebirdVersion ${MakeVersion}|awk '{print $3;}'`
 Release="Firebird-${Version}.${Build}-0.arm${arm}.tar.gz"
 Debug="Firebird-withDebugInfo-${Version}.${Build}-0.arm${arm}.tar.gz"
 Stripped=strip
-aStrip=${NDK}/toolchains/${cross}-4.9/prebuilt/linux-x86_64/bin/${cross}-strip
+aStrip=${NDK_TOOLCHAIN}/bin/llvm-strip
 fbRootDir=`pwd`
+
+runTar()
+{
+	tarfile=${1}
+	tar cvfz ${tarfile} --exclude '*.a' --exclude tests firebird
+}
 
 cd gen/Release
 rm -rf ${Stripped}
 cp ${fbRootDir}/builds/install/arch-specific/android/AfterUntar.sh firebird
+chmod +x firebird/AfterUntar.sh
+cp ${fbRootDir}/src/dbs/security.sql firebird
+cp ${fbRootDir}/examples/empbuild/employe2.sql firebird
+tar -C firebird/lib --wildcards -xvf ../../extern/icu/icu_android.tar.xz icudt*.dat
+tar -C firebird/lib --wildcards --strip-components 1 -xvf ../../extern/icu/icu_android.tar.xz ${bits}/*
 echo .
 echo .
 echo "Compress with deb-info"
-tar cvfz ../${Debug} firebird
+runTar ../${Debug}
 
 echo .
 echo .
@@ -34,7 +47,7 @@ cd ${Stripped}
 echo .
 echo .
 echo "Strip"
-for file in `find firebird -executable -type f -print`
+for file in `find firebird -executable -type f -not -name "*.sh" -print`
 do
 	${aStrip} ${file}
 done
@@ -42,5 +55,5 @@ done
 echo .
 echo .
 echo "Compress release"
-tar cvfz ../../${Release} firebird
+runTar ../../${Release}
 cd ..
