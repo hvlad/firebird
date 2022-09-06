@@ -7,7 +7,7 @@ ARG BINUTILS_VERSION=2.37
 ARG NCURSES_VERSION=6.3
 ARG ICU_VERSION=70_1
 
-ARG BASE=ubuntu:raring
+ARG BASE=ubuntu:focal
 ARG BUILD_ARCH=x86_64-pc-linux-gnu
 ARG LIBDIR=/usr/lib/x86_64-linux-gnu
 
