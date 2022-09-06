@@ -11,7 +11,7 @@
       <PreprocessorDefinitions>CDS_BUILD_STATIC_LIB;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <Link>
-      <AdditionalLibraryDirectories>$(LIBCDS_ROOT)\bin\vc.v141\$(Platform)-$(Configuration)-static;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>$(LIBCDS_ROOT)\bin\vc.$(PlatformToolset)\$(Platform)-$(Configuration)-static;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <AdditionalDependencies>libcds-$(PlatformTarget).lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
