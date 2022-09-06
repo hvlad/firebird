@@ -22,7 +22,7 @@ ARG ICU_VERSION
 
 RUN \
 	apt-get -y update && \
-	apt-get -y install curl xz-utils cmake && \
+	apt-get -y install curl xz-utils && \
 	rm -rf /var/lib/apt/lists/* && \
 	\
 	mkdir /work && \
@@ -54,7 +54,7 @@ COPY --from=downloader /work /work
 RUN \
 	sed -i 's/archive/old-releases/g' /etc/apt/sources.list && \
 	apt-get -y update && \
-	apt-get -y install curl xz-utils lbzip2 bzip2 m4 gcc g++ make libtool autoconf libtommath-dev zlib1g-dev unzip cmake && \
+	apt-get -y install curl xz-utils lbzip2 bzip2 m4 gcc g++ make libtool autoconf libtommath-dev zlib1g-dev unzip && \
 	rm -rf /var/lib/apt/lists/* && \
 	\
 	cd /work && \
