@@ -191,6 +191,13 @@ ifeq ($(RE2_BUILD_FLG),Y)
 endif
 
 	mkdir -p $(LIBCDS)/lib/$(TARGET)
+# find cmake
+	ls /opt/cmake
+	ls /usr/bin/cmake
+	ls /usr/local/cmake
+	ls /usr/local/bin/cmake
+	ls /snap/bin/cmake
+	
 	cmake -DCMAKE_BUILD_TYPE=$(TARGET) -DCMAKE_CXX_FLAGS=-fPIC -S $(LIBCDS) -B $(LIBCDS)/lib/$(TARGET)
 	$(MAKE) -C $(LIBCDS)/lib/$(TARGET)
 
