@@ -124,7 +124,6 @@ enum LatchState
 };
 
 static void adjust_scan_count(WIN* window, bool mustRead);
-static Lock* alloc_page_lock(Jrd::thread_db*, BufferDesc*);
 static int blocking_ast_bdb(void*);
 #ifdef CACHE_READER
 static void prefetch_epilogue(Prefetch*, FbStatusVector *);
@@ -1154,10 +1153,17 @@ void CCH_fini(thread_db* tdbb)
 
 	delete bcb->bcb_hashTable;
 
-	if (!(bcb->bcb_flags & BCB_exclusive))
-		for (auto blk : bcb->bcb_bdbBlocks)
-			for (ULONG i = 0; i < blk.m_count; i++)
-				delete blk.m_bdbs[i].bdb_lock;
+	for (auto blk : bcb->bcb_bdbBlocks)
+	{
+		for (ULONG i = 0; i < blk.m_count; i++)
+		{
+			BufferDesc& bdb = blk.m_bdbs[i];
+
+			if (bdb.bdb_lock)
+				bdb.bdb_lock->~Lock();
+			bdb.~BufferDesc();
+		}
+	}
 
 	bcb->bcb_bdbBlocks.clear();
 	bcb->bcb_count = 0;
@@ -2572,29 +2578,6 @@ static void adjust_scan_count(WIN* window, bool mustRead)
 }
 
 
-static Lock* alloc_page_lock(thread_db* tdbb, BufferDesc* bdb)
-{
-/**************************************
- *
- *	a l l o c _ p a g e _ l o c k
- *
- **************************************
- *
- * Functional description
- *	Allocate a page-type lock.
- *
- **************************************/
-	SET_TDBB(tdbb);
-	Database* const dbb = tdbb->getDatabase();
-	BufferControl* const bcb = bdb->bdb_bcb;
-
-	const USHORT lockLen = PageNumber::getLockLen();
-
-	return FB_NEW_RPT(*bcb->bcb_bufferpool, lockLen)
-		Lock(tdbb, lockLen, LCK_bdb, bdb, blocking_ast_bdb);
-}
-
-
 static int blocking_ast_bdb(void* ast_object)
 {
 /**************************************
@@ -3589,7 +3572,7 @@ static bool expand_buffers(thread_db* tdbb, ULONG number)
 		return false;
 
 	// Expand hash table only if there is no concurrent attachments
-	if (tdbb->getAttachment()->att_flags & ATT_exclusive)
+	if ((tdbb->getAttachment()->att_flags & ATT_exclusive) || !(bcb->bcb_flags & BCB_exclusive))
 		bcb->bcb_hashTable->resize(number);
 
 	SyncLockGuard syncEmpty(&bcb->bcb_syncEmpty, SYNC_EXCLUSIVE, FB_FUNCTION);
@@ -3947,7 +3930,7 @@ static BufferDesc* get_buffer(thread_db* tdbb, const PageNumber page, SyncType s
 			return bdb2;
 		}
 	}
-	
+
 	// never get here
 	fb_assert(false);
 }
@@ -4201,20 +4184,28 @@ static ULONG memory_init(thread_db* tdbb, BufferControl* bcb, ULONG number)
 	ULONG buffers = 0;
 	const size_t page_size = dbb->dbb_page_size;
 	UCHAR* memory = nullptr;
+	UCHAR* lock_memory = nullptr;
 	const UCHAR* memory_end = nullptr;
 	BufferDesc* tail = nullptr;
+
+	const size_t lock_key_extra = PageNumber::getLockLen() > Lock::KEY_STATIC_SIZE ?
+		PageNumber::getLockLen() - Lock::KEY_STATIC_SIZE : 0;
+
+	const size_t lock_size = (bcb->bcb_flags & BCB_exclusive) ? 0 :
+		FB_ALIGN(sizeof(Lock) + lock_key_extra, alignof(Lock));
 
 	while (number)
 	{
 		if (!memory)
 		{
-			// Allocate memory block big enough to accomodate BufferDesc's and page buffers. 
+			// Allocate memory block big enough to accomodate BufferDesc's, Lock's and page buffers.
 
 			ULONG to_alloc = number;
 
 			while (true)
 			{
-				const size_t memory_size = sizeof(BufferDesc) * (to_alloc + 1) + page_size * (to_alloc + 1);
+				const size_t memory_size = (sizeof(BufferDesc) + lock_size + page_size) * (to_alloc + 1);
+
 				fb_assert(memory_size > 0);
 				if (memory_size < MIN_BUFFER_SEGMENT)
 				{
@@ -4250,16 +4241,27 @@ static ULONG memory_init(thread_db* tdbb, BufferControl* bcb, ULONG number)
 			// of the page size (rather the physical sector size.) This
 			// is a necessary condition to support raw I/O interfaces.
 			memory = (UCHAR*) (blk.m_bdbs + to_alloc);
+			if (!(bcb->bcb_flags & BCB_exclusive))
+			{
+				lock_memory = FB_ALIGN(memory, lock_size);
+				memory = (UCHAR*) (lock_memory + lock_size * to_alloc);
+			}
 			memory = FB_ALIGN(memory, page_size);
 
 			fb_assert(memory_end >= memory + page_size * to_alloc);
 		}
 
 		tail = ::new(tail) BufferDesc(bcb);
-		if (!(bcb->bcb_flags & BCB_exclusive)) {
-			tail->bdb_lock = alloc_page_lock(tdbb, tail);
+
+		if (!(bcb->bcb_flags & BCB_exclusive))
+		{
+			tail->bdb_lock = ::new(lock_memory)
+				Lock(tdbb, PageNumber::getLockLen(), LCK_bdb, tail, blocking_ast_bdb);
+
+			lock_memory += lock_size;
 		}
-		tail->bdb_buffer = (pag*)memory;
+
+		tail->bdb_buffer = (pag*) memory;
 		memory += bcb->bcb_page_size;
 
 		QUE_INSERT(bcb->bcb_empty, tail->bdb_que);
@@ -4271,7 +4273,26 @@ static ULONG memory_init(thread_db* tdbb, BufferControl* bcb, ULONG number)
 		// Check if memory segment has been exhausted.
 
 		if (memory + page_size > memory_end)
+		{
+			const auto blk = bcb->bcb_bdbBlocks.end() - 1;
+			const BufferDesc* bdb = blk->m_bdbs;
+
+			if (!(bcb->bcb_flags & BCB_exclusive))
+			{
+				// first lock block is after last BufferDesc
+				fb_assert((char*)bdb->bdb_lock >= (char*)tail);
+
+				// first page buffer is after last lock block
+				fb_assert((char*)bdb->bdb_buffer >= (char*)tail[-1].bdb_lock + lock_size);
+			}
+			else
+			{
+				// first page buffer is after last BufferDesc
+				fb_assert((char*)bdb->bdb_buffer >= (char*)tail);
+			}
+
 			memory = nullptr;
+		}
 	}
 
 	return buffers;
@@ -5308,7 +5329,7 @@ inline BufferDesc* BCBHashTable::find(const PageNumber& page) const
 	{
 		fb_assert(ptr->second != nullptr);
 #ifdef DEV_BUILD
-		// Original libcds have no update(key, value), use this code with it, 
+		// Original libcds have no update(key, value), use this code with it,
 		// see also comment in get_buffer()
 		while (ptr->second == nullptr)
 			cds::backoff::pause();
