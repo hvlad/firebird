@@ -5255,8 +5255,6 @@ void BCBHashTable::resize(ULONG count)
 	m_count = count;
 	m_chains = new_chains;
 
-	chain_type* new_tail;
-
 #ifndef HASH_USE_CDS_LIST
 	// Initialize all new new_chains
 	for (new_tail = new_chains; new_tail < new_chains + count; new_tail++)
@@ -5267,10 +5265,9 @@ void BCBHashTable::resize(ULONG count)
 		return;
 
 	const chain_type* const old_end = old_chains + old_count;
-	new_tail = new_chains;
 
 	// Move any active buffers from old hash table to new
-	for (chain_type* old_tail = old_chains; old_tail < old_end; old_tail++, new_tail++)
+	for (chain_type* old_tail = old_chains; old_tail < old_end; old_tail++)
 	{
 #ifndef HASH_USE_CDS_LIST
 		while (QUE_NOT_EMPTY(*old_tail))
@@ -5286,7 +5283,9 @@ void BCBHashTable::resize(ULONG count)
 		{
 			auto n = old_tail->begin();
 			old_tail->erase(n->first);				// bdb_page
-			new_tail->insert(n->first, n->second);	// bdb
+
+			chain_type* new_chain = &m_chains[hash(n->first)];
+			new_chain->insert(n->first, n->second);	// bdb_page, bdb
 		}
 #endif
 	}
