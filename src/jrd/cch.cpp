@@ -5257,8 +5257,8 @@ void BCBHashTable::resize(ULONG count)
 
 #ifndef HASH_USE_CDS_LIST
 	// Initialize all new new_chains
-	for (new_tail = new_chains; new_tail < new_chains + count; new_tail++)
-		QUE_INIT(*new_tail);
+	for (chain_type* que = new_chains; que < new_chains + count; que++)
+		QUE_INIT(*que);
 #endif
 
 	if (!old_chains)
