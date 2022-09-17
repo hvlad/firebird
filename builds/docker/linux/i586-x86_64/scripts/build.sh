@@ -3,6 +3,10 @@
 # FIXME: Resolve this with a configure option.
 sed -i 's/AC_CHECK_LIB(atomic, main)/AC_CHECK_LIB(:libatomic.a, main)/g' configure.ac
 
+cmake --version
+apt-get -y install cmake3
+cmake --version
+
 ./autogen.sh --build=$BUILD_ARCH --prefix=/opt/firebird --enable-binreloc --with-builtin-tomcrypt --with-termlib=:libncurses.a
 make -j${CPUCOUNT}
 make tests -j${CPUCOUNT}
