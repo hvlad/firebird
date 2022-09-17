@@ -6,6 +6,7 @@ ARG MAKE_VERSION=4.3
 ARG BINUTILS_VERSION=2.37
 ARG NCURSES_VERSION=6.3
 ARG ICU_VERSION=70_1
+ARG CMAKE_VERSION=3.2.2
 
 ARG BASE=ubuntu:raring
 ARG BUILD_ARCH=x86_64-pc-linux-gnu
@@ -19,6 +20,7 @@ ARG MAKE_VERSION
 ARG BINUTILS_VERSION
 ARG NCURSES_VERSION
 ARG ICU_VERSION
+ARG CMAKE_VERSION
 
 RUN \
 	apt-get -y update && \
@@ -34,7 +36,8 @@ RUN \
 	curl -SL --output make-${MAKE_VERSION}.tar.bz2 https://ftp.gnu.org/gnu/make/make-${MAKE_VERSION}.tar.gz && \
 	curl -SL --output binutils-${BINUTILS_VERSION}.tar.bz2 https://ftpmirror.gnu.org/gnu/binutils/binutils-${BINUTILS_VERSION}.tar.bz2 && \
 	curl -SL --output ncurses-${NCURSES_VERSION}.tar.gz https://ftp.gnu.org/pub/gnu/ncurses/ncurses-${NCURSES_VERSION}.tar.gz && \
-	curl -SL --output icu4c-${ICU_VERSION}-src.tgz https://github.com/unicode-org/icu/releases/download/release-`echo ${ICU_VERSION} | tr _ -`/icu4c-${ICU_VERSION}-src.tgz
+	curl -SL --output icu4c-${ICU_VERSION}-src.tgz https://github.com/unicode-org/icu/releases/download/release-`echo ${ICU_VERSION} | tr _ -`/icu4c-${ICU_VERSION}-src.tgz && \
+	curl -SL --output cmake-$(CMAKE_VERSION)-Linux-x86_64.tar.gz https://cmake.org/files/v3.2/cmake-$(CMAKE_VERSION)-Linux-x86_64.tar.gz
 
 FROM $BASE
 
@@ -45,6 +48,7 @@ ARG MAKE_VERSION
 ARG BINUTILS_VERSION
 ARG NCURSES_VERSION
 ARG ICU_VERSION
+ARG CMAKE_VERSION
 
 ARG BUILD_ARCH
 ARG LIBDIR
@@ -54,7 +58,7 @@ COPY --from=downloader /work /work
 RUN \
 	sed -i 's/archive/old-releases/g' /etc/apt/sources.list && \
 	apt-get -y update && \
-	apt-get -y install curl xz-utils lbzip2 bzip2 m4 gcc g++ make libtool autoconf libtommath-dev zlib1g-dev unzip cmake3 && \
+	apt-get -y install curl xz-utils lbzip2 bzip2 m4 gcc g++ make libtool autoconf libtommath-dev zlib1g-dev unzip  && \
 	rm -rf /var/lib/apt/lists/* && \
 	\
 	cd /work && \
@@ -149,7 +153,8 @@ RUN \
 	make -j${CPUCOUNT} && \
 	make install && \
 	\
-	rm -rf /work
+	cd /work && \
+	tar -xzvf cmake-$(CMAKE_VERSION)-Linux-x86_64.tar.gz -C /opt
 
 COPY scripts/* /
 
@@ -162,6 +167,8 @@ ENV PATH=/opt/libtool-${LIBTOOL_VERSION}/bin:$PATH
 ENV PATH=/opt/make-${MAKE_VERSION}/bin:$PATH
 
 ENV PATH=/opt/binutils-${BINUTILS_VERSION}/bin:$PATH
+
+ENV PATH=/opt/cmake-${MAKE_VERSION}-Linux-x86_64/bin/:$PATH
 
 ENV LIBRARY_PATH=/opt/icu/lib
 ENV LD_LIBRARY_PATH=/opt/icu/lib:$LD_LIBRARY_PATH

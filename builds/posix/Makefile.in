@@ -174,6 +174,20 @@ $(GEN_ROOT)/Make.Version : $(SRC_ROOT)/misc/writeBuildNum.sh
 #
 
 external:
+
+# find cmake
+	-apt list cmake
+	-locate cmake
+	-whereis cmake
+	-ls /opt/cmake*
+	-ls /usr/bin/cmake
+	-ls /usr/local/cmake
+	-ls /usr/local/bin/cmake
+	-ls /snap/bin/cmake
+
+	-ls /work
+	-ls /work/cmake*
+
 	CC="$(CC)" CFLAGS="$(CFLAGS)" $(MAKE) -C $(ROOT)/extern/btyacc
 	CXX="$(CXX)" CXXFLAGS="$(CXXFLAGS)" $(MAKE) -C $(ROOT)/extern/cloop TARGET=release WITH_FPC=0 BUILD_DIR=$(TMP_ROOT)/cloop OUT_DIR=$(GEN_ROOT)/$(TARGET)/cloop
 
@@ -191,19 +205,6 @@ ifeq ($(RE2_BUILD_FLG),Y)
 endif
 
 	mkdir -p $(LIBCDS)/lib/$(TARGET)
-# find cmake
-	-apt list cmake
-	-apt list cmake3
-	-locate cmake
-	-locate cmake3
-	-whereis cmake
-	-whereis cmake3
-	-ls /opt/cmake
-	-ls /usr/bin/cmake
-	-ls /usr/local/cmake
-	-ls /usr/local/bin/cmake
-	-ls /snap/bin/cmake
-	
 	cmake -DCMAKE_BUILD_TYPE=$(TARGET) -DCMAKE_CXX_FLAGS=-fPIC -S $(LIBCDS) -B $(LIBCDS)/lib/$(TARGET)
 	$(MAKE) -C $(LIBCDS)/lib/$(TARGET)
 
