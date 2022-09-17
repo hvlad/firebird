@@ -7,7 +7,7 @@ ARG BINUTILS_VERSION=2.37
 ARG NCURSES_VERSION=6.3
 ARG ICU_VERSION=70_1
 
-ARG BASE=ubuntu:focal
+ARG BASE=ubuntu:raring
 ARG BUILD_ARCH=x86_64-pc-linux-gnu
 ARG LIBDIR=/usr/lib/x86_64-linux-gnu
 
@@ -22,7 +22,7 @@ ARG ICU_VERSION
 
 RUN \
 	apt-get -y update && \
-	apt-get -y install curl xz-utils cmake && \
+	apt-get -y install curl xz-utils && \
 	rm -rf /var/lib/apt/lists/* && \
 	\
 	mkdir /work && \
@@ -54,7 +54,7 @@ COPY --from=downloader /work /work
 RUN \
 	sed -i 's/archive/old-releases/g' /etc/apt/sources.list && \
 	apt-get -y update && \
-	apt-get -y install curl xz-utils lbzip2 bzip2 m4 gcc g++ make libtool autoconf libtommath-dev zlib1g-dev unzip cmake && \
+	apt-get -y install curl xz-utils lbzip2 bzip2 m4 gcc g++ make libtool autoconf libtommath-dev zlib1g-dev unzip cmake3 && \
 	rm -rf /var/lib/apt/lists/* && \
 	\
 	cd /work && \

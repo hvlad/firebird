@@ -193,8 +193,11 @@ endif
 	mkdir -p $(LIBCDS)/lib/$(TARGET)
 # find cmake
 	-apt list cmake
+	-apt list cmake3
 	-locate cmake
+	-locate cmake3
 	-whereis cmake
+	-whereis cmake3
 	-ls /opt/cmake
 	-ls /usr/bin/cmake
 	-ls /usr/local/cmake
