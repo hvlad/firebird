@@ -87,7 +87,10 @@ public:
 	UpcaseConverter(MemoryPool& pool, TextType* obj, const UCHAR*& str, SLONG& len)
 		: PrevConverter(pool, obj, str, len)
 	{
-		obj->str_to_upper(len, str, len, tempBuffer.getBuffer(len, false));
+		const auto charSet = obj->getCharSet();
+		const auto bufferSize = len / charSet->minBytesPerChar() * charSet->maxBytesPerChar();
+
+		len = obj->str_to_upper(len, str, bufferSize, tempBuffer.getBuffer(bufferSize, false));
 		str = tempBuffer.begin();
 	}
 

@@ -211,8 +211,11 @@ missingLibrary() {
 # Check library presence, errorexit when missing
 
 checkLibrary() {
-	libName=${1}
-	haveLibrary $libName || missingLibrary $libName
+	libList=${1}
+	for libName in $libList
+	do
+		haveLibrary $libName || missingLibrary $libName
+	done
 }
 
 

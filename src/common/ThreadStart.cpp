@@ -210,7 +210,10 @@ void Thread::kill(Handle& thread)
 ThreadId Thread::getId()
 {
 #ifdef USE_LWP_AS_THREAD_ID
-	return syscall(SYS_gettid);
+	static __thread int tid = 0;
+	if (!tid)
+		tid = syscall(SYS_gettid);
+	return tid;
 #else
 	return pthread_self();
 #endif

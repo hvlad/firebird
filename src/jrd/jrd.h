@@ -1089,7 +1089,7 @@ namespace Jrd {
 			fb_assert(optional || m_ref.hasData());
 
 			if (m_ref.hasData())
-				m_ref->getMutex()->leave();
+				m_ref->getSync()->leave();
 		}
 
 		EngineCheckout(Attachment* att, const char* from)
@@ -1100,14 +1100,14 @@ namespace Jrd {
 			if (att && att->att_use_count)
 			{
 				m_ref = att->getStable();
-				m_ref->getMutex()->leave();
+				m_ref->getSync()->leave();
 			}
 		}
 
 		~EngineCheckout()
 		{
 			if (m_ref.hasData())
-				m_ref->getMutex()->enter(m_from);
+				m_ref->getSync()->enter(m_from);
 
 			// If we were signalled to cancel/shutdown, react as soon as possible.
 			// We cannot throw immediately, but we can reschedule ourselves.

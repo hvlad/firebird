@@ -1234,15 +1234,54 @@ void makeBinShift(DataTypeUtilBase*, const SysFunction* function, dsc* result,
 }
 
 
-void makeBlobAppend(DataTypeUtilBase* dataTypeUtil, const SysFunction* function, dsc* result, 
+bool makeBlobAppendBlob(dsc* result, const dsc* arg, bid* blob_id = nullptr)
+{
+	if (!arg)
+		return false;
+
+	ISC_QUAD* ptr = reinterpret_cast<ISC_QUAD*>(blob_id);
+
+	if (arg->isBlob())
+	{
+		result->makeBlob(arg->getBlobSubType(), arg->getTextType(), ptr);
+		return true;
+	}
+
+	if (arg->isNull())
+		return false;
+
+	if (arg->isText())
+	{
+		USHORT ttype = arg->getTextType();
+		if (ttype == ttype_binary)
+			result->makeBlob(isc_blob_untyped, ttype_binary, ptr);
+		else
+			result->makeBlob(isc_blob_text, ttype, ptr);
+	}
+	else
+	{
+		result->makeBlob(isc_blob_text, ttype_ascii, ptr);
+	}
+
+	return true;
+}
+
+
+void makeBlobAppend(DataTypeUtilBase* dataTypeUtil, const SysFunction* function, dsc* result,
 	int argsCount, const dsc** args)
 {
-	USHORT ttype = CS_dynamic;
+	if (argsCount > 0)
+	{
+		const dsc** ppArg = args;
+		const dsc** const end = args + argsCount;
 
-	if (argsCount > 0 && args[0])
-		ttype = args[0]->getTextType();
+		for (; ppArg < end; ppArg++)
+			if (makeBlobAppendBlob(result, *ppArg))
+				return;
+	}
 
-	result->makeBlob(isc_blob_text, ttype);
+	fb_assert(false);
+	result->makeBlob(isc_blob_untyped, ttype_binary);
 }
 
 
@@ -2256,7 +2295,7 @@ HUGEINT getScale(impure_value* impure)
 }
 
 
-static void appendFromBlob(thread_db* tdbb, jrd_tra* transaction, blb* blob, 
+static void appendFromBlob(thread_db* tdbb, jrd_tra* transaction, blb* blob,
 	const dsc* blobDsc, const dsc* srcDsc)
 {
 	if (!srcDsc->dsc_address)
@@ -2277,7 +2316,7 @@ static void appendFromBlob(thread_db* tdbb, jrd_tra* transaction, blb* blob,
 	Database* dbb = tdbb->getDatabase();
 
 	HalfStaticArray<UCHAR, BUFFER_LARGE> buffer;
-	const SLONG buffSize = (srcBlob->getLevel() == 0) ? 
+	const SLONG buffSize = (srcBlob->getLevel() == 0) ?
 		MAX(BUFFER_LARGE, srcBlob->blb_length) : dbb->dbb_page_size - BLP_SIZE;
 
 	UCHAR* buff = buffer.getBuffer(buffSize);
@@ -2290,14 +2329,12 @@ static void appendFromBlob(thread_db* tdbb, jrd_tra* transaction, blb* blob,
 }
 
 
-dsc* evlBlobAppend(thread_db* tdbb, const SysFunction* function, const NestValueArray& args, 
+dsc* evlBlobAppend(thread_db* tdbb, const SysFunction* function, const NestValueArray& args,
 	impure_value* impure)
 {
 	jrd_req* request = tdbb->getRequest();
 	jrd_tra* transaction = request ? request->req_transaction : tdbb->getTransaction();
 	transaction = transaction->getOuter();
-
-	USHORT ttype = tdbb->getCharSet();
 
 	blb* blob = NULL;
 	bid blob_id;
@@ -2312,21 +2349,13 @@ dsc* evlBlobAppend(thread_db* tdbb, const SysFunction* function, const NestValue
 	if (!arg0_null && argDsc->isBlob())
 		blob_id = *reinterpret_cast<bid*>(argDsc->dsc_address);
 
-	const dsc* declDsc = argDsc;
-	if (!declDsc)
-		declDsc = EVL_assign_to(tdbb, args[0]);
-
-	if (declDsc && declDsc->isBlob())
+	// Try to get blob type from declared var\param
+	if (!argDsc && (nodeIs<VariableNode>(args[0]) ||
+					nodeIs<ParameterNode>(args[0]) ))
 	{
-		ttype = declDsc->getTextType();
-		blobDsc.makeBlob(declDsc->getBlobSubType(), ttype, (ISC_QUAD*)&blob_id);
-	}
-	else
-	{
-		if (declDsc && declDsc->isText())
-			ttype = declDsc->getTextType();
-
-		blobDsc.makeBlob(isc_blob_text, ttype, (ISC_QUAD*) &blob_id);
+		argDsc = EVL_assign_to(tdbb, args[0]);
+		if (argDsc && argDsc->isBlob())
+			makeBlobAppendBlob(&blobDsc, argDsc, &blob_id);
 	}
 
 	bool copyBlob = !blob_id.isEmpty();
@@ -2346,23 +2375,6 @@ dsc* evlBlobAppend(thread_db* tdbb, const SysFunction* function, const NestValue
 		}
 	}
 
-	if (!blob)
-	{
-		UCharBuffer bpb;
-		BLB_gen_bpb_from_descs(&blobDsc, &blobDsc, bpb);
-		bpb.push(isc_bpb_storage);
-		bpb.push(1);
-		bpb.push(isc_bpb_storage_temp);
-
-		blob = blb::create2(tdbb, transaction, &blob_id, bpb.getCount(), bpb.begin());
-		blob->blb_flags |= BLB_stream | BLB_close_on_read;
-	}
-
-//	if (copyBlob && argDsc && argDsc->isBlob())
-//		appendFromBlob(tdbb, transaction, blob, &blobDsc, argDsc);
-
-	EVL_make_value(tdbb, &blobDsc, impure);
-
 	for (FB_SIZE_T i = 0; i < args.getCount(); i++)
 	{
 		if (i == 0)
@@ -2377,11 +2389,33 @@ dsc* evlBlobAppend(thread_db* tdbb, const SysFunction* function, const NestValue
 				continue;
 		}
 
+		fb_assert(argDsc != nullptr);
+
+		if (!blobDsc.isBlob())
+		{
+			if (!makeBlobAppendBlob(&blobDsc, argDsc, &blob_id))
+				continue;
+		}
+
+		fb_assert(blobDsc.isBlob());
+
+		if (!blob)
+		{
+			UCharBuffer bpb;
+			BLB_gen_bpb_from_descs(&blobDsc, &blobDsc, bpb);
+			bpb.push(isc_bpb_storage);
+			bpb.push(1);
+			bpb.push(isc_bpb_storage_temp);
+
+			blob = blb::create2(tdbb, transaction, &blob_id, bpb.getCount(), bpb.begin());
+			blob->blb_flags |= BLB_stream | BLB_close_on_read;
+		}
+
 		if (!argDsc->isBlob())
 		{
 			MoveBuffer temp;
 			UCHAR* addr = NULL;
-			SLONG len = MOV_make_string2(tdbb, argDsc, ttype, &addr, temp);
+			SLONG len = MOV_make_string2(tdbb, argDsc, blobDsc.getTextType(), &addr, temp);
 
 			if (addr)
 				blob->BLB_put_data(tdbb, addr, len);
@@ -2392,6 +2426,10 @@ dsc* evlBlobAppend(thread_db* tdbb, const SysFunction* function, const NestValue
 		}
 	}
 
+	if (!blob)
+		return nullptr;
+
+	EVL_make_value(tdbb, &blobDsc, impure);
 	return &impure->vlu_desc;
 }
 

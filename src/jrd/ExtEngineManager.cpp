@@ -1247,7 +1247,7 @@ void ExtEngineManager::closeAttachment(thread_db* tdbb, Attachment* attachment)
 				FbLocalStatus status;
 				engine->closeAttachment(&status, attInfo->context);	//// FIXME: log status
 
-				// Check whether the engine is used by other attachments. 
+				// Check whether the engine is used by other attachments.
 				// If no one uses, release it.
 				bool close = true;
 				WriteLockGuard writeGuard(enginesLock, FB_FUNCTION);

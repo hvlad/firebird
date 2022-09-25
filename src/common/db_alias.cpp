@@ -59,19 +59,6 @@ namespace
 
 	const char* const ALIAS_FILE = "databases.conf";
 
-	void replace_dir_sep(PathName& s)
-	{
-		const char correct_dir_sep = PathUtils::dir_sep;
-		const char incorrect_dir_sep = (correct_dir_sep == '/') ? '\\' : '/';
-		for (char* itr = s.begin(); itr < s.end(); ++itr)
-		{
-			if (*itr == incorrect_dir_sep)
-			{
-				*itr = correct_dir_sep;
-			}
-		}
-	}
-
 	struct CalcHash
 	{
 		static FB_SIZE_T chash(FB_SIZE_T sum, FB_SIZE_T hashSize)
@@ -291,7 +278,7 @@ namespace
 				const ConfigFile::Parameter* par = &params[n];
 
 				PathName file(par->value.ToPathName());
-				replace_dir_sep(file);
+				PathUtils::fixupSeparators(file);
 				if (PathUtils::isRelative(file))
 				{
 					gds__log("Value %s configured for alias %s "
@@ -343,7 +330,7 @@ namespace
 				}
 
 				PathName correctedAlias(par->name.ToPathName());
-				replace_dir_sep(correctedAlias);
+				PathUtils::fixupSeparators(correctedAlias);
 				AliasName* alias = aliasHash.lookup(correctedAlias);
 				if (alias)
 				{
@@ -428,7 +415,7 @@ static inline bool hasSeparator(const PathName& name)
 static bool resolveAlias(const PathName& alias, PathName& file, RefPtr<const Config>* config)
 {
 	PathName correctedAlias = alias;
-	replace_dir_sep(correctedAlias);
+	PathUtils::fixupSeparators(correctedAlias);
 
 	AliasName* a = aliasesConf().aliasHash.lookup(correctedAlias);
 	DbName* db = a ? a->database : NULL;

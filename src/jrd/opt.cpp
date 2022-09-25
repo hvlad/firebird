@@ -3196,10 +3196,12 @@ static BoolExprNode* make_inference_node(CompilerScratch* csb, BoolExprNode* boo
 
 	// Share impure area for cached invariant value used to hold pre-compiled
 	// pattern for new LIKE and CONTAINING algorithms.
+	// Cached pattern matcher also should be shared by both nodes, else new node
+	// could overwrite impure area at offset zero. See bug GH-7276.
 	// Proper cloning of impure area for this node would require careful accounting
 	// of new invariant dependencies - we avoid such hassles via using single
 	// cached pattern value for all node clones. This is faster too.
-	if (newCmpNode->nodFlags & ExprNode::FLAG_INVARIANT)
+	if (newCmpNode->nodFlags & (ExprNode::FLAG_INVARIANT | ExprNode::FLAG_PATTERN_MATCHER_CACHE))
 		newCmpNode->impureOffset = cmpNode->impureOffset;
 
 	// But substitute new values for some of the predicate arguments

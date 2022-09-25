@@ -1948,7 +1948,7 @@ void TracePluginImpl::register_service(ITraceServiceConnection* service)
 	if (!username.isEmpty())
 	{
 		const char* role = service->getRoleName();
-		if (role && *role) 
+		if (role && *role)
 		{
 			username.append(":");
 			username.append(role);
@@ -2549,7 +2549,7 @@ FB_BOOLEAN TracePluginImpl::trace_dsql_restart(ITraceDatabaseConnection* connect
 {
 	try
 	{
-		log_event_dsql_execute(connection, transaction, statement, true, number, 
+		log_event_dsql_execute(connection, transaction, statement, true, number,
 			ITracePlugin::RESULT_SUCCESS);
 		return true;
 	}

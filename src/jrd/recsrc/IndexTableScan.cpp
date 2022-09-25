@@ -221,7 +221,7 @@ bool IndexTableScan::getRecord(thread_db* tdbb) const
 				context.raise(tdbb, result, rpb->rpb_record);
 			}
 
-			if (!compareKeys(idx, impure->irsb_nav_keys->begin() + recInfo.key_offset, 
+			if (!compareKeys(idx, impure->irsb_nav_keys->begin() + recInfo.key_offset,
 							 recInfo.key_length, &value, 0))
 			{
 				// mark in the navigational bitmap that we have visited this record
@@ -773,6 +773,10 @@ void IndexTableScan::setPage(thread_db* tdbb, Impure* impure, win* window) const
 		}
 
 		impure->irsb_nav_page = newPage;
+
+		// clear position as page was changed
+		impure->irsb_nav_incarnation = 0;
+		impure->irsb_nav_offset = 0;
 	}
 }
 
@@ -785,8 +789,10 @@ void IndexTableScan::setPosition(thread_db* tdbb,
 {
 	// We can actually set position without having a data page
 	// fetched; if not, just set the incarnation to the lowest possible
-	impure->irsb_nav_incarnation = CCH_get_incarnation(window);
+	// Note, setPage could clear position (incarnation and offset).
+
 	setPage(tdbb, impure, window);
+	impure->irsb_nav_incarnation = CCH_get_incarnation(window);
 	impure->irsb_nav_number = recno;
 
 	// save the current key value

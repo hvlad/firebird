@@ -393,7 +393,7 @@ void InternalTransaction::doRollback(FbStatusVector* status, thread_db* tdbb, bo
 		else
 			m_transaction->rollback(status);
 
-		if (status->getState() & IStatus::STATE_ERRORS) 
+		if (status->getState() & IStatus::STATE_ERRORS)
 			err = status->getErrors()[1];
 
 		if (err == isc_cancelled)

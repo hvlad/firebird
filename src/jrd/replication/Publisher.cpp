@@ -520,6 +520,7 @@ void REPL_store(thread_db* tdbb, const record_param* rpb, jrd_tra* transaction)
 	// This temporary auto-pointer is just to delete a temporary record
 	AutoPtr<Record> cleanupRecord(record != rpb->rpb_record ? record : nullptr);
 	AutoSetRestoreFlag<ULONG> noRecursion(&tdbb->tdbb_flags, TDBB_repl_in_progress, true);
+	AutoSetRestoreFlag<ULONG> noBlobCheck(&transaction->tra_flags, TRA_no_blob_check, true);
 
 	ReplicatedRecordImpl replRecord(tdbb, relation, record);
 
@@ -577,6 +578,7 @@ void REPL_modify(thread_db* tdbb, const record_param* orgRpb,
 	}
 
 	AutoSetRestoreFlag<ULONG> noRecursion(&tdbb->tdbb_flags, TDBB_repl_in_progress, true);
+	AutoSetRestoreFlag<ULONG> noBlobCheck(&transaction->tra_flags, TRA_no_blob_check, true);
 
 	ReplicatedRecordImpl replOrgRecord(tdbb, relation, orgRecord);
 	ReplicatedRecordImpl replNewRecord(tdbb, relation, newRecord);
@@ -620,6 +622,7 @@ void REPL_erase(thread_db* tdbb, const record_param* rpb, jrd_tra* transaction)
 	// This temporary auto-pointer is just to delete a temporary record
 	AutoPtr<Record> cleanupRecord(record != rpb->rpb_record ? record : nullptr);
 	AutoSetRestoreFlag<ULONG> noRecursion(&tdbb->tdbb_flags, TDBB_repl_in_progress, true);
+	AutoSetRestoreFlag<ULONG> noBlobCheck(&transaction->tra_flags, TRA_no_blob_check, true);
 
 	ReplicatedRecordImpl replRecord(tdbb, relation, record);
 

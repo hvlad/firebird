@@ -300,7 +300,7 @@ public:
 
 	UCHAR* getBytes()
 	{
-		return (UCHAR*)(&v); 
+		return (UCHAR*)(&v);
 	}
 
 protected:

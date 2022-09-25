@@ -354,6 +354,7 @@ private:
 
 	void unblockQueryGet(bool over = false);
 
+public:
 	class Validate
 	{
 	public:
@@ -361,6 +362,7 @@ private:
 		Firebird::MutexEnsureUnlock sharedGuard;
 	};
 
+private:
 	class SafeMutexLock : private Validate
 	{
 	public:

@@ -763,6 +763,10 @@ bool_t REMOTE_getbytes (RemoteXdr* xdrs, SCHAR* buff, unsigned bytecount)
 void PortsCleanup::registerPort(rem_port* port)
 {
 	Firebird::MutexLockGuard guard(m_mutex, FB_FUNCTION);
+
+	if (closing)
+		return;
+
 	if (!m_ports)
 	{
 		Firebird::MemoryPool& pool = *getDefaultMemoryPool();
@@ -776,6 +780,9 @@ void PortsCleanup::unRegisterPort(rem_port* port)
 {
 	Firebird::MutexLockGuard guard(m_mutex, FB_FUNCTION);
 
+	if (closing)
+		return;
+
 	if (m_ports)
 	{
 		FB_SIZE_T i;
@@ -788,19 +795,37 @@ void PortsCleanup::unRegisterPort(rem_port* port)
 
 void PortsCleanup::closePorts()
 {
+	if (m_ports)
+		delay();
+
 	Firebird::MutexLockGuard guard(m_mutex, FB_FUNCTION);
+	Firebird::AutoSetRestore<bool> cl(&closing, true);
+
+	{ // scope
+		Firebird::MutexUnlockGuard g2(m_mutex, FB_FUNCTION);
+		Thread::yield();
+	}
 
 	if (m_ports)
 	{
 		rem_port* const* ptr = m_ports->begin();
 		const rem_port* const* end = m_ports->end();
 		for (; ptr < end; ptr++) {
-			(*ptr)->force_close();
+			closePort(*ptr);
 		}
 
 		delete m_ports;
 		m_ports = NULL;
 	}
+}
+
+void PortsCleanup::closePort(rem_port* port)
+{
+	port->force_close();
+}
+
+void PortsCleanup::delay()
+{
 }
 
 ServerAuthBase::~ServerAuthBase()

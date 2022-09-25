@@ -307,7 +307,7 @@ void VerbAction::undo(thread_db* tdbb, jrd_tra* transaction, bool preserveLocks,
 
 					if (preserveAction)
 						RBM_SET(transaction->tra_pool, &preserveAction->vct_records, rpb.rpb_number.getValue());
-				} 
+				}
 				else
 					VIO_backout(tdbb, &rpb, transaction);
 			}

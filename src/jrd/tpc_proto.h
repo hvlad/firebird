@@ -26,6 +26,7 @@
 
 #include <atomic>
 #include "../common/classes/array.h"
+#include "../common/classes/fb_string.h"
 #include "../common/classes/SyncObject.h"
 
 namespace Ods {
@@ -218,7 +219,9 @@ private:
 			return item->blockNumber;
 		}
 
-		void clear(Jrd::thread_db* tdbb);
+		void clear(thread_db* tdbb);
+
+		static Firebird::PathName makeSharedMemoryFileName(Database* dbb, TpcBlockNumber n, bool fullPath);
 	};
 
 	class MemoryInitializer : public Firebird::IpcObject
@@ -259,6 +262,8 @@ private:
 	Firebird::SharedMemory<GlobalTpcHeader>* m_tpcHeader; // final
 	Firebird::SharedMemory<SnapshotList>* m_snapshots; // final
 	ULONG m_transactionsPerBlock; // final. When set, we assume TPC has been initialized.
+
+	Firebird::AutoPtr<Lock> m_lock;
 
 	GlobalTpcInitializer globalTpcInitializer;
 	SnapshotsInitializer snapshotsInitializer;

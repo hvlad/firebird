@@ -154,8 +154,8 @@ set /A FBBUILD_PACKAGE_NUMBER+=1
 
 :: If a suffix is defined (usually for an RC) ensure it is prefixed correctly.
 if defined FBBUILD_FILENAME_SUFFIX (
-if not "%FBBUILD_FILENAME_SUFFIX:~0,1%"=="_" (
-(set FBBUILD_FILENAME_SUFFIX=_%FBBUILD_FILENAME_SUFFIX%)
+if not "%FBBUILD_FILENAME_SUFFIX:~0,1%"=="-" (
+(set FBBUILD_FILENAME_SUFFIX=-%FBBUILD_FILENAME_SUFFIX%)
 )
 )
 
@@ -170,7 +170,7 @@ set FBBUILD_PROD_STATUS=PROD
 set FBBUILD_PROD_STATUS=DEV
 )
 
-set FBBUILD_FILE_ID=%PRODUCT_VER_STRING%_%FBBUILD_PACKAGE_NUMBER%_%FB_TARGET_PLATFORM%
+set FBBUILD_FILE_ID=%PRODUCT_VER_STRING%-%FBBUILD_PACKAGE_NUMBER%-%FB_TARGET_PLATFORM%
 
 @setlocal
 @echo.
@@ -314,7 +314,7 @@ if defined FB_EXTERNAL_DOCS (
         if %ERRORLEVEL% GEQ 1 (
             REM - As of RC1 there is no quick start guide so we do not want
             REM   the packaging to fail for something that doesn't exist
-            if "%FBBUILD_FILENAME_SUFFIX%" == "_RC1" (
+            if "%FBBUILD_FILENAME_SUFFIX%" == "-RC1" (
                 echo Copying %FB_EXTERNAL_DOCS%\%%v failed.
             ) else (
                 call :ERROR Copying %FB_EXTERNAL_DOCS%\%%v failed.
@@ -481,7 +481,7 @@ setlocal DisableDelayedExpansion
 set SKIP_FILES=-x!installation_readme.txt
 
 if "%FBBUILD_SHIP_PDB%" == "ship_pdb" (
-    set FBBUILD_ZIPFILE=%FBBUILD_INSTALL_IMAGES%\Firebird-%FBBUILD_FILE_ID%_pdb%FBBUILD_FILENAME_SUFFIX%.zip
+    set FBBUILD_ZIPFILE=%FBBUILD_INSTALL_IMAGES%\Firebird-%FBBUILD_FILE_ID%-pdb%FBBUILD_FILENAME_SUFFIX%.zip
 ) else (
     set FBBUILD_ZIPFILE=%FBBUILD_INSTALL_IMAGES%\Firebird-%FBBUILD_FILE_ID%%FBBUILD_FILENAME_SUFFIX%.zip
     set SKIP_FILES=%SKIP_FILES% -x!*.pdb

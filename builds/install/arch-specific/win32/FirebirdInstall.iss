@@ -23,9 +23,9 @@
 
 ;   Usage Notes:
 ;
-;   This script has been designed to work with Inno Setup v6.2.0
+;   This script has been designed to work with Inno Setup v6.2.1
 ;   It is available as a quick start pack from here:
-;     http://www.jrsoftware.org/isdl.php
+;     https://www.jrsoftware.org/isdl.php
 ;
 ;
 ;   Known bugs and problems etc etc.
@@ -77,8 +77,8 @@
 #define PackageNumber "0"
 #endif
 #define FilenameSuffix GetEnv("FBBUILD_FILENAME_SUFFIX")
-#if FilenameSuffix != "" && pos('_',FilenameSuffix) == 0
-#define FilenameSuffix "_" + FilenameSuffix
+#if FilenameSuffix != "" && pos('-',FilenameSuffix) == 0
+#define FilenameSuffix "-" + FilenameSuffix
 #endif
 
 ;-------Start of Innosetup script debug flags section
@@ -244,12 +244,12 @@
 
 ;Some more strings to distinguish the name of final executable
 #ifdef ship_pdb
-#define pdb_str="_pdb"
+#define pdb_str="-pdb"
 #else
 #define pdb_str=""
 #endif
 #if GetEnv("FBBUILD_BUILDTYPE") == "debug"
-#define debug_str="_debug"
+#define debug_str="-debug"
 #else
 #define debug_str=""
 #endif
@@ -273,8 +273,8 @@ AppVersion={#MyAppVerString}
 VersionInfoVersion={#MyAppVerString}
 
 SourceDir={#Root}
-OutputBaseFilename={#MyAppName}-{#MyAppVerString}_{#PackageNumber}_{#PlatformTarget}{#debug_str}{#pdb_str}{#FilenameSuffix}
-;OutputManifestFile={#MyAppName}-{#MyAppVerString}_{#PackageNumber}_{#PlatformTarget}{#debug_str}{#pdb_str}{#FilenameSuffix}_Setup-Manifest.txt
+OutputBaseFilename={#MyAppName}-{#MyAppVerString}-{#PackageNumber}-{#PlatformTarget}{#debug_str}{#pdb_str}{#FilenameSuffix}
+;OutputManifestFile={#MyAppName}-{#MyAppVerString}-{#PackageNumber}-{#PlatformTarget}{#debug_str}{#pdb_str}{#FilenameSuffix}-Setup-Manifest.txt
 OutputDir=builds\install_images
 ;!!! These directories are as seen from SourceDir !!!
 #define ScriptsDir "builds\install\arch-specific\win32"

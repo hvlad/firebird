@@ -985,7 +985,7 @@ const USHORT PORT_rdb_shutdown	= 0x0200;	// Database is shut down
 const USHORT PORT_connecting	= 0x0400;	// Aux connection waits for a channel to be activated by client
 //const USHORT PORT_z_data		= 0x0800;	// Zlib incoming buffer has data left after decompression
 const USHORT PORT_compressed	= 0x1000;	// Compress outgoing stream (does not affect incoming)
-const USHORT PORT_released		= 0x2000;	// release(), complementary to the first addRef() in constructor, was called 
+const USHORT PORT_released		= 0x2000;	// release(), complementary to the first addRef() in constructor, was called
 
 // forward decl
 class RemotePortGuard;
@@ -1471,26 +1471,31 @@ class PortsCleanup
 public:
 	PortsCleanup() :
 	  m_ports(NULL),
-	  m_mutex()
+	  m_mutex(),
+	  closing(false)
 	{}
 
 	explicit PortsCleanup(MemoryPool&) :
 	  m_ports(NULL),
-	  m_mutex()
+	  m_mutex(),
+	  closing(false)
 	{}
 
-	~PortsCleanup()
+	virtual ~PortsCleanup()
 	{}
 
 	void registerPort(rem_port*);
 	void unRegisterPort(rem_port*);
 
 	void closePorts();
+	virtual void closePort(rem_port*);
+	virtual void delay();
 
 private:
 	typedef Firebird::SortedArray<rem_port*> PortsArray;
 	PortsArray*		m_ports;
 	Firebird::Mutex	m_mutex;
+	bool closing;
 };
 
 #endif // REMOTE_REMOTE_H

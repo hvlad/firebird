@@ -44,7 +44,7 @@ namespace Jrd {
   Slots are sorted by session id.
   Slot for new session is always last slot.
   When session is removed its slot is marked as unused.
-  Unused slot could be reused: slot itself moved at last position in slots array, 
+  Unused slot could be reused: slot itself moved at last position in slots array,
   higher slots are moved down on its former place, slot data is not moved.
   Slot is reused with best-fit algorithm.
 */
@@ -78,7 +78,7 @@ struct TraceCSHeader : public Firebird::MemoryHeader
 	Slot slots[TRACE_STORAGE_MAX_SLOTS];
 };
 
-static_assert(sizeof(TraceCSHeader) < TraceCSHeader::TRACE_STORAGE_MIN_SIZE, 
+static_assert(sizeof(TraceCSHeader) < TraceCSHeader::TRACE_STORAGE_MIN_SIZE,
 			  "TraceCSHeader not fits TRACE_STORAGE_MIN_SIZE");
 
 
@@ -166,7 +166,7 @@ private:
 	ULONG allocSlot(ULONG slotSize);
 	void markDeleted(TraceCSHeader::Slot * slot);
 
-	// remove unused space between slots data 
+	// remove unused space between slots data
 	void compact();
 	bool validate();
 

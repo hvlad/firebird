@@ -240,10 +240,13 @@ public:
 		: stream(0), unique(false), cost(0), cardinality(0)
 	{}
 
+	static const unsigned MAX_DEP_STREAMS = 8;
+
 	StreamType stream;
 	bool unique;
 	double cost;
 	double cardinality;
+	Firebird::Vector<StreamType, MAX_DEP_STREAMS> depStreams;
 };
 
 typedef Firebird::Array<IndexRelationship*> IndexedRelationships;

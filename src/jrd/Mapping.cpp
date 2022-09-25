@@ -209,7 +209,7 @@ bool Mapping::DbHandle::attach(const char* aliasDb, ICryptKeyCallback* cryptCb)
 		if (!(missing || down))
 			check("IProvider::attachDatabase", &st);
 
-		// down/missing security DB is not a reason to fail mapping
+		// down/missing DB is not a reason to fail mapping
 	}
 	else
 		assignRefNoIncr(att);
@@ -786,8 +786,7 @@ public:
 		{
 			StaticStatusVector s;
 			ex.stuffException(s);
-			if (!fb_utils::containsErrorCode(s.begin(), isc_instance_conflict))
-				iscLogException("MappingIpc: Cannot initialize the shared memory region", ex);
+			iscLogException("MappingIpc: Cannot initialize the shared memory region", ex);
 			throw;
 		}
 

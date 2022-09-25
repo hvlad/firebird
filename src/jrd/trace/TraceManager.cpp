@@ -104,12 +104,14 @@ TraceManager::TraceManager(Service* in_svc) :
 	init();
 }
 
-TraceManager::TraceManager(const char* in_filename) :
+TraceManager::TraceManager(const char* in_filename, ICryptKeyCallback* cb, bool failed) :
 	attachment(NULL),
 	service(NULL),
 	filename(in_filename),
+	callback(cb),
 	trace_sessions(*getDefaultMemoryPool()),
-	active(true)
+	active(true),
+	failedAttach(failed)
 {
 	init();
 }
@@ -281,6 +283,8 @@ void TraceManager::update_session(const TraceSession& session)
 					mapping.setAuthBlock(session.ses_auth);
 					mapping.setSqlRole(session.ses_role);
 					mapping.setSecurityDbAlias(dbb->dbb_config->getSecurityDatabase(), dbb->dbb_filename.c_str());
+
+					fb_assert(attachment->getInterface());
 					mapping.setDb(attachment->att_filename.c_str(), dbb->dbb_filename.c_str(),
 						attachment->getInterface());
 
@@ -304,6 +308,27 @@ void TraceManager::update_session(const TraceSession& session)
 					mapping.setErrorMessagesContextName("services manager");
 					mapping.setSqlRole(session.ses_role);
 					mapping.setSecurityDbAlias(config->getSecurityDatabase(), nullptr);
+
+					mapResult = mapping.mapUser(s_user, t_role);
+				}
+			}
+			else if (filename)
+			{
+				if (session.ses_auth.hasData())
+				{
+					Mapping mapping(Mapping::MAP_NO_FLAGS, callback);
+					mapping.needSystemPrivileges(priv);
+					mapping.setAuthBlock(session.ses_auth);
+					mapping.setSqlRole(session.ses_role);
+
+					RefPtr<const Config> config;
+					PathName org_filename(filename), expanded_name;
+					if (! expandDatabaseName(org_filename, expanded_name, &config))
+						expanded_name = filename;
+
+					mapping.setSecurityDbAlias(config->getSecurityDatabase(), expanded_name.c_str());
+					if (!failedAttach)
+						mapping.setDb(filename, expanded_name.c_str(), nullptr);
 
 					mapResult = mapping.mapUser(s_user, t_role);
 				}
@@ -403,7 +428,7 @@ void TraceManager::event_dsql_execute(Attachment* att, jrd_tra* transaction,
 	TraceConnectionImpl conn(att);
 	TraceTransactionImpl tran(transaction);
 
-	att->att_trace_manager->event_dsql_execute(&conn, transaction ? &tran : NULL, statement, 
+	att->att_trace_manager->event_dsql_execute(&conn, transaction ? &tran : NULL, statement,
 											   started, req_result);
 }
 

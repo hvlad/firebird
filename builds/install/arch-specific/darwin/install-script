@@ -23,7 +23,8 @@ FB_RES="$FB_FW/Versions/A/Resources"
 # Now create the firebird group
 echo "Create the Firebird group 10.7+"
 if dscl localhost -read /Local/Default/Groups/firebird 2&>1 /dev/null; then
-	echo "Group Found"
+	gid=$(dscl localhost -read /Local/Default/Groups/firebird PrimaryGroupID | awk '($1 == "PrimaryGroupID:") { print $2 }')
+	echo "Group Found $gid"
 else
 gid=501
 dscl localhost -search /Local/Default/Groups PrimaryGroupID $gid | grep $gid

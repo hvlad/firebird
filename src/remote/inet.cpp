@@ -1850,8 +1850,9 @@ static void force_close(rem_port* port)
 	if (port->port_state != rem_port::PENDING)
 		return;
 
-	port->port_state = rem_port::BROKEN;
+	RefMutexGuard guard(*port->port_write_sync, FB_FUNCTION);
 
+	port->port_state = rem_port::BROKEN;
 	if (port->port_handle != INVALID_SOCKET)
 	{
 		shutdown(port->port_handle, 2);

@@ -1,3 +1,190 @@
+# v4.0.2
+
+## New features
+
+* [#6983](https://github.com/FirebirdSQL/firebird/pull/6983): New built-in function BLOB_APPEND  
+  Reference(s): [/doc/sql.extensions/README.blob_append.md](https://github.com/FirebirdSQL/firebird/raw/v4.0-release/doc/sql.extensions/README.blob_append.md)  
+  Contributor(s): Vlad Khorsun
+
+## Improvements
+
+* [#7208](https://github.com/FirebirdSQL/firebird/issues/7208): Trace: provide performance statistics for DDL statement  
+  Contributor(s): Vlad Khorsun
+  
+* [#7194](https://github.com/FirebirdSQL/firebird/issues/7194): Make it possible to avoid _fbclient_ dependency in Pascal programs using _firebird.pas_  
+  Contributor(s): Alex Peshkoff
+
+* [#7168](https://github.com/FirebirdSQL/firebird/issues/7168): Ignore missing UDR libraries during restore  
+  Contributor(s): Adriano dos Santos Fernandes
+
+* [#7161](https://github.com/FirebirdSQL/firebird/issues/7161): Update _zlib_ to version 1.2.12  
+  Contributor(s): Vlad Khorsun
+
+* [#7093](https://github.com/FirebirdSQL/firebird/issues/7093): Improve indexed lookup speed of strings when the last keys characters are part of collated contractions  
+  Contributor(s): Adriano dos Santos Fernandes
+
+* [#7092](https://github.com/FirebirdSQL/firebird/issues/7092): Improve performance of `CURRENT_TIME`  
+  Contributor(s): Adriano dos Santos Fernandes
+
+* [#7042](https://github.com/FirebirdSQL/firebird/issues/7042): `ON DISCONNECT` triggers are not executed during forced attachment shutdown  
+  Contributor(s): Ilya Eremin
+
+* [#7041](https://github.com/FirebirdSQL/firebird/issues/7041): Firebird port for Apple M1 architecture  
+  Contributor(s): Jonathan Frutos, Alex Peshkoff, Adriano dos Santos Fernandes
+
+* [#7038](https://github.com/FirebirdSQL/firebird/issues/7038): Improve performance of `STARTING WITH` with insensitive collations  
+  Contributor(s): Adriano dos Santos Fernandes
+
+* [#6730](https://github.com/FirebirdSQL/firebird/issues/6730): Trace: provide ability to see `STATEMENT RESTART` events (or their count)  
+  Contributor(s): Vlad Khorsun
+
+## Bugfixes
+
+* [#7243](https://github.com/FirebirdSQL/firebird/issues/7243): Some _UNICODE_ characters can lead to wrong `CONTAINING` evaluation when lower/upper uses different number of bytes in its encoding  
+  Contributor(s): Adriano dos Santos Fernandes
+
+* [#7229](https://github.com/FirebirdSQL/firebird/issues/7229): `ALTER COLUMN DROP IDENTITY` does not reset generator name in metadata cache  
+  Contributor(s): Adriano dos Santos Fernandes
+
+* [#7222](https://github.com/FirebirdSQL/firebird/issues/7222): Dependencies of packaged functions are not tracked  
+  Contributor(s): Adriano dos Santos Fernandes
+
+* [#7217](https://github.com/FirebirdSQL/firebird/pull/7217): It's not allowed to execute DROP PACKAGE BODY for a package with a procedure even if a user has DROP ANY PACKAGE privilege  
+  Contributor(s): Ilya Eremin
+
+* [#7204](https://github.com/FirebirdSQL/firebird/issues/7204): Segfault in _GBAK_ when restoring a broken backup file over the wire  
+  Contributor(s): Alex Peshkoff
+
+* [#7202](https://github.com/FirebirdSQL/firebird/issues/7202): _ISQL -ch utf8_ (Windows only): either silently quits to OS or issues non-expected 'malformed string' when non-ASCII character occurs in the typed command  
+  Contributor(s): Adriano dos Santos Fernandes
+
+* [#7200](https://github.com/FirebirdSQL/firebird/issues/7200): `DROP DATABASE` leads to hang if it is issued while database encrypting/decrypting is in progress  
+  Contributor(s): Alex Peshkoff
+
+* [#7199](https://github.com/FirebirdSQL/firebird/issues/7199): Various errors (strange messages in firebird.log, segfaults) with high rate of attach/detach database operations  
+  Contributor(s): Alex Peshkoff
+
+* [#7197](https://github.com/FirebirdSQL/firebird/issues/7197): Segfault in Linux CS after successful detach from database  
+  Contributor(s): Alex Peshkoff
+
+* [#7194](https://github.com/FirebirdSQL/firebird/issues/7194): _GSTAT_ fails but returns 0 as error code if incorrect _databases.conf_ is used  
+  Contributor(s): Alexey Mochalov
+
+* [#7188](https://github.com/FirebirdSQL/firebird/issues/7188): Memory leak in _fbclient_ when a multi-database transaction is used  
+  Contributor(s): Alex Peshkoff
+
+* [#7184](https://github.com/FirebirdSQL/firebird/issues/7184): _GBAK_ output is not being flushed to disk  
+  Contributor(s): Alex Peshkoff
+
+* [#7179](https://github.com/FirebirdSQL/firebird/issues/7179): Wrong error message - "string right truncation. expected length 30, actual 30."  
+  Contributor(s): Adriano dos Santos Fernandes
+
+* [#7178](https://github.com/FirebirdSQL/firebird/issues/7178): DEFAULTed grants to PUBLIC must act as DEFAULTed to every user  
+  Contributor(s): Roman Simakov
+
+* [#7176](https://github.com/FirebirdSQL/firebird/issues/7176): Incorrect error "Invalid token. Malformed string." with UNION + blob + non-UTF8 varchar  
+  Contributor(s): Adriano dos Santos Fernandes
+
+* [#7167](https://github.com/FirebirdSQL/firebird/issues/7167): Incorrect transliteration of field names in constraint violation errors  
+  Contributor(s): Adriano dos Santos Fernandes
+
+* [#7160](https://github.com/FirebirdSQL/firebird/issues/7160): Missing checkout in the trace manager when performing user mapping may cause server hang  
+  Contributor(s): Alex Peshkoff
+
+* [#7150](https://github.com/FirebirdSQL/firebird/issues/7150): Replication not restarting after network failure  
+  Contributor(s): Dmitry Yemanov
+
+* [#7147](https://github.com/FirebirdSQL/firebird/issues/7147): Problems with use of big timeout (or no timeout at all) in the trace service  
+  Contributor(s): Alex Peshkoff
+
+* [#7141](https://github.com/FirebirdSQL/firebird/issues/7141): Services manager breaks long lines into 1023 bytes portions when using _isc_info_svc_line_ in _Service::query()_  
+  Contributor(s): Adriano dos Santos Fernandes
+
+* [#7140](https://github.com/FirebirdSQL/firebird/issues/7140): Wrong select result in case of special sort character  
+  Contributor(s): Adriano dos Santos Fernandes
+
+* [#7139](https://github.com/FirebirdSQL/firebird/issues/7139): With multiple trace sessions user may receive trace events related to engine's requests  
+  Contributor(s): Alex Peshkoff
+
+* [#7138](https://github.com/FirebirdSQL/firebird/issues/7138): Problems accessing FB4 database, copied from another host  
+  Contributor(s): Alex Peshkoff
+
+* [#7135](https://github.com/FirebirdSQL/firebird/issues/7135): Firebird engine randomly fails when delivering mapping clear signal to other processes  
+  Contributor(s): Alex Peshkoff
+
+* [#7134](https://github.com/FirebirdSQL/firebird/issues/7134): Database page errors directly after _GBAK_, dissappearing after some calls of _GFIX_  
+  Contributor(s): Vlad Khorsun
+
+* [#7129](https://github.com/FirebirdSQL/firebird/issues/7129): Cannot alter SQL SECURITY on package  
+  Contributor(s): Alexey Mochalov
+
+* [#7128](https://github.com/FirebirdSQL/firebird/issues/7128): Incorrect error message with _isc_sql_interprete()_  
+  Contributor(s): Vlad Khorsun
+
+* [#7124](https://github.com/FirebirdSQL/firebird/issues/7124): Inconsistent _RDB$USER_PRIVILEGES_ after dropping identity  
+  Contributor(s): Adriano dos Santos Fernandes
+
+* [#7123](https://github.com/FirebirdSQL/firebird/issues/7123): ISQL does not extract `INCREMENT BY` for IDENTITY column  
+  Contributor(s): Adriano dos Santos Fernandes
+
+* [#7122](https://github.com/FirebirdSQL/firebird/issues/7122): Invalid state of mapping cache after replacement of database  
+  Contributor(s): Alex Peshkoff
+
+* [#7121](https://github.com/FirebirdSQL/firebird/issues/7121): Mapping error when server tries to use mapping rules from database in full shutdown mode  
+  Contributor(s): Alex Peshkoff
+
+* [#7119](https://github.com/FirebirdSQL/firebird/issues/7119): Database statistics service could not find existing table(s)  
+  Contributor(s): Vlad Khorsun
+
+* [#7118](https://github.com/FirebirdSQL/firebird/issues/7118): Chained `JOIN .. USING` across the same column names may be optimized badly  
+  Contributor(s): Dmitry Yemanov
+
+* [#7113](https://github.com/FirebirdSQL/firebird/issues/7113): Wrong path in Object Pascal's readme.md  
+  Contributor(s): Alex Peshkoff
+
+* [#7112](https://github.com/FirebirdSQL/firebird/issues/7112): Avoid unload of plugins in MacOS due to problematic reload of them  
+  Contributor(s): Adriano dos Santos Fernandes
+
+* [#7108](https://github.com/FirebirdSQL/firebird/issues/7108): Firebird does not find an record when adding a foreign key  
+  Contributor(s): Adriano dos Santos Fernandes
+
+* [#7106](https://github.com/FirebirdSQL/firebird/issues/7106): Wrong detection of must-be-delimited user names  
+  Contributor(s): Alex Peshkoff
+
+* [#7103](https://github.com/FirebirdSQL/firebird/issues/7103): FB service hangs after several `DELETE FROM MON$STATEMENTS` being issued in order to stop ES/EDS which waits record for updating  
+  Contributor(s): Vlad Khorsun
+
+* [#7099](https://github.com/FirebirdSQL/firebird/issues/7099): Incomplete _op_batch_cs_ response with _TAG_MULTIERROR_  
+  Contributor(s): Alex Peshkoff
+
+* [#7096](https://github.com/FirebirdSQL/firebird/issues/7096): Client install on Windows is missing some files  
+  Contributor(s): Paul Reeves
+
+* [#7094](https://github.com/FirebirdSQL/firebird/issues/7094): Incorrect indexed lookup of strings when the last keys characters are part of collated contractions and there is multi-segment insensitive descending index  
+  Contributor(s): Adriano dos Santos Fernandes
+
+* [#7090](https://github.com/FirebirdSQL/firebird/issues/7090): Performance degradation with `CURRENT_DATE`, `LOCALTIME` and `LOCALTIMESTAMP`  
+  Contributor(s): Adriano dos Santos Fernandes
+
+* [#7088](https://github.com/FirebirdSQL/firebird/pull/7088): MacOS UDR and Legacy_UserManager plugins not working due to not exported entry point  
+  Contributor(s): Adriano dos Santos Fernandes
+
+* [#7084](https://github.com/FirebirdSQL/firebird/issues/7084): Creating unique constraints on MacOS fails on larger tables  
+  Contributor(s): Adriano dos Santos Fernandes
+
+* [#7080](https://github.com/FirebirdSQL/firebird/issues/7080): Executing batch crashes the server  
+  Contributor(s): Alex Peshkoff
+
+* [#6947](https://github.com/FirebirdSQL/firebird/issues/6947): Query to MON$ tables does not return data when database encryption/decryption is in progress  
+  Contributor(s): Alex Peshkoff
+
+* [#4085](https://github.com/FirebirdSQL/firebird/issues/4085): _RDB$INDICES_ information stored inconsistently after a `CREATE INDEX`  
+  Contributor(s): Dmitry Yemanov
+
+* [#3357](https://github.com/FirebirdSQL/firebird/issues/3357): Bad execution plan if some stream depends on multiple streams via a function  
+  Contributor(s): Dmitry Yemanov
+
+
 # v4.0.1
 
 ## New features

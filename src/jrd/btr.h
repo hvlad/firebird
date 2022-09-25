@@ -269,7 +269,7 @@ public:
 	{
 	}
 
-	static bool checkPool(const Lock* lock, Firebird::MemoryPool* pool) 
+	static bool checkPool(const Lock* lock, Firebird::MemoryPool* pool)
 	{
 		if (!pool || !lock)
 			return false;

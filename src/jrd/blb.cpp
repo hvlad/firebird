@@ -297,7 +297,7 @@ blb* blb::create2(thread_db* tdbb,
 		else if (request)
 		{
 			const JrdStatement* const statement = request->getStatement();
-			if (statement && statement->sqlText) 
+			if (statement && statement->sqlText)
 				info = string("By query: ") + *statement->sqlText;
 
 			string stack;

@@ -140,7 +140,7 @@ PathName TempFile::create(const PathName& prefix, const PathName& directory)
 // Creates a temporary file and returns its name.
 // In error case store exception in status arg.
 //
-// Make sure exception will not be passed to the end-user as it 
+// Make sure exception will not be passed to the end-user as it
 // contains server-side directory and it could break security!
 //
 

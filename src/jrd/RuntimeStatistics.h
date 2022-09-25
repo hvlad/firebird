@@ -32,7 +32,7 @@ namespace Firebird
 {
 
 // declared in firebird/Interface.h
-struct TraceCounts;	
+struct TraceCounts;
 struct PerformanceInfo;
 
 } // namespace Firebird

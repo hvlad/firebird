@@ -1671,9 +1671,10 @@ UnicodeUtil::Utf16Collation* UnicodeUtil::Utf16Collation::create(
 			continue;
 
 		fb_assert(accessor.current()->first.hasData());
-		USHORT ch = accessor.current()->first[0];
+		USHORT firstCh = accessor.current()->first.front();
+		USHORT lastCh = accessor.current()->first.back();
 
-		if (ch >= 0xFDD0 && ch <= 0xFDEF)
+		if ((firstCh >= 0xFDD0 && firstCh <= 0xFDEF) || UTF_IS_SURROGATE(lastCh))
 		{
 			keySet.clear();
 			keySet.add(Array<UCHAR>());
@@ -1857,6 +1858,9 @@ USHORT UnicodeUtil::Utf16Collation::stringToKey(USHORT srcLen, const USHORT* src
 			srcLenLong = p - src + 1;
 		}
 
+		auto originalDst = dst;
+		auto originalDstLen = dstLen;
+
 		if (!trailingNumbersRemoved)
 		{
 			for (int i = MIN(maxContractionsPrefixLength, srcLenLong); i > 0; --i)
@@ -1865,8 +1869,8 @@ USHORT UnicodeUtil::Utf16Collation::stringToKey(USHORT srcLen, const USHORT* src
 
 				if (keys)
 				{
-					const UCHAR* dstStart = dst;
-					ULONG prefixLen;
+					UCHAR lastCharKey[BUFFER_TINY];	// sort key for a single character
+					ULONG prefixLen, lastCharKeyLen;
 
 					srcLenLong -= i;
 
@@ -1875,19 +1879,38 @@ USHORT UnicodeUtil::Utf16Collation::stringToKey(USHORT srcLen, const USHORT* src
 						prefixLen = icu->ucolGetSortKey(coll,
 							reinterpret_cast<const UChar*>(src), srcLenLong, dst + 2, dstLen - 2);
 
-						if (prefixLen == 0 || prefixLen > dstLen - 2 || prefixLen > MAX_USHORT)
+						lastCharKeyLen = icu->ucolGetSortKey(coll,
+							reinterpret_cast<const UChar*>(src + srcLenLong), i, lastCharKey, sizeof(lastCharKey));
+
+						if (prefixLen == 0 || prefixLen > dstLen - 2 || prefixLen > MAX_USHORT ||
+							lastCharKeyLen == 0)
+						{
 							return INTL_BAD_KEY_LENGTH;
+						}
 
 						fb_assert(dst[2 + prefixLen - 1] == '\0');
 						--prefixLen;
-						dstLen -= 2 + prefixLen;
+
+						fb_assert(lastCharKey[lastCharKeyLen - 1] == '\0');
+						--lastCharKeyLen;
 					}
 					else
 						prefixLen = 0;
 
+					bool fallbackToPrefixKey = false;
+
 					for (const auto& keyIt : *keys)
 					{
-						const ULONG keyLen = prefixLen + keyIt.getCount();
+						const UCHAR advance = prefixLen && lastCharKeyLen > 1 &&
+							keyIt.hasData() && lastCharKey[0] == keyIt.front() ? 1 : 0;
+
+						if (keyIt.getCount() - advance == 0)
+						{
+							fallbackToPrefixKey = true;
+							break;
+						}
+
+						const ULONG keyLen = prefixLen + keyIt.getCount() - advance;
 
 						if (keyLen > dstLen - 2 || keyLen > MAX_USHORT)
 							return INTL_BAD_KEY_LENGTH;
@@ -1895,30 +1918,33 @@ USHORT UnicodeUtil::Utf16Collation::stringToKey(USHORT srcLen, const USHORT* src
 						dst[0] = UCHAR(keyLen & 0xFF);
 						dst[1] = UCHAR(keyLen >> 8);
 
-						if (dst != dstStart)
-							memcpy(dst + 2, dstStart + 2, prefixLen);
+						if (dst != originalDst)
+							memcpy(dst + 2, originalDst + 2, prefixLen);
 
-						memcpy(dst + 2 + prefixLen, keyIt.begin(), keyIt.getCount());
+						memcpy(dst + 2 + prefixLen, keyIt.begin() + advance, keyIt.getCount() - advance);
 						dst += 2 + keyLen;
 						dstLen -= 2 + keyLen;
 					}
 
-					return dst - dstStart;
+					if (fallbackToPrefixKey)
+						break;
+
+					return dst - originalDst;
 				}
 			}
 		}
 
 		ULONG keyLen = icu->ucolGetSortKey(coll,
-			reinterpret_cast<const UChar*>(src), srcLenLong, dst + 2, dstLen - 3);
+			reinterpret_cast<const UChar*>(src), srcLenLong, originalDst + 2, originalDstLen - 3);
 
-		if (keyLen == 0 || keyLen > dstLen - 3 || keyLen > MAX_USHORT)
+		if (keyLen == 0 || keyLen > originalDstLen - 3 || keyLen > MAX_USHORT)
 			return INTL_BAD_KEY_LENGTH;
 
-		fb_assert(dst[2 + keyLen - 1] == '\0');
+		fb_assert(originalDst[2 + keyLen - 1] == '\0');
 		--keyLen;
 
-		dst[0] = UCHAR(keyLen & 0xFF);
-		dst[1] = UCHAR(keyLen >> 8);
+		originalDst[0] = UCHAR(keyLen & 0xFF);
+		originalDst[1] = UCHAR(keyLen >> 8);
 
 		return keyLen + 2;
 	}

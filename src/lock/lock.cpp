@@ -1231,7 +1231,7 @@ UCHAR* LockManager::alloc(USHORT size, CheckStatusWrapper* statusVector)
 
 	if (m_sharedMemory->getHeader()->lhb_used + size > m_sharedMemory->getHeader()->lhb_length)
 	{
-		// New table size shouldn't exceed max table length 
+		// New table size shouldn't exceed max table length
 		if (m_sharedMemory->getHeader()->lhb_length + memorySize > MAX_TABLE_LENGTH)
 		{
 			if (m_sharedMemory->getHeader()->lhb_used + size <= MAX_TABLE_LENGTH)

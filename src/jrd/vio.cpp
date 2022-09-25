@@ -1462,7 +1462,7 @@ static bool check_prepare_result(int prepare_result, jrd_tra* transaction, jrd_r
  **************************************
  *
  * Functional description
- *	Called by VIO_modify and VIO_erase. Raise update conflict error if not in 
+ *	Called by VIO_modify and VIO_erase. Raise update conflict error if not in
  *  read consistency transaction or lock error happens or if request is already
  *  in update conflict mode. In latter case set TRA_ex_restart flag to correctly
  *  handle request restart.
@@ -1473,17 +1473,17 @@ static bool check_prepare_result(int prepare_result, jrd_tra* transaction, jrd_r
 
 	jrd_req* top_request = request->req_snapshot.m_owner;
 
-	const bool restart_ready = top_request && 
+	const bool restart_ready = top_request &&
 		(top_request->req_flags & req_restart_ready);
 
 	// Second update conflict when request is already in update conflict mode
-	// means we have some (indirect) UPDATE\DELETE in WHERE clause of primary 
+	// means we have some (indirect) UPDATE\DELETE in WHERE clause of primary
 	// cursor. In this case all we can do is restart whole request immediately.
-	const bool secondary = top_request && 
-		(top_request->req_flags & req_update_conflict) && 
+	const bool secondary = top_request &&
+		(top_request->req_flags & req_update_conflict) &&
 		(prepare_result != PREPARE_LOCKERR);
 
-	if (!(transaction->tra_flags & TRA_read_consistency) || prepare_result == PREPARE_LOCKERR || 
+	if (!(transaction->tra_flags & TRA_read_consistency) || prepare_result == PREPARE_LOCKERR ||
 		secondary || !restart_ready)
 	{
 		if (secondary)
@@ -1898,7 +1898,7 @@ bool VIO_erase(thread_db* tdbb, record_param* rpb, jrd_tra* transaction)
 			verb_post(tdbb, transaction, rpb, rpb->rpb_undo);
 
 		// We have INSERT + DELETE or UPDATE + DELETE in the same transaction.
-		// UPDATE has already notified GC, while INSERT has not. Check for 
+		// UPDATE has already notified GC, while INSERT has not. Check for
 		// backversion allows to avoid second notification in case of UPDATE.
 
 		if ((dbb->dbb_flags & DBB_gc_background) && !rpb->rpb_relation->isTemporary() && !backVersion)
@@ -2946,15 +2946,16 @@ bool VIO_modify(thread_db* tdbb, record_param* org_rpb, record_param* new_rpb, j
 
 		case rel_procedures:
 			EVL_field(0, org_rpb->rpb_record, f_prc_name, &desc1);
+
+			if (EVL_field(0, org_rpb->rpb_record, f_prc_pkg_name, &desc2))
+				MOV_get_metaname(tdbb, &desc2, package_name);
+
 			if (!check_nullify_source(tdbb, org_rpb, new_rpb, f_prc_source))
 				protect_system_table_delupd(tdbb, relation, "UPDATE");
 			else
 			{
-				if (EVL_field(0, org_rpb->rpb_record, f_prc_pkg_name, &desc2))
-				{
-					MOV_get_metaname(tdbb, &desc2, package_name);
+				if (package_name.hasData())
 					SCL_check_package(tdbb, &desc2, SCL_alter);
-				}
 				else
 					SCL_check_procedure(tdbb, &desc1, SCL_alter);
 			}
@@ -2972,15 +2973,16 @@ bool VIO_modify(thread_db* tdbb, record_param* org_rpb, record_param* new_rpb, j
 
 		case rel_funs:
 			EVL_field(0, org_rpb->rpb_record, f_fun_name, &desc1);
+
+			if (EVL_field(0, org_rpb->rpb_record, f_fun_pkg_name, &desc2))
+				MOV_get_metaname(tdbb, &desc2, package_name);
+
 			if (!check_nullify_source(tdbb, org_rpb, new_rpb, f_fun_source))
 				protect_system_table_delupd(tdbb, relation, "UPDATE");
 			else
 			{
-				if (EVL_field(0, org_rpb->rpb_record, f_fun_pkg_name, &desc2))
-				{
-					MOV_get_metaname(tdbb, &desc2, package_name);
+				if (package_name.hasData())
 					SCL_check_package(tdbb, &desc2, SCL_alter);
-				}
 				else
 					SCL_check_function(tdbb, &desc1, SCL_alter);
 			}
@@ -3220,7 +3222,7 @@ bool VIO_modify(thread_db* tdbb, record_param* org_rpb, record_param* new_rpb, j
 	const bool backVersion = (org_rpb->rpb_b_page != 0);
 	record_param temp;
 	PageStack stack;
-	int prepare_result = prepare_update(tdbb, transaction, org_rpb->rpb_transaction_nr, org_rpb, 
+	int prepare_result = prepare_update(tdbb, transaction, org_rpb->rpb_transaction_nr, org_rpb,
 										&temp, new_rpb, stack, false);
 	if (!check_prepare_result(prepare_result, transaction, tdbb->getRequest(), org_rpb))
 		return false;
@@ -4780,6 +4782,7 @@ void Database::garbage_collector(Database* dbb)
 		attachment->att_user = &user;
 
 		BackgroundContextHolder tdbb(dbb, attachment, &status_vector, FB_FUNCTION);
+		Jrd::Attachment::UseCountHolder use(attachment);
 		tdbb->markAsSweeper();
 
 		record_param rpb;

@@ -189,9 +189,9 @@ Service::Validate::Validate(Service* svc)
 {
 	sharedGuard.enter();
 
-	if (!svc->locateInAllServices())
+	if (! (svc && svc->locateInAllServices()))
 	{
-		// Service is so old that it's even missing in allServices array
+		// Service is null or so old that it's even missing in allServices array
 		Arg::Gds(isc_bad_svc_handle).raise();
 	}
 

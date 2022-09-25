@@ -47,7 +47,7 @@ struct TraceCounts
 {
 	// Per-table performance counters, must correspond to RuntimeStatistics::StatType
 	// between RECORD_FIRST_ITEM and RECORD_LAST_ITEM
-	enum RecordCounters 
+	enum RecordCounters
 	{
 		SEQ_READS = 0,
 		IDX_READS,

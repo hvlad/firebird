@@ -668,7 +668,7 @@ bool PIORequest::postRead(Database* dbb)
 
 			// fill gap between prior page and current one
 			int gap = sysPagesPerBDB * (pageNo - prevPageNo - 1);
-			if (gap > 0) 
+			if (gap > 0)
 			{
 				for (int s = 0; s < gap; s++)
 				{
@@ -705,7 +705,7 @@ bool PIORequest::postRead(Database* dbb)
 
 			// account gap between prior page and current one
 			int gap = pageNo - prevPageNo - 1;
-			if (gap > 0) 
+			if (gap > 0)
 			{
 				if (gap > pagesInBuffer - 1)
 					break;
@@ -721,14 +721,14 @@ bool PIORequest::postRead(Database* dbb)
 		fb_assert(m_ioSize <= OS_CACHED_IO_SIZE);
 
 		void* ioBuffer = m_pages[m_startIdx]->bdb_buffer;
-		if (m_count > 1) 
+		if (m_count > 1)
 			ioBuffer = allocIOBuffer(sysInfo().si.dwPageSize);
 
 		ret = ReadFile(file->fil_desc, ioBuffer, m_ioSize, NULL, &m_osData);
 	}
 
 	PIOR_STATE newState = PIOR_PENDING;
-	if (!ret) 
+	if (!ret)
 	{
 		DWORD err = GetLastError();
 		if (err != ERROR_IO_PENDING)
@@ -856,9 +856,9 @@ static jrd_file* seek_file(jrd_file*	file,
 		overlapped->hEvent = NULL;
 	else
 	{
-		// IO request should not be handled via completion port. 
+		// IO request should not be handled via completion port.
 		// See: https://docs.microsoft.com/en-us/windows/win32/api/ioapiset/nf-ioapiset-getqueuedcompletionstatus :
-		// A valid event handle whose low-order bit is set keeps I/O completion from being 
+		// A valid event handle whose low-order bit is set keeps I/O completion from being
 		// queued to the completion port.
 
 		ThreadSync* thd = ThreadSync::getThread(FB_FUNCTION);
@@ -1141,7 +1141,7 @@ void PIORequest::markCompletion(bool error, size_t ioSize)
 		m_state = PIORequest::PIOR_ERROR;
 		m_osError = GetLastError();
 	}
-	else 
+	else
 	{
 		m_state = PIORequest::PIOR_COMPLETED;
 		m_osError = 0;

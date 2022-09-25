@@ -1333,6 +1333,16 @@ finishing with services tasks do not forget to close an interface:</font></p>
 <p style="margin-bottom: 0cm"><br/>
 
 </p>
+<p style="margin-bottom: 0cm; font-variant: normal; font-style: normal">
+<font size="4" style="font-size: 14pt">IService interface also
+contains method cancel(). It’s needed to cancel wait in a query()
+and is used internally by network server. Current implementation is
+restricted – IService::cancel() is not supported by remote
+redirector, only engine provider supports it. That means one can use
+it only in embedded connections.</font></p>
+<p style="margin-bottom: 0cm"><br/>
+
+</p>
 <p style="margin-top: 0.43cm; margin-bottom: 0.51cm; page-break-after: avoid">
 <font face="Albany, sans-serif"><font size="5" style="font-size: 18pt">Writing
 plugins.</font></font></p>
@@ -2699,6 +2709,9 @@ interface – replaces isc_svc_handle.</font></p>
 	start(StatusType* status, unsigned spbLength, const unsigned char*
 	spb) – start utility in services manager. Replaces
 	isc_service_start().</font></p>
+	<li><p style="margin-bottom: 0cm"><font size="4" style="font-size: 14pt">void
+	cancel(StatusType* status) – cancel wait of current query() call.
+	Supported only for embedded connections.</font></p>
 </ol>
 <p style="margin-bottom: 0cm"><br/>
 

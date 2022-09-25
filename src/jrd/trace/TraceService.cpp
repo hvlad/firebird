@@ -210,7 +210,7 @@ bool TraceSvcJrd::changeFlags(ULONG id, int setFlags, int clearFlags)
 			session.ses_flags |= setFlags;
 			session.ses_flags &= ~clearFlags;
 
-			if (saveFlags != session.ses_flags) 
+			if (saveFlags != session.ses_flags)
 				storage->updateFlags(session);
 
 			return true;

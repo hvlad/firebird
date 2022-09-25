@@ -688,7 +688,7 @@ Data source : @4"},		/* eds_statement */
 	{335544981, "Floating point overflow in built-in function @1"},		/* sysf_fp_overflow */
 	{335544982, "Floating point overflow in result from UDF @1"},		/* udf_fp_overflow */
 	{335544983, "Invalid floating point value returned by UDF @1"},		/* udf_fp_nan */
-	{335544984, "Database is probably already opened by another engine instance in another Windows session"},		/* instance_conflict */
+	{335544984, "Shared memory area is probably already created by another engine instance in another Windows session"},		/* instance_conflict */
 	{335544985, "No free space found in temporary directories"},		/* out_of_temp_space */
 	{335544986, "Explicit transaction control is not allowed"},		/* eds_expl_tran_ctrl */
 	{335544987, "Use of TRUSTED switches in spb_command_line is prohibited"},		/* no_trusted_spb */
