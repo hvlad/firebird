@@ -353,9 +353,9 @@ struct BtrPrefetchCtrl
 		m_enabled = true;
 	}
 
-	void initPrefetch(thread_db* tdbb, const IndexRetrieval* retrieval, WIN* window, 
+	void initPrefetch(thread_db* tdbb, const IndexRetrieval* retrieval, WIN* window,
 					  const temporary_key* lower, RecordNumber recno, const temporary_key* upper);
-	void nextLeafPage(thread_db* tdbb, const IndexRetrieval* retrieval, btree_page* leaf, 
+	void nextLeafPage(thread_db* tdbb, const IndexRetrieval* retrieval, btree_page* leaf,
 					  const temporary_key* upper);
 
 	void disable()
@@ -364,20 +364,20 @@ struct BtrPrefetchCtrl
 	}
 
 private:
-	void makePrefetch(thread_db* tdbb, const IndexRetrieval* retrieval, WIN* window, 
+	void makePrefetch(thread_db* tdbb, const IndexRetrieval* retrieval, WIN* window,
 					  UCHAR* pointer, const temporary_key* upper);
 
 	bool			m_enabled;
 	temporary_key	m_lastKey;			// key and recno up to which we made prefetch requests
 	RecordNumber	m_lastRecno;
 
-	ULONG			m_pageNo;			// page number, incarnation and offset of the 1st level 
+	ULONG			m_pageNo;			// page number, incarnation and offset of the 1st level
 	ULONG			m_pageIncarnation;	// btr page where we processed last time
 	ULONG			m_pageOffset;
 };
 
 
-void BtrPrefetchCtrl::initPrefetch(thread_db* tdbb, const IndexRetrieval* retrieval, WIN* window, 
+void BtrPrefetchCtrl::initPrefetch(thread_db* tdbb, const IndexRetrieval* retrieval, WIN* window,
 	const temporary_key* lower, RecordNumber recno, const temporary_key* upper)
 {
 	if (!m_enabled)
@@ -398,7 +398,7 @@ void BtrPrefetchCtrl::initPrefetch(thread_db* tdbb, const IndexRetrieval* retrie
 
 		while (true)
 		{
-			pointer = find_node_start_point(bucket, lower, m_lastKey.key_data, NULL, 
+			pointer = find_node_start_point(bucket, lower, m_lastKey.key_data, NULL,
 					descending, true, true, recno);
 
 			if (pointer)
@@ -438,7 +438,7 @@ void BtrPrefetchCtrl::initPrefetch(thread_db* tdbb, const IndexRetrieval* retrie
 }
 
 
-void BtrPrefetchCtrl::nextLeafPage(thread_db* tdbb, const IndexRetrieval* retrieval, btree_page* leaf, 
+void BtrPrefetchCtrl::nextLeafPage(thread_db* tdbb, const IndexRetrieval* retrieval, btree_page* leaf,
 	const temporary_key* upper)
 {
 	if (!m_enabled)
@@ -491,9 +491,9 @@ void BtrPrefetchCtrl::nextLeafPage(thread_db* tdbb, const IndexRetrieval* retrie
 	}
 
 	bool sameBucket = bucket && !(bucket->btr_header.pag_flags & btr_released) &&
-		bucket->btr_header.pag_type == pag_index && 
+		bucket->btr_header.pag_type == pag_index &&
 		bucket->btr_id == retrieval->irb_index &&
-		bucket->btr_relation == retrieval->irb_relation->rel_id && 
+		bucket->btr_relation == retrieval->irb_relation->rel_id &&
 		bucket->btr_level == 1 &&
 		window.win_bdb->bdb_incarnation == m_pageIncarnation;
 
@@ -542,7 +542,7 @@ void BtrPrefetchCtrl::nextLeafPage(thread_db* tdbb, const IndexRetrieval* retrie
 }
 
 
-void BtrPrefetchCtrl::makePrefetch(thread_db* tdbb, const IndexRetrieval* retrieval, WIN* window, 
+void BtrPrefetchCtrl::makePrefetch(thread_db* tdbb, const IndexRetrieval* retrieval, WIN* window,
 	UCHAR* pointer, const temporary_key* upper)
 {
 	if (!m_enabled)
@@ -604,13 +604,13 @@ void BtrPrefetchCtrl::makePrefetch(thread_db* tdbb, const IndexRetrieval* retrie
 					lastKeyLen = m_lastKey.key_length;
 			}
 
-			const int cmp = memcmp(m_lastKey.key_data, upper->key_data, 
+			const int cmp = memcmp(m_lastKey.key_data, upper->key_data,
 				MIN(upper->key_length, lastKeyLen));
 
 			if (cmp > 0)
 				break;
 
-			if (cmp == 0 && 
+			if (cmp == 0 &&
 				(!descending && lastKeyLen > upper->key_length) ||
 				(descending && lastKeyLen < upper->key_length) )
 				break;
@@ -1098,7 +1098,7 @@ void BTR_evaluate(thread_db* tdbb, const IndexRetrieval* retrieval, RecordBitmap
 		}
 
 		if (retrieval->irb_prefetch)
-			retrieval->irb_prefetch->nextLeafPage(tdbb, retrieval, page, 
+			retrieval->irb_prefetch->nextLeafPage(tdbb, retrieval, page,
 				retrieval->irb_upper_count ? upper : NULL);
 
 		// if there is an upper bound, scan the index pages looking for it
@@ -1272,7 +1272,7 @@ btree_page* BTR_find_page(thread_db* tdbb,
 	const bool lower_all_nulls = (lower->key_nulls == (1 << idx->idx_count) - 1);
 	if (prefetch && (idx->idx_flags & (idx_primary | idx_unique)) && !lower_all_nulls)
 	{
-		if (retrieval->irb_key) 
+		if (retrieval->irb_key)
 		{
 			prefetch->disable();
 		}
@@ -1329,9 +1329,9 @@ btree_page* BTR_find_page(thread_db* tdbb,
 					NO_VALUE, (retrieval->irb_generic & (irb_starting | irb_partial)));
 				if (number != END_BUCKET)
 				{
-					if (page->btr_level == 1 && prefetch) 
+					if (page->btr_level == 1 && prefetch)
 					{
-						prefetch->initPrefetch(tdbb, retrieval, window, tkey, NO_VALUE, 
+						prefetch->initPrefetch(tdbb, retrieval, window, tkey, NO_VALUE,
 							retrieval->irb_upper_count ? upper : NULL);
 					}
 					page = (btree_page*) CCH_HANDOFF(tdbb, window, number, LCK_read, pag_index);
@@ -1358,7 +1358,7 @@ btree_page* BTR_find_page(thread_db* tdbb,
 
 
 			if (page->btr_level == 1 && prefetch) {
-				prefetch->initPrefetch(tdbb, retrieval, window, NULL, NO_VALUE, 
+				prefetch->initPrefetch(tdbb, retrieval, window, NULL, NO_VALUE,
 					retrieval->irb_upper_count ? upper : NULL);
 			}
 			page = (btree_page*) CCH_HANDOFF(tdbb, window, node.pageNumber, LCK_read, pag_index);
