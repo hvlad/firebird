@@ -260,12 +260,14 @@ void IndexTableScan::cacheRecordInfo(thread_db* tdbb) const
 		impure->irsb_nav_keys->clear();
 	}
 
+	SortedArray<FB_UINT64, InlineStorage<FB_UINT64, RECS_TO_CACHE>> cachedRecs;
+
 	do
 	{
 		UCHAR* nextPointer = getPosition(tdbb, impure, &window);
 		if (!nextPointer)
 		{
-			impure->irsb_nav_done = true; // ??
+			impure->irsb_nav_done = true;
 			return;
 		}
 
@@ -295,10 +297,7 @@ void IndexTableScan::cacheRecordInfo(thread_db* tdbb) const
 			}
 
 			if (node.isEndLevel)
-			{
-				// impure->irsb_nav_done = true;
 				break;
-			}
 
 			if (node.isEndBucket)
 			{
@@ -315,14 +314,14 @@ void IndexTableScan::cacheRecordInfo(thread_db* tdbb) const
 			if (retrieval->irb_upper_count &&
 				compareKeys(idx, key.key_data, key.key_length, &upper, flags) > 0)
 			{
-				// impure->irsb_nav_done = true;
 				break;
 			}
 
 			// skip this record if:
 			// 1) there is an inversion tree for this index and this record
 			//    is not in the bitmap for the inversion, or
-			// 2) the record has already been visited
+			// 2) the record has already been visited, or
+			// 3) the record is already in cache
 
 			if ((!(impure->irsb_flags & irsb_mustread) &&
 				(!impure->irsb_nav_bitmap ||
@@ -331,6 +330,12 @@ void IndexTableScan::cacheRecordInfo(thread_db* tdbb) const
 			{
 				continue;
 			}
+
+			FB_SIZE_T pos;
+			if (cachedRecs.find(number.getValue(), pos))
+				continue;
+
+			cachedRecs.insert(pos, number.getValue());
 
 			// save record number and key
 
