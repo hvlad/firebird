@@ -176,11 +176,9 @@ bool IndexTableScan::getRecord(thread_db* tdbb) const
 		impure->irsb_flags &= ~irsb_first;
 		impure->irsb_nav_done = false;
 		setPage(tdbb, impure, NULL);
-	}
 
-	// If this is the first time, start at the beginning
-	if (!impure->irsb_nav_page)
-	{
+		// If this is the first time, start at the beginning
+
 		// initialize for a retrieval
 		if (!setupBitmaps(tdbb, impure))
 		{
@@ -196,15 +194,19 @@ bool IndexTableScan::getRecord(thread_db* tdbb) const
 	{
 		if (!impure->irsb_nav_recs || impure->irsb_nav_recs->isEmpty())
 		{
-			if (!impure->irsb_nav_done)
-				cacheRecordInfo(tdbb);
+			if (impure->irsb_nav_done)
+				break;
 
+			cacheRecordInfo(tdbb);
 			if (!impure->irsb_nav_recs || impure->irsb_nav_recs->isEmpty())
 				break;
 		}
 
 		RecordInfo recInfo = *impure->irsb_nav_recs->begin();
 		impure->irsb_nav_recs->remove((FB_SIZE_T)0);
+
+		if (RecordBitmap::test(impure->irsb_nav_records_visited, recInfo.recno))
+			continue;
 
 		rpb->rpb_number.setValue(recInfo.recno);
 
@@ -259,8 +261,6 @@ void IndexTableScan::cacheRecordInfo(thread_db* tdbb) const
 		impure->irsb_nav_recs->clear();
 		impure->irsb_nav_keys->clear();
 	}
-
-	SortedArray<FB_UINT64, InlineStorage<FB_UINT64, RECS_TO_CACHE>> cachedRecs;
 
 	do
 	{
@@ -321,7 +321,6 @@ void IndexTableScan::cacheRecordInfo(thread_db* tdbb) const
 			// 1) there is an inversion tree for this index and this record
 			//    is not in the bitmap for the inversion, or
 			// 2) the record has already been visited, or
-			// 3) the record is already in cache
 
 			if ((!(impure->irsb_flags & irsb_mustread) &&
 				(!impure->irsb_nav_bitmap ||
@@ -330,12 +329,6 @@ void IndexTableScan::cacheRecordInfo(thread_db* tdbb) const
 			{
 				continue;
 			}
-
-			FB_SIZE_T pos;
-			if (cachedRecs.find(number.getValue(), pos))
-				continue;
-
-			cachedRecs.insert(pos, number.getValue());
 
 			// save record number and key
 
