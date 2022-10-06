@@ -91,7 +91,7 @@ public:
 		: rel_pages(NULL), rel_instance_id(0),
 		  rel_index_root(0), rel_data_pages(0), rel_slot_space(0),
 		  rel_pri_data_space(0), rel_sec_data_space(0),
-		  rel_last_free_pri_dp(0),
+		  rel_last_free_pri_dp(0), rel_last_free_blb_dp(0),
 		  rel_pg_space_id(DB_PAGE_SPACE), rel_next_free(NULL),
 		  useCount(0),
 		  dpMap(pool),

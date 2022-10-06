@@ -1490,26 +1490,31 @@ class PortsCleanup
 public:
 	PortsCleanup() :
 	  m_ports(NULL),
-	  m_mutex()
+	  m_mutex(),
+	  closing(false)
 	{}
 
 	explicit PortsCleanup(MemoryPool&) :
 	  m_ports(NULL),
-	  m_mutex()
+	  m_mutex(),
+	  closing(false)
 	{}
 
-	~PortsCleanup()
+	virtual ~PortsCleanup()
 	{}
 
 	void registerPort(rem_port*);
 	void unRegisterPort(rem_port*);
 
 	void closePorts();
+	virtual void closePort(rem_port*);
+	virtual void delay();
 
 private:
 	typedef Firebird::SortedArray<rem_port*> PortsArray;
 	PortsArray*		m_ports;
 	Firebird::Mutex	m_mutex;
+	bool closing;
 };
 
 #endif // REMOTE_REMOTE_H

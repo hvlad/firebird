@@ -6,12 +6,10 @@ endif
 
 NDK_TOOLCHAIN ?= $(NDK)/toolchains/llvm/prebuilt/linux-x86_64
 
-CROSS_SYSROOT:=$(NDK_TOOLCHAIN)/sysroot
 CROSS_PREFIX24:=$(NDK_TOOLCHAIN)/bin/i686-linux-android24-
 CROSS_PREFIX:=$(NDK_TOOLCHAIN)/bin/llvm-
 
-CROSS_FLAGS:=--sysroot=$(CROSS_SYSROOT) \
-			 -I$(CROSS_SYSROOT)/usr/include -I$(ROOT)/gen/cross
+CROSS_FLAGS:=-I$(ROOT)/gen/cross
 
 CXX:=$(CROSS_PREFIX24)clang++
 CC:=$(CROSS_PREFIX24)clang
@@ -42,8 +40,9 @@ DEV_FLAGS=$(COMMON_FLAGS) $(WARN_FLAGS)
 
 CROSS_CONFIG=android.x86
 
-LDFLAGS += --sysroot=$(CROSS_SYSROOT) -static-libstdc++
+LDFLAGS += -static-libstdc++
 DroidLibs := -lm -ldl $(DECLIB) $(RE2LIB) $(I128LIB)
+UDR_SUPPORT_LIBS :=
 
 LINK_LIBS = $(DroidLibs)
 STATICLINK_LIBS = $(DroidLibs)

@@ -22,7 +22,7 @@ FB_PLATFORM:=$(CpuType)
 
 package: package_firebird
 
-package_firebird: INST_NM=Firebird-$(FB_MAJOR_VERS).$(FB_MINOR_VERS).$(FB_REV_NO)-$(FB_BUILD_NO)-$(FB_PLATFORM)
+package_firebird: INST_NM=Firebird-$(FB_MAJOR_VERS).$(FB_MINOR_VERS).$(FB_REV_NO)-$(FB_BUILD_NO)-macos-$(FB_PLATFORM)
 package_firebird:
 	sed -e 's/_FB_BUILD_SUFFIX_/$(FB_VER_SUFFIX)/g' \
 			-e 's/_SMFB_BUILD_SUFFIX_/$(FB_VER_SUFFIX_SM)/g' \

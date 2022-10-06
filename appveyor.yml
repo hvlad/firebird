@@ -41,9 +41,9 @@ install:
   - sh: ./autogen.sh --enable-binreloc --with-builtin-tomcrypt --prefix=/opt/firebird $BUILD_FLAG
   - sh: make -j4
   - sh: make dist
-  - sh: (mkdir output; tar xzvf gen/Firebird-[0-9]*.tar.gz -C output)
-  - sh: (cd output/Firebird-[0-9]*; sudo ./install.sh -silent)
-  - sh: export ARTIFACTS_PATH=`find gen/Firebird-[0-9]*.tar.gz`
+  - sh: (mkdir output; tar xzvf gen/Firebird-*-linux-$PLATFORM.tar.gz -C output)
+  - sh: (cd output/Firebird-*-linux-$PLATFORM; sudo ./install.sh -silent)
+  - sh: export ARTIFACTS_PATH=`find gen/Firebird-*-linux-$PLATFORM.tar.gz`
 
 artifacts:
   - path: $(ARTIFACTS_PATH)

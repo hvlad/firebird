@@ -24,6 +24,7 @@
 
 #include "firebird.h"
 #include "../jrd/Attachment.h"
+#include "../jrd/MetaName.h"
 #include "../jrd/Database.h"
 #include "../jrd/Function.h"
 #include "../jrd/nbak.h"
@@ -46,8 +47,9 @@
 #include "../jrd/replication/Applier.h"
 #include "../jrd/replication/Manager.h"
 
+#include "../dsql/DsqlStatementCache.h"
+
 #include "../common/classes/fb_string.h"
-#include "../jrd/MetaName.h"
 #include "../common/StatusArg.h"
 #include "../common/TimeZoneUtil.h"
 #include "../common/isc_proto.h"
@@ -222,7 +224,8 @@ Jrd::Attachment::Attachment(MemoryPool* pool, Database* dbb, JProvider* provider
 	: att_pool(pool),
 	  att_memory_stats(&dbb->dbb_memory_stats),
 	  att_database(dbb),
-	  att_ss_user(NULL),
+	  att_user(nullptr),
+	  att_ss_user(nullptr),
 	  att_user_ids(*pool),
 	  att_active_snapshots(*pool),
 	  att_statements(*pool),
@@ -833,6 +836,11 @@ void Jrd::Attachment::releaseLocks(thread_db* tdbb)
 	DSqlCache::Accessor accessor(&att_dsql_cache);
 	for (bool getResult = accessor.getFirst(); getResult; getResult = accessor.getNext())
 		LCK_release(tdbb, accessor.current()->second.lock);
+
+	// Release dsql statement cache lock
+
+	if (att_dsql_instance)
+		att_dsql_instance->dbb_statement_cache->purge(tdbb);
 
 	// Release the remaining locks
 

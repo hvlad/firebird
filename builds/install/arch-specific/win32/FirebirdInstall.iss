@@ -217,6 +217,12 @@
 #endif
 #endif
 
+#if PlatformTarget == "x64"
+#define ReleasePlatformTarget "x64"
+#else
+#define ReleasePlatformTarget "x86"
+#endif
+
 ;---- If we haven't already set ConfigurationTarget then pick it up from the environment.
 #ifndef ConfigurationTarget
 #define ConfigurationTarget GetEnv("FBBUILD_BUILDTYPE")
@@ -262,12 +268,12 @@
 
 ;Some more strings to distinguish the name of final executable
 #ifdef ship_pdb
-#define pdb_str="-pdb"
+#define pdb_str="-withDebugSymbols"
 #else
 #define pdb_str=""
 #endif
 #if GetEnv("FBBUILD_BUILDTYPE") == "debug"
-#define debug_str="-debug"
+#define debug_str="-withDebugSymbols"
 #else
 #define debug_str=""
 #endif
@@ -291,8 +297,8 @@ AppVersion={#MyAppVerString}
 VersionInfoVersion={#MyAppVerString}
 
 SourceDir={#Root}
-OutputBaseFilename={#MyAppName}-{#MyAppVerString}-{#PackageNumber}-{#PlatformTarget}{#debug_str}{#pdb_str}{#FilenameSuffix}
-;OutputManifestFile={#MyAppName}-{#MyAppVerString}-{#PackageNumber}-{#PlatformTarget}{#debug_str}{#pdb_str}{#FilenameSuffix}-Setup-Manifest.txt
+OutputBaseFilename={#MyAppName}-{#MyAppVerString}-{#PackageNumber}-windows-{#ReleasePlatformTarget}{#debug_str}{#pdb_str}{#FilenameSuffix}
+;OutputManifestFile={#MyAppName}-{#MyAppVerString}-{#PackageNumber}-windows-{#ReleasePlatformTarget}{#debug_str}{#pdb_str}{#FilenameSuffix}-Setup-Manifest.txt
 OutputDir=builds\install_images
 ;!!! These directories are as seen from SourceDir !!!
 #define ScriptsDir "builds\install\arch-specific\win32"

@@ -1,4 +1,4 @@
-MAJOR=52
+MAJOR=63
 MINOR=1
 
 rm -f libicu*so

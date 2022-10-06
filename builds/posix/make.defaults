@@ -183,9 +183,12 @@ RANLIB=			@RANLIB@
 BTYACC=$(ROOT)/extern/btyacc/btyacc
 CLOOP=$(GEN_ROOT)/$(TARGET)/cloop/release/bin/cloop
 
+AR =	@AR@
 CC =	@CC@
 CXX =	@CXX@
 LD =	@CXX@
+OBJCOPY = @OBJCOPY@
+READELF = @READELF@
 
 AC_CFLAGS = @CFLAGS@
 AC_CXXFLAGS = @CXXFLAGS@
@@ -269,8 +272,8 @@ ifeq ($(EDITLINE_FLG),Y)
 	LIBEDITLINE := -l$(READLINE)
   else
 	LIBEDITLINE := $(LIB)/libedit.a
+	TERMLIB := -l@TERMLIB@
   endif
-  TERMLIB := -l@TERMLIB@
 endif
 
 # Shared library name for usage inside of the UDF

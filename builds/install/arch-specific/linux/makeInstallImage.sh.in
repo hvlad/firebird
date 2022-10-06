@@ -37,7 +37,7 @@ TargetDir=buildroot    # Where we want to build the install image
 SecurityDatabase=security5.fdb
 TomMathBuild="@TOMMATH_BUILD@"
 TomCryptBuild="@TOMCRYPT_BUILD@"
-
+OBJDUMP=@OBJDUMP@
 
 #------------------------------------------------------------------------
 #  addLibs
@@ -55,9 +55,9 @@ addLibs() {
 	echo "#!/bin/sh" >>$libTarget
 	echo >>$libTarget
 
-	LIB=`objdump -p $libSdir/firebird|grep NEEDED|grep tomcrypt|awk '{print $2;}'`
+	LIB=`$OBJDUMP -p $libSdir/firebird|grep NEEDED|grep tomcrypt|awk '{print $2;}'`
 	[ "$LIB" ] && echo "export LIBTOMCRYPT=$LIB" >>$libTarget
-	LIB=$(echo `objdump -p $libSdir/isql|grep NEEDED|egrep "(curses|termcap|tinfo)"|awk '{print $2;}'`)
+	LIB=$(echo `$OBJDUMP -p $libSdir/isql|grep NEEDED|egrep "(curses|termcap|tinfo)"|awk '{print $2;}'`)
 	[ "$LIB" ] && echo "export LIBCURSES='$LIB'" >>$libTarget
 	echo >>$libTarget
 

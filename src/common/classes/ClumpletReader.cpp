@@ -687,6 +687,20 @@ void ClumpletReader::moveNext()
 	if (isEof())
 		return;		// no need to raise useless exceptions
 	FB_SIZE_T cs = getClumpletSize(true, true, true);
+
+	switch (kind)
+	{
+	case InfoResponse:
+		switch (getClumpTag())
+		{
+		case isc_info_end:
+		case isc_info_truncated:
+			// terminating clumplet
+			cur_offset = getBufferLength();
+			return;
+		}
+	}
+
 	adjustSpbState();
 	cur_offset += cs;
 }

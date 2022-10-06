@@ -50,7 +50,7 @@ tar -C $SRCROOT -cf - $MEMBERS $MAKEFILES | tar -C $MODULE -xf -
 
 # Load version information from the tree
 source $MODULE/src/misc/writeBuildNum.sh
-PACKNAME="Firebird-$PRODUCT_VER_STRING-$FIREBIRD_PACKAGE_VERSION"
+PACKNAME="Firebird-$PRODUCT_VER_STRING-$FIREBIRD_PACKAGE_VERSION-source"
 DIRNAME="$SRCROOT/temp/$PACKNAME"
 
 echo "Cleaning up"

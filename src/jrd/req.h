@@ -118,6 +118,7 @@ const USHORT rpb_damaged		= 128;		// record is busted
 const USHORT rpb_gc_active		= 256;		// garbage collecting dead record version
 const USHORT rpb_uk_modified	= 512;		// record key field values are changed
 const USHORT rpb_long_tranum	= 1024;		// transaction number is 64-bit
+const USHORT rpb_not_packed		= 2048;		// record (or delta) is stored "as is"
 
 // Stream flags
 
@@ -137,9 +138,6 @@ const USHORT RPB_just_deleted	= 0x10;	// record was just deleted by us
 
 const USHORT RPB_UNDO_FLAGS		= (RPB_undo_data | RPB_undo_read | RPB_undo_deleted);
 const USHORT RPB_CLEAR_FLAGS	= (RPB_UNDO_FLAGS | RPB_just_deleted);
-
-const unsigned int MAX_DIFFERENCES	= 1024;	// Max length of generated Differences string
-											// between two records
 
 // List of active blobs controlled by request
 

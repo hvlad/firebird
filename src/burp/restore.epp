@@ -11636,8 +11636,6 @@ IBatch* WriteRelationMeta::createBatch(BurpGlobals* tdgbl, IAttachment* att)
 			ClumpletReader rdr(ClumpletReader::InfoResponse, infoBuf, sizeof infoBuf);
 			for (rdr.rewind(); !rdr.isEof(); rdr.moveNext())
 			{
-				if (rdr.getClumpTag() == isc_info_end)
-					break;
 				switch (rdr.getClumpTag())
 				{
 				case IBatch::INF_BUFFER_BYTES_SIZE:

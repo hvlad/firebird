@@ -3,7 +3,6 @@
 call "C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\Common7\Tools\VsDevCmd.bat" -arch=x86
 
 set FB_PROCESSOR_ARCHITECTURE=x86
-set FB_OUTPUT_SUFFIX=win32
 
 xcopy /h /e /i /q C:\firebird C:\firebird-build
 cd /d C:\firebird-build\builds\win32

@@ -61,10 +61,14 @@ $1/%.o: %.cpp | $1
 	$(CXX) -c $$(CXX_FLAGS) $$< -o $$@
 endef
 
-.PHONY: all mkdirs clean
+.PHONY: all core mkdirs clean
 
-all: mkdirs \
-	$(BIN_DIR)/cloop	\
+all: core tests
+
+core: mkdirs \
+	$(BIN_DIR)/cloop
+
+tests: mkdirs	\
 	$(BIN_DIR)/test1-c$(SHRLIB_EXT)	\
 	$(BIN_DIR)/test1-c$(EXE_EXT)	\
 	$(BIN_DIR)/test1-cpp$(SHRLIB_EXT)	\

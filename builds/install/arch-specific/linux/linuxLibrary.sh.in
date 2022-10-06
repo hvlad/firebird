@@ -348,22 +348,22 @@ EOF
 
 		if [ "${fb_install_prefix}" = "${default_prefix}" ]
 		then
-		    # RedHat and Mandrake specific 
+		    # RedHat and Mandrake specific
     		if [ -x /sbin/chkconfig ]
 	    	then
     	    	/sbin/chkconfig --add ${fb_startup_name}
 
-		    # Gentoo specific 
+		    # Gentoo specific
     		elif [ -x /sbin/rc-update ]
 	    	then
 				/sbin/rc-update add ${fb_startup_name} default
 
-		    # Suse specific 
+		    # Suse specific
     		elif [ -x /sbin/insserv ]
 	    	then
     	    	/sbin/insserv /etc/init.d/${fb_startup_name}
 
-			# One more way to register service - used in Debian 
+			# One more way to register service - used in Debian
     		elif [ -x /usr/sbin/update-rc.d ]
 	    	then
 		    	/usr/sbin/update-rc.d -f ${fb_startup_name} remove
@@ -504,7 +504,7 @@ CorrectLibDir() {
 
 checkLibName() {
 	grepFlag=-v
-	[ "@CPU_TYPE@" = "amd64" ] && grepFlag=
+	[ "@CPU_TYPE@" = "x64" ] && grepFlag=
 	ldconfig -p | grep -w "${1}" | grep $grepFlag 'x86-64'
 }
 

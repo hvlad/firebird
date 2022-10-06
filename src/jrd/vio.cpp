@@ -103,7 +103,7 @@ static void check_repl_state(thread_db*, jrd_tra*, record_param*, record_param*,
 static int check_precommitted(const jrd_tra*, const record_param*);
 static void check_rel_field_class(thread_db*, record_param*, jrd_tra*);
 static void delete_record(thread_db*, record_param*, ULONG, MemoryPool*);
-static UCHAR* delete_tail(thread_db*, record_param*, ULONG, UCHAR*, const UCHAR*);
+static UCHAR* delete_tail(thread_db*, record_param*, ULONG, UCHAR* = nullptr, const UCHAR* = nullptr);
 static void expunge(thread_db*, record_param*, const jrd_tra*, ULONG);
 static bool dfw_should_know(thread_db*, record_param* org_rpb, record_param* new_rpb,
 	USHORT irrelevant_field, bool void_update_is_relevant = false);
@@ -564,6 +564,42 @@ bool SweepTask::getWorkItem(WorkItem** pItem)
 }
 
 }; // namespace Jrd
+
+
+namespace
+{
+	inline UCHAR* unpack(record_param* rpb, ULONG outLength, UCHAR* output)
+	{
+		if (rpb->rpb_flags & rpb_not_packed)
+		{
+			rpb->rpb_flags &= ~rpb_not_packed;
+
+			const auto length = MIN(rpb->rpb_length, outLength);
+
+			memcpy(output, rpb->rpb_address, length);
+			output += length;
+
+			if (rpb->rpb_length > length)
+			{
+				// Short records may be zero-padded up to the fragmented header size.
+				// Take it into account while checking for a possible buffer overrun.
+
+				auto tail = rpb->rpb_address + length;
+				const auto end = rpb->rpb_address + rpb->rpb_length;
+
+				while (tail < end)
+				{
+					if (*tail++)
+						BUGCHECK(179);	// msg 179 decompression overran buffer
+				}
+			}
+
+			return output;
+		}
+
+		return Compressor::unpack(rpb->rpb_length, rpb->rpb_address, outLength, output);
+	}
+};
 
 
 static bool assert_gc_enabled(const jrd_tra* transaction, const jrd_rel* relation)
@@ -1033,7 +1069,7 @@ void VIO_backout(thread_db* tdbb, record_param* rpb, const jrd_tra* transaction)
 		DPM_backout(tdbb, rpb);
 
 		if (!deleted)
-			delete_tail(tdbb, &temp2, rpb->rpb_page, 0, 0);
+			delete_tail(tdbb, &temp2, rpb->rpb_page);
 	}
 	else
 	{
@@ -1058,7 +1094,7 @@ void VIO_backout(thread_db* tdbb, record_param* rpb, const jrd_tra* transaction)
 
 			rpb->rpb_flags &= ~(rpb_fragment | rpb_incomplete | rpb_chained | rpb_gc_active | rpb_long_tranum);
 			DPM_update(tdbb, rpb, 0, transaction);
-			delete_tail(tdbb, &temp2, rpb->rpb_page, 0, 0);
+			delete_tail(tdbb, &temp2, rpb->rpb_page);
 		}
 
 		// Next, delete the old copy of the now current version.
@@ -1760,15 +1796,16 @@ void VIO_data(thread_db* tdbb, record_param* rpb, MemoryPool* pool)
 	// If the record is a delta version, start with data from prior record.
 	UCHAR* tail;
 	const UCHAR* tail_end;
-	UCHAR differences[MAX_DIFFERENCES];
+
+	Difference difference;
 
 	// Primary record version not uses prior version
-	Record* prior = (rpb->rpb_flags & rpb_chained) ? rpb->rpb_prior : NULL;
+	Record* prior = (rpb->rpb_flags & rpb_chained) ? rpb->rpb_prior : nullptr;
 
 	if (prior)
 	{
-		tail = differences;
-		tail_end = differences + sizeof(differences);
+		tail = difference.getData();
+		tail_end = tail + difference.getCapacity();
 
 		if (prior != record)
 			record->copyDataFrom(prior);
@@ -1785,7 +1822,7 @@ void VIO_data(thread_db* tdbb, record_param* rpb, MemoryPool* pool)
 
 	// Snarf data from record
 
-	tail = Compressor::unpack(rpb->rpb_length, rpb->rpb_address, tail_end - tail, tail);
+	tail = unpack(rpb, tail_end - tail, tail);
 
 	RuntimeStatistics::Accumulator fragments(tdbb, relation, RuntimeStatistics::RECORD_FRAGMENT_READS);
 
@@ -1798,7 +1835,7 @@ void VIO_data(thread_db* tdbb, record_param* rpb, MemoryPool* pool)
 		while (rpb->rpb_flags & rpb_incomplete)
 		{
 			DPM_fetch_fragment(tdbb, rpb, LCK_read);
-			tail = Compressor::unpack(rpb->rpb_length, rpb->rpb_address, tail_end - tail, tail);
+			tail = unpack(rpb, tail_end - tail, tail);
 			++fragments;
 		}
 
@@ -1813,8 +1850,8 @@ void VIO_data(thread_db* tdbb, record_param* rpb, MemoryPool* pool)
 	ULONG length;
 	if (prior)
 	{
-		length = (ULONG) Compressor::applyDiff(tail - differences, differences,
-											   record->getLength(), record->getData());
+		const auto diffLength = tail - difference.getData();
+		length = difference.apply(diffLength, record->getLength(), record->getData());
 	}
 	else
 	{
@@ -2454,7 +2491,7 @@ static void delete_version_chain(thread_db* tdbb, record_param* rpb, bool delete
 
 		record_param temp_rpb = *rpb;
 		DPM_delete(tdbb, &temp_rpb, prior_page);
-		delete_tail(tdbb, &temp_rpb, temp_rpb.rpb_page, 0, 0);
+		delete_tail(tdbb, &temp_rpb, temp_rpb.rpb_page);
 
 		prior_page = rpb->rpb_page;
 		rpb->rpb_page = rpb->rpb_b_page;
@@ -2567,23 +2604,24 @@ void VIO_intermediate_gc(thread_db* tdbb, record_param* rpb, jrd_tra* transactio
 	Record* current_record = const_i.object(), *org_record;
 	++const_i;
 	bool prior_delta = false;
+
+	Difference difference;
+
 	while (const_i.hasData())
 	{
 		org_record = current_record;
 		current_record = const_i.object();
 
-		UCHAR differences[MAX_DIFFERENCES];
-		const size_t l =
-			Compressor::makeDiff(current_record->getLength(), current_record->getData(),
-									org_record->getLength(), org_record->getData(),
-									sizeof(differences), differences);
+		const ULONG diffLength =
+			difference.make(current_record->getLength(), current_record->getData(),
+							org_record->getLength(), org_record->getData());
 
 		staying_chain_rpb.rpb_flags = rpb_chained | (prior_delta ? rpb_delta : 0);
 
-		if ((l < sizeof(differences)) && (l < org_record->getLength()))
+		if (diffLength && diffLength < org_record->getLength())
 		{
-			staying_chain_rpb.rpb_address = differences;
-			staying_chain_rpb.rpb_length = (ULONG) l;
+			staying_chain_rpb.rpb_address = difference.getData();
+			staying_chain_rpb.rpb_length = diffLength;
 			prior_delta = true;
 		}
 		else
@@ -4821,28 +4859,23 @@ static void delete_record(thread_db* tdbb, record_param* rpb, ULONG prior_page, 
 		rpb->rpb_flags, rpb->rpb_b_page, rpb->rpb_b_line,
 		rpb->rpb_f_page, rpb->rpb_f_line);
 #endif
-	UCHAR* tail;
-	const UCHAR* tail_end;
+	UCHAR* tail = nullptr;
+	const UCHAR* tail_end = nullptr;
 
-	UCHAR differences[MAX_DIFFERENCES];
+	Difference difference;
 
-	Record* record = NULL;
-	const Record* prior = NULL;
+	Record* record = nullptr;
+	const Record* prior = nullptr;
 
-	if (!pool || (rpb->rpb_flags & rpb_deleted))
-	{
-		prior = NULL;
-		tail_end = tail = NULL;
-	}
-	else
+	if (pool && !(rpb->rpb_flags & rpb_deleted))
 	{
 		record = VIO_record(tdbb, rpb, NULL, pool);
 		prior = rpb->rpb_prior;
 
 		if (prior)
 		{
-			tail = differences;
-			tail_end = differences + sizeof(differences);
+			tail = difference.getData();
+			tail_end = tail + difference.getCapacity();
 
 			if (prior != record)
 				record->copyDataFrom(prior);
@@ -4853,8 +4886,8 @@ static void delete_record(thread_db* tdbb, record_param* rpb, ULONG prior_page, 
 			tail_end = tail + record->getLength();
 		}
 
-		tail = Compressor::unpack(rpb->rpb_length, rpb->rpb_address, tail_end - tail, tail);
-		rpb->rpb_prior = (rpb->rpb_flags & rpb_delta) ? record : 0;
+		tail = unpack(rpb, tail_end - tail, tail);
+		rpb->rpb_prior = (rpb->rpb_flags & rpb_delta) ? record : nullptr;
 	}
 
 	record_param temp_rpb = *rpb;
@@ -4863,15 +4896,17 @@ static void delete_record(thread_db* tdbb, record_param* rpb, ULONG prior_page, 
 
 	if (pool && prior)
 	{
-		Compressor::applyDiff(tail - differences, differences,
-							  record->getLength(), record->getData());
+		const auto diffLength = tail - difference.getData();
+		difference.apply(diffLength, record->getLength(), record->getData());
 	}
 }
 
 
 static UCHAR* delete_tail(thread_db* tdbb,
 						  record_param* rpb,
-						  ULONG prior_page, UCHAR* tail, const UCHAR* tail_end)
+						  ULONG prior_page,
+						  UCHAR* tail,
+						  const UCHAR* tail_end)
 {
 /**************************************
  *
@@ -4889,8 +4924,8 @@ static UCHAR* delete_tail(thread_db* tdbb,
 #ifdef VIO_DEBUG
 	jrd_rel* relation = rpb->rpb_relation;
 	VIO_trace(DEBUG_WRITES,
-		"delete_tail (rel_id %u, record_param %" QUADFORMAT"d, prior_page %" SLONGFORMAT", tail %p, tail_end %p)\n",
-		relation->rel_id, rpb->rpb_number.getValue(), prior_page, tail, tail_end);
+		"delete_tail (rel_id %u, record_param %" QUADFORMAT"d, prior_page %" SLONGFORMAT", tail %p, length %u)\n",
+		relation->rel_id, rpb->rpb_number.getValue(), prior_page, tail, tail_length);
 
 	VIO_trace(DEBUG_WRITES_INFO,
 		"   tail of record  %" SLONGFORMAT":%d, rpb_trans %" SQUADFORMAT
@@ -4914,7 +4949,7 @@ static UCHAR* delete_tail(thread_db* tdbb,
 			BUGCHECK(248);		// msg 248 cannot find record fragment
 
 		if (tail)
-			tail = Compressor::unpack(rpb->rpb_length, rpb->rpb_address, tail_end - tail, tail);
+			tail = unpack(rpb, tail_end - tail, tail);
 
 		DPM_delete(tdbb, rpb, prior_page);
 		prior_page = rpb->rpb_page;
@@ -5091,7 +5126,7 @@ static void garbage_collect(thread_db* tdbb, record_param* rpb, ULONG prior_page
 
 	RecordStack going;
 
-	while (rpb->rpb_b_page != 0)
+	while (rpb->rpb_b_page)
 	{
 		rpb->rpb_record = NULL;
 		prior_page = rpb->rpb_page;
@@ -5194,6 +5229,7 @@ void Database::garbage_collector(Database* dbb)
 		attachment->att_user = &user;
 
 		BackgroundContextHolder tdbb(dbb, attachment, &status_vector, FB_FUNCTION);
+		Jrd::Attachment::UseCountHolder use(attachment);
 		tdbb->markAsSweeper();
 
 		record_param rpb;
@@ -5582,7 +5618,9 @@ static void list_staying_fast(thread_db* tdbb, record_param* rpb, RecordStack& s
 
 	fb_assert(temp.rpb_b_page == rpb->rpb_b_page);
 	fb_assert(temp.rpb_b_line == rpb->rpb_b_line);
-	fb_assert((temp.rpb_flags & ~rpb_incomplete) == (rpb->rpb_flags & ~rpb_incomplete));
+
+	fb_assert((temp.rpb_flags & ~(rpb_incomplete | rpb_not_packed)) ==
+			  (rpb->rpb_flags & ~(rpb_incomplete | rpb_not_packed)));
 
 	Record* backout_rec = NULL;
 	RuntimeStatistics::Accumulator backversions(tdbb, rpb->rpb_relation,
@@ -5783,7 +5821,7 @@ static void list_staying(thread_db* tdbb, record_param* rpb, RecordStack& stayin
 
 		bool timed_out = false;
 		while (temp.rpb_b_page &&
-			!(temp.rpb_page == next_page && temp.rpb_line == (SSHORT) next_line))
+			!(temp.rpb_page == next_page && temp.rpb_line == next_line))
 		{
 			temp.rpb_prior = (temp.rpb_flags & rpb_delta) ? data : NULL;
 
@@ -5814,7 +5852,7 @@ static void list_staying(thread_db* tdbb, record_param* rpb, RecordStack& stayin
 		// If there is a next older version, then process it: remember that
 		// version's data in 'staying'.
 
-		if (temp.rpb_page == next_page && temp.rpb_line == (SSHORT) next_line)
+		if (temp.rpb_page == next_page && temp.rpb_line == next_line)
 		{
 			next_page = temp.rpb_b_page;
 			next_line = temp.rpb_b_line;
@@ -6006,7 +6044,8 @@ static int prepare_update(	thread_db*		tdbb,
 		temp->rpb_flags |= rpb_delta;
 
 	// If it makes sense, store a differences record
-	UCHAR differences[MAX_DIFFERENCES];
+	Difference difference;
+
 	if (new_rpb)
 	{
 		// If both descriptors share the same record, there cannot be any difference.
@@ -6014,20 +6053,28 @@ static int prepare_update(	thread_db*		tdbb,
 		if (new_rpb->rpb_address == temp->rpb_address)
 		{
 			fb_assert(new_rpb->rpb_length == temp->rpb_length);
-			temp->rpb_address = differences;
-			temp->rpb_length = (ULONG) Compressor::makeNoDiff(temp->rpb_length, differences);
-			new_rpb->rpb_flags |= rpb_delta;
+
+			const ULONG diffLength = difference.makeNoDiff(temp->rpb_length);
+
+			if (diffLength)
+			{
+				fb_assert(diffLength < temp->rpb_length);
+
+				temp->rpb_address = difference.getData();
+				temp->rpb_length = diffLength;
+				new_rpb->rpb_flags |= rpb_delta;
+			}
 		}
 		else
 		{
-			const size_t l =
-				Compressor::makeDiff(new_rpb->rpb_length, new_rpb->rpb_address,
-									 temp->rpb_length, temp->rpb_address,
-									 sizeof(differences), differences);
-			if ((l < sizeof(differences)) && (l < temp->rpb_length))
+			const ULONG diffLength =
+				difference.make(new_rpb->rpb_length, new_rpb->rpb_address,
+								temp->rpb_length, temp->rpb_address);
+
+			if (diffLength && diffLength < temp->rpb_length)
 			{
-				temp->rpb_address = differences;
-				temp->rpb_length = (ULONG) l;
+				temp->rpb_address = difference.getData();
+				temp->rpb_length = diffLength;
 				new_rpb->rpb_flags |= rpb_delta;
 			}
 		}
@@ -6468,7 +6515,7 @@ static void replace_record(thread_db*		tdbb,
 	record_param temp = *rpb;
 	rpb->rpb_flags &= ~(rpb_fragment | rpb_incomplete | rpb_chained | rpb_gc_active | rpb_long_tranum);
 	DPM_update(tdbb, rpb, stack, transaction);
-	delete_tail(tdbb, &temp, rpb->rpb_page, 0, 0);
+	delete_tail(tdbb, &temp, rpb->rpb_page);
 
 	if ((rpb->rpb_flags & rpb_delta) && !rpb->rpb_prior)
 		rpb->rpb_prior = rpb->rpb_record;

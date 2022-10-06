@@ -1,6 +1,6 @@
-echo "This script will build arch-specific files, useful for firebird functionality"
-echo "Press ENTER to continue"
-read x
+#!/bin/sh
+
+echo "This script builds arch-specific files, useful for firebird functionality"
 
 runAndCheckExit() {
 	Msg=$1

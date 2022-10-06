@@ -174,10 +174,10 @@ $(GEN_ROOT)/Make.Version : $(SRC_ROOT)/misc/writeBuildNum.sh
 #
 
 external:
-	CC="$(CC)" CFLAGS="$(CFLAGS)" $(MAKE) -C $(ROOT)/extern/btyacc
-	CXX="$(CXX)" CXXFLAGS="$(CXXFLAGS)" $(MAKE) -C $(ROOT)/extern/cloop TARGET=release WITH_FPC=0 BUILD_DIR=$(TMP_ROOT)/cloop OUT_DIR=$(GEN_ROOT)/$(TARGET)/cloop
+	CC="$(CC)" CFLAGS="$(CFLAGS)" AR="$(AR)" $(MAKE) -C $(ROOT)/extern/btyacc
+	CXX="$(CXX)" CXXFLAGS="$(CXXFLAGS)" $(MAKE) -C $(ROOT)/extern/cloop TARGET=release WITH_FPC=0 BUILD_DIR=$(TMP_ROOT)/cloop OUT_DIR=$(GEN_ROOT)/$(TARGET)/cloop core
 
-	CC="$(CC)" CFLAGS="$(CFLAGS)" $(MAKE) -C $(ROOT)/extern/decNumber
+	CC="$(CC)" CFLAGS="$(CFLAGS)" AR="$(AR)" $(MAKE) -C $(ROOT)/extern/decNumber
 	ln -sf $(ROOT)/extern/decNumber/libdecFloat.a $(LIB)
 
 ifeq ($(ABSEIL_BUILD_FLG),Y)
@@ -186,7 +186,7 @@ ifeq ($(ABSEIL_BUILD_FLG),Y)
 endif
 
 ifeq ($(RE2_BUILD_FLG),Y)
-	CXX="$(CXX)" CXXFLAGS="$(CXXFLAGS) -O3 -g -fPIC" $(MAKE) -C $(ROOT)/extern/re2
+	CXX="$(CXX)" CXXFLAGS="$(CXXFLAGS) -O3 -g -fPIC" AR="$(AR)" $(MAKE) -C $(ROOT)/extern/re2
 	ln -sf $(ROOT)/extern/re2/obj/libre2.a $(LIB)
 endif
 
@@ -201,7 +201,7 @@ else
 endif
 
 ifeq ($(TOMMATH_BUILD_FLG),Y)
-	CC="$(CC)" CFLAGS="$(CFLAGS)" $(MAKE) -C $(ROOT)/extern/libtommath -f makefile.shared GCC=$(GCC)
+	CC="$(CC)" CFLAGS="$(CFLAGS)" AR="$(AR)" $(MAKE) -C $(ROOT)/extern/libtommath -f makefile.shared GCC="$(CC)"
 
 ifeq ($(PLATFORM),DARWIN)
 	install_name_tool -id "@rpath/lib/libtommath.dylib" $(TOMMATH)/.libs/libtommath.0.dylib
@@ -213,7 +213,7 @@ endif
 endif
 
 ifeq ($(TOMCRYPT_BUILD_FLG),Y)
-	CC="$(CC)" CFLAGS="$(CFLAGS) $(TOM2TOM_CFLAGS)" $(MAKE) -C $(ROOT)/extern/libtomcrypt -f makefile.shared GCC=$(GCC) LTC_LDFLAGS=$(LTC_LDFLAGS)
+	CC="$(CC)" CFLAGS="$(CFLAGS) $(TOM2TOM_CFLAGS)" $(MAKE) -C $(ROOT)/extern/libtomcrypt -f makefile.shared GCC="$(CC)" LTC_LDFLAGS=$(LTC_LDFLAGS)
 
 ifeq ($(PLATFORM),DARWIN)
 	install_name_tool -id "@rpath/lib/libtomcrypt.dylib" $(TOMCRYPT)/.libs/libtomcrypt.1.dylib
@@ -226,7 +226,7 @@ endif
 
 ifeq ($(STD_EDITLINE),false)
 ifeq ($(EDITLINE_FLG),Y)
-	CC="$(CC)" CFLAGS="$(CFLAGS)" $(MAKE) -f $(GEN_ROOT)/Makefile.extern.editline
+	CC="$(CC)" CFLAGS="$(CFLAGS)" AR="$(AR)" $(MAKE) -f $(GEN_ROOT)/Makefile.extern.editline
 endif
 endif
 
@@ -349,7 +349,7 @@ cross2:
 	$(MAKE) tommath
 	$(MAKE) LTCSOURCE=-DLTC_SOURCE tomcrypt
 	$(MAKE) re2
-	CC="$(CC)" CFLAGS="$(CFLAGS)" $(MAKE) -C $(ROOT)/extern/decNumber
+	CC="$(CC)" CFLAGS="$(CFLAGS)" AR="$(AR)" $(MAKE) -C $(ROOT)/extern/decNumber
 	ln -sf $(ROOT)/extern/decNumber/libdecFloat$(CROSS).a $(LIB)
 	CXX="$(CXX)" CXXFLAGS="$(CXXFLAGS)" $(MAKE) -C $(ROOT)/extern/int128/absl/numeric
 	ln -sf $(ROOT)/extern/int128/absl/numeric/libi128$(CROSS).a $(LIB)
@@ -648,7 +648,7 @@ GBAK_FILES := $(subst Native,$(TARGET),$(GBAK_FILES))
 
 rest:	message_file tzdata
 
-cross_rest:
+cross_rest: tzdata
 	$(MAKE) $(BUILD_FILE)
 
 examples: include_generic
@@ -661,11 +661,11 @@ $(FIREBIRD_MSG) $(FIREBIRD)/include/firebird/impl/iberror_c.h:	$(BUILD_FILE)
 	$(BUILD_FILE) -f $(FIREBIRD_MSG) -c $(FIREBIRD)/include/firebird/impl/iberror_c.h
 	$(CHMOD_6) $(FIREBIRD_MSG)
 
-tzdata: $(FIREBIRD)/tzdata
+tzdata: $(FB_BUILD)/tzdata
 
-$(FIREBIRD)/tzdata: $(ROOT)/extern/icu/tzdata/$(TZDATA_ZIP)
-	mkdir -p $(FIREBIRD)/tzdata
-	unzip -o $(ROOT)/extern/icu/tzdata/$(TZDATA_ZIP) -d $(FIREBIRD)/tzdata
+$(FB_BUILD)/tzdata: $(ROOT)/extern/icu/tzdata/$(TZDATA_ZIP)
+	mkdir -p $(FB_BUILD)/tzdata
+	unzip -o $(ROOT)/extern/icu/tzdata/$(TZDATA_ZIP) -d $(FB_BUILD)/tzdata
 
 $(BUILD_FILE):	$(BUILD_Objects)
 	$(EXE_LINK) $(EXE_LINK_OPTIONS) $(LSB_UNDEF) $^ -o $@

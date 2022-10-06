@@ -417,6 +417,8 @@ namespace Jrd
 		bool internalGetRecord(thread_db* tdbb) const override;
 
 	private:
+		void process(thread_db* tdbb) const;
+
 		NestConst<RecordSource> m_next;
 		StreamList m_streams;
 	};
@@ -566,6 +568,8 @@ namespace Jrd
 		void internalOpen(thread_db* tdbb) const override;
 		bool internalGetRecord(thread_db* tdbb) const override;
 
+		bool m_invariant = false;
+
 	private:
 		bool evaluateBoolean(thread_db* tdbb) const;
 
@@ -575,6 +579,17 @@ namespace Jrd
 		bool m_ansiAny;
 		bool m_ansiAll;
 		bool m_ansiNot;
+	};
+
+	class PreFilteredStream : public FilteredStream
+	{
+	public:
+		PreFilteredStream(CompilerScratch* csb, RecordSource* next,
+						  BoolExprNode* boolean)
+			: FilteredStream(csb, next, boolean, next->getCardinality())
+		{
+			m_invariant = true;
+		}
 	};
 
 	class SortedStream : public RecordSource

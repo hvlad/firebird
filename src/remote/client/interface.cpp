@@ -86,10 +86,6 @@
 #include "../remote/os/win32/xnet_proto.h"
 #endif
 
-#ifdef WIN_NT
-#define sleep(seconds)		Sleep ((seconds) * 1000)
-#endif // WIN_NT
-
 
 const char* const PROTOCOL_INET = "inet";
 const char* const PROTOCOL_INET4 = "inet4";
@@ -147,7 +143,26 @@ namespace {
 		cstring oldValue;
 	};
 
-	GlobalPtr<PortsCleanup> outPorts;
+	class ClientPortsCleanup : public PortsCleanup
+	{
+	public:
+		ClientPortsCleanup() :
+		  PortsCleanup()
+		{}
+
+		explicit ClientPortsCleanup(MemoryPool& p) :
+		  PortsCleanup(p)
+		{}
+
+		void closePort(rem_port* port) override;
+
+		void delay() override
+		{
+			Thread::sleep(50);
+		}
+	};
+
+	GlobalPtr<ClientPortsCleanup> outPorts;
 }
 
 namespace Remote {
@@ -1075,6 +1090,7 @@ static void batch_gds_receive(rem_port*, struct rmtque *, USHORT);
 static void batch_dsql_fetch(rem_port*, struct rmtque *, USHORT);
 static void clear_queue(rem_port*);
 static void clear_stmt_que(rem_port*, Rsr*);
+static void finalize(rem_port* port);
 static void disconnect(rem_port*, bool rmRef = true);
 static void enqueue_receive(rem_port*, t_rmtque_fn, Rdb*, void*, Rrq::rrq_repeat*);
 static void dequeue_receive(rem_port*);
@@ -2040,7 +2056,7 @@ void Attachment::freeClientData(CheckStatusWrapper* status, bool force)
 
 		try
 		{
-			if (!(port->port_flags & PORT_rdb_shutdown))
+			if (!(port->port_flags & (PORT_rdb_shutdown | PORT_detached)))
 			{
 				release_object(status, rdb, op_detach, rdb->rdb_id);
 			}
@@ -6600,14 +6616,17 @@ void Service::freeClientData(CheckStatusWrapper* status, bool force)
 		rem_port* port = rdb->rdb_port;
 		RemotePortGuard portGuard(port, FB_FUNCTION);
 
-		try
+		if (!(port->port_flags & PORT_detached))
 		{
-			release_object(status, rdb, op_service_detach, rdb->rdb_id);
-		}
-		catch (const Exception&)
-		{
-			if (!force)
-				throw;
+			try
+			{
+				release_object(status, rdb, op_service_detach, rdb->rdb_id);
+			}
+			catch (const Exception&)
+			{
+				if (!force)
+					throw;
+			}
 		}
 		disconnect(port);
 		rdb = NULL;
@@ -7818,7 +7837,7 @@ static void clear_queue(rem_port* port)
 }
 
 
-static void disconnect(rem_port* port, bool rmRef)
+static void finalize(rem_port* port)
 {
 /**************************************
  *
@@ -7827,9 +7846,16 @@ static void disconnect(rem_port* port, bool rmRef)
  **************************************
  *
  * Functional description
- *	Disconnect a port and free its memory.
+ *	Disconnect remote port.
  *
  **************************************/
+
+	// no need to do something if port already detached
+	if (port->port_flags & PORT_detached)
+		return;
+
+	// Avoid async send during finalize
+	RefMutexGuard guard(*port->port_write_sync, FB_FUNCTION);
 
 	// Send a disconnect to the server so that it
 	// gracefully terminates.
@@ -7855,11 +7881,32 @@ static void disconnect(rem_port* port, bool rmRef)
 		port->send(packet);
 
 		REMOTE_free_packet(port, packet);
+		delete rdb;
+		port->port_context = nullptr;
 	}
 
 	// Cleanup the queue
 
 	delete port->port_deferred_packets;
+	port->port_deferred_packets = nullptr;
+
+	port->port_flags |= PORT_detached;
+}
+
+static void disconnect(rem_port* port, bool rmRef)
+{
+/**************************************
+ *
+ *	d i s c o n n e c t
+ *
+ **************************************
+ *
+ * Functional description
+ *	Disconnect a port and free its memory.
+ *
+ **************************************/
+
+	finalize(port);
 
 	// Clear context reference for the associated event handler
 	// to avoid SEGV during shutdown
@@ -7875,7 +7922,6 @@ static void disconnect(rem_port* port, bool rmRef)
 
 	port->port_flags |= PORT_disconnect;
 	port->disconnect();
-	delete rdb;
 
 	// Remove from active ports
 
@@ -9112,6 +9158,15 @@ static void send_packet(rem_port* port, PACKET* packet)
 
 	RefMutexGuard guard(*port->port_write_sync, FB_FUNCTION);
 
+	if (port->port_flags & PORT_detached || port->port_state == rem_port::BROKEN)
+	{
+		(Arg::Gds(isc_net_write_err)
+#ifdef DEV_BUILD
+			<< Arg::Gds(isc_random) << "port detached"
+#endif
+		).raise();
+	}
+
 	// Send packets that were deferred
 
 	if (port->port_deferred_packets)
@@ -9161,6 +9216,15 @@ static void send_partial_packet(rem_port* port, PACKET* packet)
  **************************************/
 
 	RefMutexGuard guard(*port->port_write_sync, FB_FUNCTION);
+
+	if (port->port_flags & PORT_detached || port->port_state == rem_port::BROKEN)
+	{
+		(Arg::Gds(isc_net_write_err)
+#ifdef DEV_BUILD
+			<< Arg::Gds(isc_random) << "port detached"
+#endif
+		).raise();
+	}
 
 	// Send packets that were deferred
 
@@ -9373,6 +9437,20 @@ static void cleanDpb(Firebird::ClumpletWriter& dpb, const ParametersSet* tags)
 }
 
 } //namespace Remote
+
+
+void ClientPortsCleanup::closePort(rem_port* port)
+{
+	RefMutexEnsureUnlock guard(*port->port_sync, FB_FUNCTION);
+
+	if (port->port_flags & PORT_disconnect)
+		return;
+
+	if (guard.tryEnter())
+		Remote::finalize(port);
+	else
+		PortsCleanup::closePort(port);
+}
 
 
 RmtAuthBlock::RmtAuthBlock(const Firebird::AuthReader::AuthBlock& aBlock)
