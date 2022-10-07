@@ -192,7 +192,7 @@ endif
 
 	mkdir -p $(LIBCDS)/lib/$(TARGET)
 	cmake -DCMAKE_BUILD_TYPE=$(TARGET) -DCMAKE_CXX_FLAGS=-fPIC -S $(LIBCDS) -B $(LIBCDS)/lib/$(TARGET)
-	$(MAKE) -C $(LIBCDS)/lib/$(TARGET)
+	AR="$(AR)" $(MAKE) -C $(LIBCDS)/lib/$(TARGET)
 
 ifeq ($(TARGET),Debug)
 	ln -sf $(LIBCDS)/lib/$(TARGET)/bin/libcds-s_d.a $(LIB)/libcds.a
@@ -346,6 +346,18 @@ cross1:
 cross2:
 	ln -sf $(SRC_ROOT)/include/cross/$(CROSS_CONFIG) $(SRC_ROOT)/include/gen/autoconfig.h
 	$(MAKE) prerequisites
+
+	mkdir -p $(LIBCDS)/lib/$(TARGET)
+	cmake -DCMAKE_BUILD_TYPE=$(TARGET) -DCMAKE_CXX_FLAGS=-fPIC -S $(LIBCDS) -B $(LIBCDS)/lib/$(TARGET)
+	AR="$(AR)" $(MAKE) -C $(LIBCDS)/lib/$(TARGET)
+
+ifeq ($(TARGET),Debug)
+	ln -sf $(LIBCDS)/lib/$(TARGET)/bin/libcds-s_d.a $(LIB)/libcds.a
+else
+	ln -sf $(LIBCDS)/lib/$(TARGET)/bin/libcds-s.a $(LIB)/libcds.a
+endif
+
+
 	$(MAKE) tommath
 	$(MAKE) LTCSOURCE=-DLTC_SOURCE tomcrypt
 	$(MAKE) re2
