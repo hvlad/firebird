@@ -83,6 +83,13 @@ LTC_LDFLAGS='-L$(LIB) $(subst $,$$$$,$(call LIB_LINK_RPATH,lib))'
 endif
 endif
 
+# correct build type for cmake builds
+FB_CMAKE_BUILD_TYPE=$(TARGET)
+ifeq ($(FB_CMAKE_BUILD_TYPE),Native)
+  FB_CMAKE_BUILD_TYPE=Release
+endif
+
+
 .PHONY:	master_process cross_process firebird Debug Release external
 
 all:	firebird
@@ -190,15 +197,7 @@ ifeq ($(RE2_BUILD_FLG),Y)
 	ln -sf $(ROOT)/extern/re2/obj/libre2.a $(LIB)
 endif
 
-	mkdir -p $(LIBCDS)/lib/$(TARGET)
-	cmake -DCMAKE_BUILD_TYPE=$(TARGET) -DCMAKE_CXX_FLAGS=-fPIC -S $(LIBCDS) -B $(LIBCDS)/lib/$(TARGET)
-	$(MAKE) -C $(LIBCDS)/lib/$(TARGET)
-
-ifeq ($(TARGET),Debug)
-	ln -sf $(LIBCDS)/lib/$(TARGET)/bin/libcds-s_d.a $(LIB)/libcds.a
-else
-	ln -sf $(LIBCDS)/lib/$(TARGET)/bin/libcds-s.a $(LIB)/libcds.a
-endif
+	$(MAKE) libcds
 
 ifeq ($(TOMMATH_BUILD_FLG),Y)
 	CC="$(CC)" CFLAGS="$(CFLAGS)" AR="$(AR)" $(MAKE) -C $(ROOT)/extern/libtommath -f makefile.shared GCC="$(CC)"
@@ -290,6 +289,22 @@ $(RE2_LIB):	$(RE2_Objs)
 	$(STATICLIB_LINK) $@ $^
 
 #___________________________________________________________________________
+# libcds
+#
+
+.PHONY:	libcds
+libcds:
+	mkdir -p $(LIBCDS)/lib/$(TARGET)
+	cmake -DCMAKE_BUILD_TYPE=$(FB_CMAKE_BUILD_TYPE) -DCMAKE_CXX_FLAGS=-fPIC -S $(LIBCDS) -B $(LIBCDS)/lib/$(TARGET)
+	AR="$(AR)" $(MAKE) -C $(LIBCDS)/lib/$(TARGET)
+
+ifeq ($(TARGET),Debug)
+	ln -sf $(LIBCDS)/lib/$(TARGET)/bin/libcds-s_d.a $(LIB)/libcds.a
+else
+	ln -sf $(LIBCDS)/lib/$(TARGET)/bin/libcds-s.a $(LIB)/libcds.a
+endif
+
+#___________________________________________________________________________
 # main build target for both debug and release builds
 #
 
@@ -353,6 +368,7 @@ cross2:
 	ln -sf $(ROOT)/extern/decNumber/libdecFloat$(CROSS).a $(LIB)
 	CXX="$(CXX)" CXXFLAGS="$(CXXFLAGS)" $(MAKE) -C $(ROOT)/extern/int128/absl/numeric
 	ln -sf $(ROOT)/extern/int128/absl/numeric/libi128$(CROSS).a $(LIB)
+	$(MAKE) libcds
 	$(MAKE) yvalve
 	$(MAKE) engine
 	$(MAKE) fbintl
