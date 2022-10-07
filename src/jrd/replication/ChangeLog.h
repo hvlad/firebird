@@ -24,8 +24,10 @@
 #ifndef JRD_REPLICATION_CHANGELOG_H
 #define JRD_REPLICATION_CHANGELOG_H
 
+#include "../common/classes/alloc.h"
 #include "../common/classes/array.h"
 #include "../common/classes/semaphore.h"
+#include "../common/classes/fb_string.h"
 #include "../common/os/guid.h"
 #include "../common/isc_s_proto.h"
 
@@ -33,6 +35,8 @@
 
 namespace Replication
 {
+	struct Config;
+
 	enum SegmentState : USHORT
 	{
 		SEGMENT_STATE_FREE = 0,

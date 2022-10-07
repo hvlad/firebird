@@ -35,8 +35,8 @@
 #include "../common/ThreadStart.h"
 #include "../common/utils_proto.h"
 #include "../common/classes/ParsedList.h"
+#include "../common/status.h"
 
-#include "../jrd/replication/Applier.h"
 #include "../jrd/replication/ChangeLog.h"
 #include "../jrd/replication/Config.h"
 #include "../jrd/replication/Protocol.h"
