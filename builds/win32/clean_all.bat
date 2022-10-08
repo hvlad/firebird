@@ -23,9 +23,14 @@ for %%v in ( %* )  do (
 @rmdir /S /Q "%FB_ROOT_PATH%\extern\icu\%FB_TARGET_PLATFORM%\%FBBUILD_BUILDTYPE%" 2>nul
 
 @echo Cleaning cds...
-@rmdir /S /Q "%FB_ROOT_PATH%\extern\libcds\bin\vc.v141\%FB_TARGET_PLATFORM%-Debug-static" 2>nul
-@rmdir /S /Q "%FB_ROOT_PATH%\extern\libcds\bin\vc.v141\%FB_TARGET_PLATFORM%-Release-static" 2>nul
-@rmdir /S /Q "%FB_ROOT_PATH%\extern\libcds\obj\vc.v141\%FB_TARGET_PLATFORM%" 2>nul
+@for /D %%d in ("%FB_ROOT_PATH%\extern\libcds\obj\*") do (
+  rmdir /S /Q "%%d\%FB_TARGET_PLATFORM%\cds\%FB_CONFIG%-static" 2>nul
+)
+
+@for /D %%d in ("%FB_ROOT_PATH%\extern\libcds\bin\*") do (
+  rmdir /S /Q "%%d\%FB_TARGET_PLATFORM%-%FB_CONFIG%-static" 2>nul
+)
+
 
 @echo Cleaning decNumber...
 @rmdir /S /Q "%FB_ROOT_PATH%\extern\decNumber\lib\%FB_TARGET_PLATFORM%" 2>nul

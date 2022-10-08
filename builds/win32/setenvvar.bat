@@ -6,7 +6,6 @@
 :: VS_VER VisualStudio version (msvc15)
 :: FB_OBJ_DIR
 :: FB_BIN_DIR
-set FB_LIBCDS=
 
 @echo off
 
@@ -16,7 +15,6 @@ for %%v in ( %* )  do (
   ( if /I "%%v"=="DEBUG" ( (set FB_DBG=TRUE) && (set FB_CONFIG=debug) ) )
   ( if /I "%%v"=="CLEAN" (set FB_CLEAN=:rebuild) )
   ( if /I "%%v"=="RELEASE" ( (set FB_DBG=) && (set FB_CONFIG=release) ) )
-  ( if /I "%%v"=="LIBCDS" ( (set FB_LIBCDS=1) ) )
 )
 
 @if not defined FB_CONFIG (
