@@ -1323,9 +1323,13 @@ void CCH_flush_ast(thread_db* tdbb)
 		bcb->bcb_flags |= BCB_keep_pages;
 
 		for (auto blk : bcb->bcb_bdbBlocks)
+		{
 			for (BufferDesc* bdb = blk.m_bdbs; bdb < blk.m_bdbs + blk.m_count; bdb++)
+			{
 				if (bdb->bdb_flags & (BDB_dirty | BDB_db_dirty))
 					down_grade(tdbb, bdb, 1);
+			}
+		}
 
 		if (!keep_pages)
 			bcb->bcb_flags &= ~BCB_keep_pages;
@@ -3204,7 +3208,7 @@ static void check_precedence(thread_db* tdbb, WIN* window, PageNumber page)
 	// Start by finding the buffer containing the high priority page
 
 #ifndef HASH_USE_CDS_LIST
-	Sync bcbSync(&bcb->bcb_syncObject, "check_precedence");
+	Sync bcbSync(&bcb->bcb_syncObject, FB_FUNCTION);
 	bcbSync.lock(SYNC_SHARED);
 #endif
 
@@ -3955,8 +3959,10 @@ static ULONG get_prec_walk_mark(BufferControl* bcb)
 		SyncLockGuard bcbSync(&bcb->bcb_syncObject, SYNC_SHARED, FB_FUNCTION);
 
 		for (auto blk : bcb->bcb_bdbBlocks)
+		{
 			for (ULONG i = 0; i < blk.m_count; i++)
 				blk.m_bdbs[i].bdb_prec_walk_mark = 0;
+		}
 
 		bcb->bcb_prec_walk_mark = 1;
 	}
@@ -5463,7 +5469,7 @@ public:
 		// m_pool will be deleted by InitCDS dtor after cds termination
 		// some memory could still be not freed until that moment
 
-#ifdef DEV_BUILD
+#ifdef DEBUG_CDS_MEMORY
 		char str[256];
 		sprintf(str, "CCH list's common pool stats:\n"
 			"  usage         = %llu\n"

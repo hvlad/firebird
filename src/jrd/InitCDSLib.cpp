@@ -63,6 +63,9 @@ InitCDS::~InitCDS()
 
 	char str[512];
 
+// CDS_ENABLE_HPSTAT is not defined by default.
+// Rebuild of libcds after change is required.
+
 #ifdef CDS_ENABLE_HPSTAT
 	cds::gc::DHP::stat const& st = cds::gc::DHP::postmortem_statistics();
 
@@ -100,7 +103,7 @@ InitCDS::~InitCDS()
 	delete m_pools;
 	MemoryPool::deletePool(m_pool);
 
-#ifdef DEV_BUILD
+#ifdef DEBUG_CDS_MEMORY
 	sprintf(str, "DHP pool stats:\n"
 		"  usage         = %llu\n"
 		"  mapping       = %llu\n"

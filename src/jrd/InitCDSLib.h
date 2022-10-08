@@ -30,6 +30,11 @@
 
 #include "../common/classes/alloc.h"
 
+// Uncomment to write final memory usage stats into firebird.log.
+// See ~InitCDS() and ~InitPool() in CCH
+
+//#define DEBUG_CDS_MEMORY
+
 namespace Jrd
 {
 
@@ -40,7 +45,7 @@ public:
 	explicit InitCDS(MemoryPool&);
 	~InitCDS();
 
-	// Creates memory pool that will not be deleted until cds finish its work. 
+	// Creates memory pool that will not be deleted until cds finish its work.
 	// Should be used to allocate structures by cds classes.
 	static Firebird::MemoryPool* createPool();
 
