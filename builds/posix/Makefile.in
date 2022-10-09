@@ -295,7 +295,8 @@ $(RE2_LIB):	$(RE2_Objs)
 .PHONY:	libcds
 libcds:
 	mkdir -p $(LIBCDS)/lib/$(TARGET)
-	cmake -DCMAKE_BUILD_TYPE=$(FB_CMAKE_BUILD_TYPE) -DCMAKE_CXX_FLAGS=-fPIC -S $(LIBCDS) -B $(LIBCDS)/lib/$(TARGET)
+	cd $(LIBCDS)/lib/$(TARGET); \
+	cmake -DCMAKE_BUILD_TYPE=$(FB_CMAKE_BUILD_TYPE) -DCMAKE_CXX_FLAGS=-fPIC $(LIBCDS)
 	AR="$(AR)" $(MAKE) -C $(LIBCDS)/lib/$(TARGET)
 
 ifeq ($(TARGET),Debug)
