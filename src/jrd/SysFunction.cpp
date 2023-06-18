@@ -1270,18 +1270,30 @@ bool makeBlobAppendBlob(dsc* result, const dsc* arg, bid* blob_id = nullptr)
 void makeBlobAppend(DataTypeUtilBase* dataTypeUtil, const SysFunction* function, dsc* result,
 	int argsCount, const dsc** args)
 {
+	fb_assert(argsCount >= function->minArgCount);
+
+	result->makeBlob(isc_blob_untyped, ttype_binary);
+	result->setNullable(true);
+
 	if (argsCount > 0)
 	{
-		const dsc** ppArg = args;
-		const dsc** const end = args + argsCount;
+		for (int i = 0; i < argsCount; ++i)
+		{
+			if (makeBlobAppendBlob(result, args[i]))
+				break;
+		}
 
-		for (; ppArg < end; ppArg++)
-			if (makeBlobAppendBlob(result, *ppArg))
-				return;
+		result->setNullable(true);
+
+		for (int i = 0; i < argsCount; ++i)
+		{
+			if (!args[i]->isNullable())
+			{
+				result->setNullable(false);
+				break;
+			}
+		}
 	}
-
-	fb_assert(false);
-	result->makeBlob(isc_blob_untyped, ttype_binary);
 }
 
 
@@ -2347,7 +2359,10 @@ dsc* evlBlobAppend(thread_db* tdbb, const SysFunction* function, const NestValue
 	const bool arg0_null = (request->req_flags & req_null) || (argDsc == NULL);
 
 	if (!arg0_null && argDsc->isBlob())
+	{
 		blob_id = *reinterpret_cast<bid*>(argDsc->dsc_address);
+		makeBlobAppendBlob(&blobDsc, argDsc, &blob_id);
+	}
 
 	// Try to get blob type from declared var\param
 	if (!argDsc && (nodeIs<VariableNode>(args[0]) ||
@@ -2409,13 +2424,14 @@ dsc* evlBlobAppend(thread_db* tdbb, const SysFunction* function, const NestValue
 
 			blob = blb::create2(tdbb, transaction, &blob_id, bpb.getCount(), bpb.begin());
 			blob->blb_flags |= BLB_stream | BLB_close_on_read;
+			blob->blb_charset = blobDsc.getCharSet();
 		}
 
 		if (!argDsc->isBlob())
 		{
 			MoveBuffer temp;
 			UCHAR* addr = NULL;
-			SLONG len = MOV_make_string2(tdbb, argDsc, blobDsc.getTextType(), &addr, temp);
+			SLONG len = MOV_make_string2(tdbb, argDsc, blob->blb_charset, &addr, temp);
 
 			if (addr)
 				blob->BLB_put_data(tdbb, addr, len);
@@ -4789,7 +4805,7 @@ dsc* evlSetContext(thread_db* tdbb, const SysFunction*, const NestValueArray& ar
 	{
 		// "Invalid namespace name %s passed to %s"
 		ERR_post(Arg::Gds(isc_ctx_namespace_invalid) <<
-			Arg::Str(nameStr) << Arg::Str(RDB_SET_CONTEXT));
+			Arg::Str(nameSpaceStr) << Arg::Str(RDB_SET_CONTEXT));
 	}
 
 	string valueStr;

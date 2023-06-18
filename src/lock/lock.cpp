@@ -302,6 +302,9 @@ bool LockManager::init_shared_file(CheckStatusWrapper* statusVector)
 		SharedMemory<lhb>* tmp = FB_NEW_POOL(getPool()) SharedMemory<lhb>(name.c_str(), m_memorySize, this);
 		// initialize will reset m_sharedMemory
 		fb_assert(m_sharedMemory == tmp);
+
+		if (!check_shared_memory(statusVector))
+			return false;
 	}
 	catch (const Exception& ex)
 	{
@@ -1629,6 +1632,36 @@ void LockManager::bug(CheckStatusWrapper* statusVector, const TEXT* string)
 }
 
 
+bool LockManager::check_shared_memory(CheckStatusWrapper* statusVector)
+{
+/********************************************
+ *
+ *	c h e c k _ s h a r e d _ m e m o r y
+ *
+ ********************************************
+ *
+ * Functional description
+ *	Check version of shared memory.
+ *
+ ********************************************/
+	if (m_sharedMemory->getHeader()->mhb_type != SharedMemoryBase::SRAM_LOCK_MANAGER ||
+		m_sharedMemory->getHeader()->mhb_header_version != MemoryHeader::HEADER_VERSION ||
+		m_sharedMemory->getHeader()->mhb_version != LHB_VERSION)
+	{
+		TEXT bug_buffer[BUFFER_TINY];
+		sprintf(bug_buffer, "inconsistent lock table type/version; found %d/%d:%d, expected %d/%d:%d",
+			m_sharedMemory->getHeader()->mhb_type,
+			m_sharedMemory->getHeader()->mhb_header_version,
+			m_sharedMemory->getHeader()->mhb_version,
+			SharedMemoryBase::SRAM_LOCK_MANAGER, MemoryHeader::HEADER_VERSION, LHB_VERSION);
+		bug(statusVector, bug_buffer);
+		return false;
+	}
+
+	return true;
+}
+
+
 SRQ_PTR LockManager::create_owner(CheckStatusWrapper* statusVector,
 								  LOCK_OWNER_T owner_id,
 								  UCHAR owner_type)
@@ -1643,19 +1676,8 @@ SRQ_PTR LockManager::create_owner(CheckStatusWrapper* statusVector,
  *	Create an owner block.
  *
  **************************************/
-	if (m_sharedMemory->getHeader()->mhb_type != SharedMemoryBase::SRAM_LOCK_MANAGER ||
-		m_sharedMemory->getHeader()->mhb_header_version != MemoryHeader::HEADER_VERSION ||
-		m_sharedMemory->getHeader()->mhb_version != LHB_VERSION)
-	{
-		TEXT bug_buffer[BUFFER_TINY];
-		sprintf(bug_buffer, "inconsistent lock table type/version; found %d/%d:%d, expected %d/%d:%d",
-			m_sharedMemory->getHeader()->mhb_type,
-			m_sharedMemory->getHeader()->mhb_header_version,
-			m_sharedMemory->getHeader()->mhb_version,
-			SharedMemoryBase::SRAM_LOCK_MANAGER, MemoryHeader::HEADER_VERSION, LHB_VERSION);
-		bug(statusVector, bug_buffer);
+	if (!check_shared_memory(statusVector))
 		return 0;
-	}
 
 	// Allocate a process block, if required
 

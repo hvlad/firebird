@@ -124,21 +124,15 @@ bool checkCreateDatabaseGrant(const MetaString& userName, const MetaString& trus
 		check("IAttachment::getInfo", &st);
 
 		int dialect = SQL_DIALECT_V5;		// reasonable default
-		const UCHAR* p = buffer;
-		while (*p != isc_info_end && *p != isc_info_truncated && p < buffer + sizeof(buffer))
-		{
-			const UCHAR item = (UCHAR) *p++;
-			const USHORT length = gds__vax_integer(p, sizeof(USHORT));
-			p += sizeof(USHORT);
 
-			switch (item)
+		for (ClumpletReader p(ClumpletReader::InfoResponse, buffer, sizeof(buffer)); !p.isEof(); p.moveNext())
+		{
+			switch (p.getClumpTag())
 			{
 			case isc_info_db_sql_dialect:
-				dialect = gds__vax_integer(p, length);
+				dialect = p.getInt();
 				break;
 			}
-
-			p += length;
 		}
 
 		UserId::makeRoleName(role, dialect);

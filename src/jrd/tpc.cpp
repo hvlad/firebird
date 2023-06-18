@@ -363,7 +363,8 @@ TipCache::StatusBlockData::StatusBlockData(thread_db* tdbb, TipCache* tipCache, 
 	: blockNumber(blkNumber),
 	  memory(NULL),
 	  existenceLock(tdbb, sizeof(TpcBlockNumber), LCK_tpc_block, this, tpc_block_blocking_ast),
-	  cache(tipCache)
+	  cache(tipCache),
+	  acceptAst(false)
 {
 	Database* dbb = tdbb->getDatabase();
 
@@ -381,6 +382,7 @@ TipCache::StatusBlockData::StatusBlockData(thread_db* tdbb, TipCache* tipCache, 
 			&cache->memBlockInitializer, true);
 
 		LCK_convert(tdbb, &existenceLock, LCK_SR, LCK_WAIT);	// never fails
+		acceptAst = true;
 	}
 	catch (const Exception& ex)
 	{
@@ -417,8 +419,15 @@ void TipCache::StatusBlockData::clear(thread_db* tdbb)
 	if (memory)
 	{
 		// wait for all initializing processes (PR)
-		if (!LCK_convert(tdbb, &existenceLock, LCK_SW, LCK_WAIT))
+		acceptAst = false;
+
+		TraNumber oldest =
+			cache->m_tpcHeader->getHeader()->oldest_transaction.load(std::memory_order_relaxed);
+		if (blockNumber < oldest / cache->m_transactionsPerBlock &&			// old block => send AST
+			!LCK_convert(tdbb, &existenceLock, LCK_SW, LCK_WAIT))
+		{
 			ERR_bugcheck_msg("Unable to convert TPC lock (SW)");
+		}
 
 		fName = memory->getMapFileName();
 		delete memory;
@@ -688,16 +697,17 @@ int TipCache::tpc_block_blocking_ast(void* arg)
 	Database* dbb = data->existenceLock.lck_dbb;
 	AsyncContextHolder tdbb(dbb, FB_FUNCTION);
 
-	// We will never be called with initialization (PR) lock
-	// (it's used only in ctor).
-	// When called with finalization (SW or EX) lock that means resource
-	// is already released or will be released very soon.
-	if (data->existenceLock.lck_logical > LCK_SR)
+	// Should we try to process AST?
+	if (!data->acceptAst)
 		return 0;
 
 	TipCache* cache = data->cache;
 	TraNumber oldest =
 		cache->m_tpcHeader->getHeader()->oldest_transaction.load(std::memory_order_relaxed);
+
+	// Is data block really old?
+	if (data->blockNumber >= oldest / cache->m_transactionsPerBlock)
+		return 0;
 
 	// Release shared memory
 	if (data->memory)
@@ -706,11 +716,6 @@ int TipCache::tpc_block_blocking_ast(void* arg)
 		data->memory = NULL;
 	}
 	LCK_release(tdbb, &data->existenceLock);
-
-	// Check if there is a bug in cleanup code and we were requested to
-	// release memory that might be in use
-	if (data->blockNumber >= oldest / cache->m_transactionsPerBlock)
-		ERR_bugcheck_msg("Incorrect attempt to release shared memory");
 
 	return 0;
 }

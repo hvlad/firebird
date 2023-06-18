@@ -6087,22 +6087,22 @@ void ISQL_get_version(bool call_by_create_db)
 		return;
 	}
 
-	const UCHAR* p = buffer;
-	while (*p != isc_info_end && *p != isc_info_truncated && p < buffer + sizeof(buffer))
+	for (Firebird::ClumpletReader p(Firebird::ClumpletReader::InfoResponse, buffer, sizeof(buffer)); !p.isEof(); p.moveNext())
 	{
-		const UCHAR item = (UCHAR) *p++;
-		const USHORT length = gds__vax_integer(p, sizeof(USHORT));
-		p += sizeof(USHORT);
+		UCHAR item = p.getClumpTag();
+		if (item == isc_info_end)
+			break;
+
 		switch (item)
 		{
 		case isc_info_ods_version:
-			isqlGlob.major_ods = gds__vax_integer(p, length);
+			isqlGlob.major_ods = p.getInt();
 			break;
 		case isc_info_ods_minor_version:
-			isqlGlob.minor_ods = gds__vax_integer(p, length);
+			isqlGlob.minor_ods = p.getInt();
 			break;
 		case isc_info_db_sql_dialect:
-			global_dialect_spoken = gds__vax_integer(p, length);
+			global_dialect_spoken = p.getInt();
 			if (isqlGlob.major_ods < ODS_VERSION10)
 			{
 				if (isqlGlob.SQL_dialect > SQL_DIALECT_V5 && setValues.Warnings)
@@ -6151,7 +6151,7 @@ void ISQL_get_version(bool call_by_create_db)
 		case isc_info_error:
 			// Error indicates an option was not understood by the
 			// remote server.
-			if (*p == isc_info_firebird_version)
+			if (p.getBytes()[0] == isc_info_firebird_version)
 			{
 				// must be an old or non Firebird server
 				break;
@@ -6197,8 +6197,8 @@ void ISQL_get_version(bool call_by_create_db)
 				// to put it all. It's a FULL or NOTHING answer. It grows with redirection.
 				// The command SHOW version that calls isc_version() will return more info.
 				isqlGlob.printf("Server version:%s", NEWLINE);
-				const UCHAR* q = p; // We don't want to spoil p with a wrong calculation.
-				const UCHAR* limit = q + length;
+				const UCHAR* q = p.getBytes(); // We don't want to spoil p with a wrong calculation.
+				const UCHAR* limit = q + p.getClumpLength();
 				for (int times = *q++; times && q < limit; --times)
 				{
 					int l = *q++;
@@ -6212,7 +6212,7 @@ void ISQL_get_version(bool call_by_create_db)
 			break;
 
 		case frb_info_att_charset:
-			isqlGlob.att_charset = gds__vax_integer(p, length);
+			isqlGlob.att_charset = p.getInt();
 			break;
 
 		default:
@@ -6220,7 +6220,6 @@ void ISQL_get_version(bool call_by_create_db)
 							item, NEWLINE);
 			break;
 		}
-		p += length;
 	}
 
 	if (isqlGlob.major_ods < ODS_VERSION8)

@@ -554,6 +554,9 @@ const SvcSwitches nbackOptions[] =
 	{"nbk_guid", putStringArgument, 0, isc_spb_nbk_guid, 0},
 	{"nbk_no_triggers", putOption, 0, isc_spb_nbk_no_triggers, 0},
 	{"nbk_direct", putStringArgument, 0, isc_spb_nbk_direct, 0},
+	{"nbk_clean_history", putSingleTag, 0, isc_spb_nbk_clean_history, 0},
+	{"nbk_keep_days", putIntArgument, 0, isc_spb_nbk_keep_days, 0},
+	{"nbk_keep_rows", putIntArgument, 0, isc_spb_nbk_keep_rows, 0},
 	{0, 0, 0, 0, 0}
 };
 

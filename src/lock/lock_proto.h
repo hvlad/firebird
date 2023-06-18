@@ -461,6 +461,7 @@ private:
 	void wait_for_request(thread_db*, lrq*, SSHORT);
 	bool init_shared_file(Firebird::CheckStatusWrapper*);
 	void get_shared_file_name(Firebird::PathName&, ULONG extend = 0) const;
+	bool check_shared_memory(Firebird::CheckStatusWrapper* statusVector);
 
 	static void blocking_action_thread(LockManager* lockMgr)
 	{

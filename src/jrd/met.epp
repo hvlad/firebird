@@ -350,9 +350,9 @@ void MET_update_partners(thread_db* tdbb)
 			continue;
 
 		// signal other processes
+		relation->rel_flags |= REL_check_partners;
 		LCK_lock(tdbb, relation->rel_partners_lock, LCK_EX, LCK_WAIT);
 		LCK_release(tdbb, relation->rel_partners_lock);
-		relation->rel_flags |= REL_check_partners;
 	}
 }
 
@@ -2975,9 +2975,13 @@ jrd_rel* MET_lookup_relation(thread_db* tdbb, const MetaName& name)
 		if (check_relation != relation)
 		{
 			LCK_release(tdbb, check_relation->rel_existence_lock);
-			LCK_release(tdbb, check_relation->rel_partners_lock);
+			if (!(check_relation->rel_flags & REL_check_partners))
+			{
+				check_relation->rel_flags |= REL_check_partners;
+				LCK_release(tdbb, check_relation->rel_partners_lock);
+				check_relation->rel_flags &= ~REL_check_partners;
+			}
 			LCK_release(tdbb, check_relation->rel_rescan_lock);
-			check_relation->rel_flags &= ~REL_check_partners;
 			check_relation->rel_flags |= REL_deleted;
 		}
 	}
@@ -3058,9 +3062,13 @@ jrd_rel* MET_lookup_relation_id(thread_db* tdbb, SLONG id, bool return_deleted)
 		if (check_relation != relation)
 		{
 			LCK_release(tdbb, check_relation->rel_existence_lock);
-			LCK_release(tdbb, check_relation->rel_partners_lock);
+			if (!(check_relation->rel_flags & REL_check_partners))
+			{
+				check_relation->rel_flags |= REL_check_partners;
+				LCK_release(tdbb, check_relation->rel_partners_lock);
+				check_relation->rel_flags &= ~REL_check_partners;
+			}
 			LCK_release(tdbb, check_relation->rel_rescan_lock);
-			check_relation->rel_flags &= ~REL_check_partners;
 			check_relation->rel_flags |= REL_deleted;
 		}
 	}
@@ -4463,8 +4471,11 @@ static int partners_ast_relation(void* ast_object)
 
 		AsyncContextHolder tdbb(dbb, FB_FUNCTION, relation->rel_partners_lock);
 
-		LCK_release(tdbb, relation->rel_partners_lock);
-		relation->rel_flags |= REL_check_partners;
+		if (!(relation->rel_flags & REL_check_partners))
+		{
+			relation->rel_flags |= REL_check_partners;
+			LCK_release(tdbb, relation->rel_partners_lock);
+		}
 	}
 	catch (const Exception&)
 	{} // no-op
@@ -5037,28 +5048,36 @@ void scan_partners(thread_db* tdbb, jrd_rel* relation)
  **************************************/
 	Attachment* attachment = tdbb->getAttachment();
 
-	AutoCacheRequest request(tdbb, irq_foreign1, IRQ_REQUESTS);
-	frgn* references = &relation->rel_foreign_refs;
-	int index_number = 0;
+	while (relation->rel_flags & REL_check_partners)
+	{
+		relation->rel_flags &= ~REL_check_partners;
+		LCK_lock(tdbb, relation->rel_partners_lock, LCK_SR, LCK_WAIT);
 
-	if (references->frgn_reference_ids)
-	{
-		delete references->frgn_reference_ids;
-		references->frgn_reference_ids = NULL;
-	}
-	if (references->frgn_relations)
-	{
-		delete references->frgn_relations;
-		references->frgn_relations = NULL;
-	}
-	if (references->frgn_indexes)
-	{
-		delete references->frgn_indexes;
-		references->frgn_indexes = NULL;
-	}
+		if (relation->rel_flags & REL_check_partners)
+			continue;
 
-	FOR(REQUEST_HANDLE request)
-		IDX IN RDB$INDICES CROSS
+		AutoCacheRequest request(tdbb, irq_foreign1, IRQ_REQUESTS);
+		frgn* references = &relation->rel_foreign_refs;
+		int index_number = 0;
+
+		if (references->frgn_reference_ids)
+		{
+			delete references->frgn_reference_ids;
+			references->frgn_reference_ids = NULL;
+		}
+		if (references->frgn_relations)
+		{
+			delete references->frgn_relations;
+			references->frgn_relations = NULL;
+		}
+		if (references->frgn_indexes)
+		{
+			delete references->frgn_indexes;
+			references->frgn_indexes = NULL;
+		}
+
+		FOR(REQUEST_HANDLE request)
+			IDX IN RDB$INDICES CROSS
 			RC IN RDB$RELATION_CONSTRAINTS
 			OVER RDB$INDEX_NAME CROSS
 			IND IN RDB$INDICES WITH
@@ -5068,99 +5087,97 @@ void scan_partners(thread_db* tdbb, jrd_rel* relation)
 			IDX.RDB$INDEX_ID > 0 AND
 			IND.RDB$INDEX_ID > 0 AND
 			IND.RDB$UNIQUE_FLAG = 1
-	{
-		//// ASF: Hack fix for CORE-4304, until nasty interactions between dfw and met are not resolved.
-		const jrd_rel* partner_relation = relation->rel_name == IND.RDB$RELATION_NAME ?
-			relation : MET_lookup_relation(tdbb, IND.RDB$RELATION_NAME);
-
-		if (partner_relation && !IDX.RDB$INDEX_INACTIVE && !IND.RDB$INDEX_INACTIVE)
 		{
-			// This seems a good candidate for vcl.
-			references->frgn_reference_ids =
-				vec<int>::newVector(*relation->rel_pool, references->frgn_reference_ids,
-							   index_number + 1);
+			//// ASF: Hack fix for CORE-4304, until nasty interactions between dfw and met are not resolved.
+			const jrd_rel* partner_relation = relation->rel_name == IND.RDB$RELATION_NAME ?
+				relation : MET_lookup_relation(tdbb, IND.RDB$RELATION_NAME);
 
-			(*references->frgn_reference_ids)[index_number] = IDX.RDB$INDEX_ID - 1;
+			if (partner_relation && !IDX.RDB$INDEX_INACTIVE && !IND.RDB$INDEX_INACTIVE)
+			{
+				// This seems a good candidate for vcl.
+				references->frgn_reference_ids =
+					vec<int>::newVector(*relation->rel_pool, references->frgn_reference_ids,
+					index_number + 1);
 
-			references->frgn_relations =
-				vec<int>::newVector(*relation->rel_pool, references->frgn_relations,
-							   index_number + 1);
+				(*references->frgn_reference_ids)[index_number] = IDX.RDB$INDEX_ID - 1;
 
-			(*references->frgn_relations)[index_number] = partner_relation->rel_id;
+				references->frgn_relations =
+					vec<int>::newVector(*relation->rel_pool, references->frgn_relations,
+					index_number + 1);
 
-			references->frgn_indexes =
-				vec<int>::newVector(*relation->rel_pool, references->frgn_indexes,
-							   index_number + 1);
+				(*references->frgn_relations)[index_number] = partner_relation->rel_id;
 
-			(*references->frgn_indexes)[index_number] = IND.RDB$INDEX_ID - 1;
+				references->frgn_indexes =
+					vec<int>::newVector(*relation->rel_pool, references->frgn_indexes,
+					index_number + 1);
 
-			index_number++;
+				(*references->frgn_indexes)[index_number] = IND.RDB$INDEX_ID - 1;
+
+				index_number++;
+			}
 		}
-	}
-	END_FOR
+		END_FOR
 
-	// Prepare for rescan of primary dependencies on relation's primary key and stale vectors.
+		// Prepare for rescan of primary dependencies on relation's primary key and stale vectors.
 
-	request.reset(tdbb, irq_foreign2, IRQ_REQUESTS);
-	prim* dependencies = &relation->rel_primary_dpnds;
-	index_number = 0;
+		request.reset(tdbb, irq_foreign2, IRQ_REQUESTS);
+		prim* dependencies = &relation->rel_primary_dpnds;
+		index_number = 0;
 
-	if (dependencies->prim_reference_ids)
-	{
-		delete dependencies->prim_reference_ids;
-		dependencies->prim_reference_ids = NULL;
-	}
-	if (dependencies->prim_relations)
-	{
-		delete dependencies->prim_relations;
-		dependencies->prim_relations = NULL;
-	}
-	if (dependencies->prim_indexes)
-	{
-		delete dependencies->prim_indexes;
-		dependencies->prim_indexes = NULL;
-	}
+		if (dependencies->prim_reference_ids)
+		{
+			delete dependencies->prim_reference_ids;
+			dependencies->prim_reference_ids = NULL;
+		}
+		if (dependencies->prim_relations)
+		{
+			delete dependencies->prim_relations;
+			dependencies->prim_relations = NULL;
+		}
+		if (dependencies->prim_indexes)
+		{
+			delete dependencies->prim_indexes;
+			dependencies->prim_indexes = NULL;
+		}
 
-	FOR(REQUEST_HANDLE request)
-		IDX IN RDB$INDICES CROSS
+		FOR(REQUEST_HANDLE request)
+			IDX IN RDB$INDICES CROSS
 			IND IN RDB$INDICES WITH
 			IDX.RDB$UNIQUE_FLAG = 1 AND
 			IDX.RDB$INDEX_ID > 0 AND
 			IND.RDB$INDEX_ID > 0 AND
 			IDX.RDB$RELATION_NAME EQ relation->rel_name.c_str() AND
 			IND.RDB$FOREIGN_KEY EQ IDX.RDB$INDEX_NAME
-	{
-		//// ASF: Hack fix for CORE-4304, until nasty interactions between dfw and met are not resolved.
-		const jrd_rel* partner_relation = relation->rel_name == IND.RDB$RELATION_NAME ?
-			relation : MET_lookup_relation(tdbb, IND.RDB$RELATION_NAME);
-
-		if (partner_relation && !IDX.RDB$INDEX_INACTIVE && !IND.RDB$INDEX_INACTIVE)
 		{
-			dependencies->prim_reference_ids =
-				vec<int>::newVector(*relation->rel_pool, dependencies->prim_reference_ids,
-							   index_number + 1);
+			//// ASF: Hack fix for CORE-4304, until nasty interactions between dfw and met are not resolved.
+			const jrd_rel* partner_relation = relation->rel_name == IND.RDB$RELATION_NAME ?
+				relation : MET_lookup_relation(tdbb, IND.RDB$RELATION_NAME);
 
-			(*dependencies->prim_reference_ids)[index_number] = IDX.RDB$INDEX_ID - 1;
+			if (partner_relation && !IDX.RDB$INDEX_INACTIVE && !IND.RDB$INDEX_INACTIVE)
+			{
+				dependencies->prim_reference_ids =
+					vec<int>::newVector(*relation->rel_pool, dependencies->prim_reference_ids,
+					index_number + 1);
 
-			dependencies->prim_relations =
-				vec<int>::newVector(*relation->rel_pool, dependencies->prim_relations,
-							   index_number + 1);
+				(*dependencies->prim_reference_ids)[index_number] = IDX.RDB$INDEX_ID - 1;
 
-			(*dependencies->prim_relations)[index_number] = partner_relation->rel_id;
+				dependencies->prim_relations =
+					vec<int>::newVector(*relation->rel_pool, dependencies->prim_relations,
+					index_number + 1);
 
-			dependencies->prim_indexes =
-				vec<int>::newVector(*relation->rel_pool, dependencies->prim_indexes,
-							   index_number + 1);
+				(*dependencies->prim_relations)[index_number] = partner_relation->rel_id;
 
-			(*dependencies->prim_indexes)[index_number] = IND.RDB$INDEX_ID - 1;
+				dependencies->prim_indexes =
+					vec<int>::newVector(*relation->rel_pool, dependencies->prim_indexes,
+					index_number + 1);
 
-			index_number++;
+				(*dependencies->prim_indexes)[index_number] = IND.RDB$INDEX_ID - 1;
+
+				index_number++;
+			}
 		}
+		END_FOR
 	}
-	END_FOR
-
-	LCK_lock(tdbb, relation->rel_partners_lock, LCK_SR, LCK_WAIT);
-	relation->rel_flags &= ~REL_check_partners;
 }
 
 

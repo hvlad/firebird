@@ -6442,9 +6442,8 @@ void JReplicator::freeEngineData(Firebird::CheckStatusWrapper* user_status)
 
 		try
 		{
-			AutoPtr<Applier> cleanupApplier(applier);
-			cleanupApplier->shutdown(tdbb);
-			fb_assert(!applier);
+			applier->shutdown(tdbb);
+			applier = nullptr;
 		}
 		catch (const Exception& ex)
 		{
@@ -7583,10 +7582,7 @@ void release_attachment(thread_db* tdbb, Jrd::Attachment* attachment, XThreadEns
 	attachment->att_replicator = nullptr;
 
 	while (attachment->att_repl_appliers.hasData())
-	{
-		AutoPtr<Applier> cleanupApplier(attachment->att_repl_appliers.pop());
-		cleanupApplier->shutdown(tdbb);
-	}
+		attachment->att_repl_appliers.pop()->shutdown(tdbb);
 
 	if (dbb->dbb_crypto_manager)
 		dbb->dbb_crypto_manager->detach(tdbb, attachment);
@@ -7770,7 +7766,7 @@ static void setEngineReleaseDelay(Database* dbb)
 	if (!dbb->dbb_plugin_config)
 		return;
 
-	unsigned maxLinger = 0;
+	time_t maxLinger = 0;
 
 	{ // scope
 		MutexLockGuard listGuardForLinger(databases_mutex, FB_FUNCTION);
@@ -8562,6 +8558,10 @@ static void getUserInfo(UserId& user, const DatabaseOptions& options, const char
 static void unwindAttach(thread_db* tdbb, const Exception& ex, FbStatusVector* userStatus, unsigned flags,
 	const char* filename, const DatabaseOptions& options, ICryptKeyCallback* callback)
 {
+	FbLocalStatus savUserStatus;		// Required to save status before transliterate
+	bool traced = false;
+
+	// Trace almost completed attachment
 	try
 	{
 		const auto att = tdbb->getAttachment();
@@ -8573,6 +8573,8 @@ static void unwindAttach(thread_db* tdbb, const Exception& ex, FbStatusVector* u
 
 			if (traceManager->needs(ITraceFactory::TRACE_EVENT_ATTACH))
 				traceManager->event_attach(&conn, flags & UNWIND_CREATE, ITracePlugin::RESULT_FAILED);
+
+			traced = true;
 		}
 		else
 		{
@@ -8584,7 +8586,7 @@ static void unwindAttach(thread_db* tdbb, const Exception& ex, FbStatusVector* u
 				flags |= UNWIND_NEW;
 			}
 
-			trace_failed_attach(filename, options, flags, userStatus, callback);
+			savUserStatus.loadFrom(userStatus);
 		}
 
 		const char* func = flags & UNWIND_CREATE ? "JProvider::createDatabase" : "JProvider::attachDatabase";
@@ -8595,6 +8597,7 @@ static void unwindAttach(thread_db* tdbb, const Exception& ex, FbStatusVector* u
 		// no-op
 	}
 
+	// Actual unwind
 	try
 	{
 		const auto dbb = tdbb->getDatabase();
@@ -8622,7 +8625,27 @@ static void unwindAttach(thread_db* tdbb, const Exception& ex, FbStatusVector* u
 				if (sAtt->getHandle())
 				{
 					attachment->att_flags |= flags;
-					release_attachment(tdbb, attachment);
+					try
+					{
+						release_attachment(tdbb, attachment);
+					}
+					catch (const Exception&)
+					{
+						// Minimum cleanup instead is needed to avoid repeated call
+						// of release_attachment() when decrementing reference counter of jAtt.
+						try
+						{
+							Attachment::destroy(attachment);
+						}
+						catch (const Exception&)
+						{
+							// Let's be absolutely minimalistic though
+							// this will almost for sure cause assertion in DEV_BUILD.
+							sAtt->cancel();
+							attachment->setStable(NULL);
+							sAtt->manualUnlock(attachment->att_flags);
+						}
+					}
 				}
 				else
 				{
@@ -8639,7 +8662,18 @@ static void unwindAttach(thread_db* tdbb, const Exception& ex, FbStatusVector* u
 		// no-op
 	}
 
-	return;
+	// Trace attachment that failed before enough for normal trace context of it was established
+	if (!traced)
+	{
+		try
+		{
+			trace_failed_attach(filename, options, flags, &savUserStatus, callback);
+		}
+		catch (const Exception&)
+		{
+			// no-op
+		}
+	}
 }
 
 

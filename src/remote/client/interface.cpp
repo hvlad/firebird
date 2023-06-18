@@ -65,6 +65,7 @@
 #include "../common/StatementMetadata.h"
 #include "../common/IntlParametersBlock.h"
 #include "../common/status.h"
+#include "../common/db_alias.h"
 
 #include "../auth/SecurityDatabase/LegacyClient.h"
 #include "../auth/SecureRemotePassword/client/SrpClient.h"
@@ -1096,7 +1097,7 @@ static void enqueue_receive(rem_port*, t_rmtque_fn, Rdb*, void*, Rrq::rrq_repeat
 static void dequeue_receive(rem_port*);
 static THREAD_ENTRY_DECLARE event_thread(THREAD_ENTRY_PARAM);
 static Rvnt* find_event(rem_port*, SLONG);
-static bool get_new_dpb(ClumpletWriter&, const ParametersSet&);
+static bool get_new_dpb(ClumpletWriter&, const ParametersSet&, bool);
 static void info(CheckStatusWrapper*, Rdb*, P_OP, USHORT, USHORT, USHORT,
 	const UCHAR*, USHORT, const UCHAR*, ULONG, UCHAR*);
 static bool init(CheckStatusWrapper*, ClntAuthBlock&, rem_port*, P_OP, PathName&,
@@ -1146,6 +1147,9 @@ inline static void reset(IStatus* status) throw()
 
 inline static void defer_packet(rem_port* port, PACKET* packet, bool sent = false)
 {
+	fb_assert(port->port_flags & PORT_lazy);
+	fb_assert(port->port_deferred_packets);
+
 	// hvlad: passed packet often is rdb->rdb_packet and therefore can be
 	// changed inside clear_queue. To not confuse caller we must preserve
 	// packet content
@@ -1182,16 +1186,17 @@ IAttachment* RProvider::attach(CheckStatusWrapper* status, const char* filename,
 		ClumpletWriter newDpb(ClumpletReader::dpbList, MAX_DPB_SIZE, dpb, dpb_length);
 		unsigned flags = ANALYZE_MOUNTS;
 
-		if (get_new_dpb(newDpb, dpbParam))
+		if (get_new_dpb(newDpb, dpbParam, loopback))
 			flags |= ANALYZE_USER_VFY;
 
 		if (loopback)
 			flags |= ANALYZE_LOOPBACK;
 
 		PathName expanded_name(filename);
-		PathName node_name;
+		resolveAlias(filename, expanded_name, nullptr);
 
 		ClntAuthBlock cBlock(&expanded_name, &newDpb, &dpbParam);
+		PathName node_name;
 		rem_port* port = analyze(cBlock, expanded_name, flags, newDpb, dpbParam, node_name, NULL, cryptCallback);
 
 		if (!port)
@@ -1861,16 +1866,17 @@ Firebird::IAttachment* RProvider::create(CheckStatusWrapper* status, const char*
 			reinterpret_cast<const UCHAR*>(dpb), dpb_length);
 		unsigned flags = ANALYZE_MOUNTS;
 
-		if (get_new_dpb(newDpb, dpbParam))
+		if (get_new_dpb(newDpb, dpbParam, loopback))
 			flags |= ANALYZE_USER_VFY;
 
 		if (loopback)
 			flags |= ANALYZE_LOOPBACK;
 
 		PathName expanded_name(filename);
-		PathName node_name;
+		resolveAlias(filename, expanded_name, nullptr);
 
 		ClntAuthBlock cBlock(&expanded_name, &newDpb, &dpbParam);
+		PathName node_name;
 		rem_port* port = analyze(cBlock, expanded_name, flags, newDpb, dpbParam, node_name, NULL, cryptCallback);
 
 		if (!port)
@@ -3637,9 +3643,21 @@ ResultSet* Statement::openCursor(CheckStatusWrapper* status, Firebird::ITransact
 		sqldata->p_sqldata_out_message_number = 0;	// out_msg_type
 		sqldata->p_sqldata_timeout = statement->rsr_timeout;
 
-		send_partial_packet(port, packet);
-		defer_packet(port, packet, true);
-		message->msg_address = NULL;
+		{
+			Firebird::Cleanup msgClean([&message] {
+				message->msg_address = NULL;
+			});
+
+			if (statement->rsr_flags.test(Rsr::DEFER_EXECUTE))
+			{
+				send_partial_packet(port, packet);
+				defer_packet(port, packet, true);
+			}
+			else
+			{
+				send_and_receive(status, rdb, packet);
+			}
+		}
 
 		ResultSet* rs = FB_NEW ResultSet(this, outFormat);
 		rs->addRef();
@@ -6278,7 +6296,7 @@ Firebird::IService* RProvider::attachSvc(CheckStatusWrapper* status, const char*
 		PathName node_name, expanded_name(service);
 
 		ClumpletWriter newSpb(ClumpletReader::spbList, MAX_DPB_SIZE, spb, spbLength);
-		const bool user_verification = get_new_dpb(newSpb, spbParam);
+		const bool user_verification = get_new_dpb(newSpb, spbParam, loopback);
 
 		ClntAuthBlock cBlock(NULL, &newSpb, &spbParam);
 		unsigned flags = 0;
@@ -7617,7 +7635,7 @@ static void finalize(rem_port* port)
 {
 /**************************************
  *
- *	d i s c o n n e c t
+ *	f i n a l i z e
  *
  **************************************
  *
@@ -7632,6 +7650,10 @@ static void finalize(rem_port* port)
 
 	// Avoid async send during finalize
 	RefMutexGuard guard(*port->port_write_sync, FB_FUNCTION);
+
+	// recheck with mutex taken
+	if (port->port_flags & PORT_detached)
+		return;
 
 	// Send a disconnect to the server so that it
 	// gracefully terminates.
@@ -7668,14 +7690,13 @@ static void finalize(rem_port* port)
 			port->send(packet);
 		}
 		REMOTE_free_packet(port, packet);
-		delete rdb;
-		port->port_context = nullptr;
 	}
 
 	// Cleanup the queue
 
 	delete port->port_deferred_packets;
 	port->port_deferred_packets = nullptr;
+	port->port_flags &= ~PORT_lazy;
 
 	port->port_flags |= PORT_detached;
 }
@@ -7695,6 +7716,9 @@ static void disconnect(rem_port* port, bool rmRef)
 
 	finalize(port);
 
+	Rdb* rdb = port->port_context;
+	port->port_context = nullptr;
+
 	// Clear context reference for the associated event handler
 	// to avoid SEGV during shutdown
 
@@ -7709,6 +7733,7 @@ static void disconnect(rem_port* port, bool rmRef)
 
 	port->port_flags |= PORT_disconnect;
 	port->disconnect();
+	delete rdb;
 
 	// Remove from active ports
 
@@ -7835,7 +7860,7 @@ static Rvnt* find_event( rem_port* port, SLONG id)
 }
 
 
-static bool get_new_dpb(ClumpletWriter& dpb, const ParametersSet& par)
+static bool get_new_dpb(ClumpletWriter& dpb, const ParametersSet& par, bool loopback)
 {
 /**************************************
  *
@@ -7849,7 +7874,7 @@ static bool get_new_dpb(ClumpletWriter& dpb, const ParametersSet& par)
  *
  **************************************/
 	bool redirection = Config::getRedirection();
-    if (((!redirection) && dpb.find(par.address_path)) || dpb.find(par.map_attach))
+    if (((loopback || !redirection) && dpb.find(par.address_path)) || dpb.find(par.map_attach))
 	{
 		status_exception::raise(Arg::Gds(isc_unavailable));
 	}
@@ -8409,6 +8434,10 @@ static void receive_packet_with_callback(rem_port* port, PACKET* packet)
 		case op_crypt_key_callback:
 			{
 				P_CRYPT_CALLBACK* cc = &packet->p_cc;
+				Cleanup ccData([&cc]() {
+					cc->p_cc_data.cstr_length = 0;
+					cc->p_cc_data.cstr_address = nullptr;
+				});
 
 				if (port->port_client_crypt_callback)
 				{
@@ -9015,17 +9044,20 @@ static void send_partial_packet(rem_port* port, PACKET* packet)
 
 	// Send packets that were deferred
 
-	for (rem_que_packet* p = port->port_deferred_packets->begin();
-		p < port->port_deferred_packets->end(); p++)
+	if (port->port_deferred_packets)
 	{
-		if (!p->sent)
+		for (rem_que_packet* p = port->port_deferred_packets->begin();
+			p < port->port_deferred_packets->end(); p++)
 		{
-			if (!port->send_partial(&p->packet))
+			if (!p->sent)
 			{
-				(Arg::Gds(isc_net_write_err) <<
-				 Arg::Gds(isc_random) << "send_partial_packet/send_partial").raise();
+				if (!port->send_partial(&p->packet))
+				{
+					(Arg::Gds(isc_net_write_err) <<
+					 Arg::Gds(isc_random) << "send_partial_packet/send_partial").raise();
+				}
+				p->sent = true;
 			}
-			p->sent = true;
 		}
 	}
 

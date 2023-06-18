@@ -110,7 +110,7 @@ namespace
 			options.set_log_errors(false);
 			options.set_dot_nl(true);
 			options.set_case_sensitive(!(flags & COMP_FLAG_CASE_INSENSITIVE));
-			options.set_utf8(!(flags & COMP_FLAG_LATIN));
+			options.set_encoding(flags & COMP_FLAG_LATIN ? RE2::Options::EncodingLatin1 : RE2::Options::EncodingUTF8);
 
 			re2::StringPiece sp((const char*) re2PatternStr.c_str(), re2PatternStr.length());
 			regexp = FB_NEW_POOL(pool) RE2(sp, options);
@@ -761,7 +761,7 @@ namespace
 			options.set_log_errors(false);
 			options.set_dot_nl(true);
 			options.set_case_sensitive(!(flags & COMP_FLAG_CASE_INSENSITIVE));
-			options.set_utf8(!(flags & COMP_FLAG_LATIN));
+			options.set_encoding(flags & COMP_FLAG_LATIN ? RE2::Options::EncodingLatin1 : RE2::Options::EncodingUTF8);
 
 			re2::StringPiece sp((const char*) finalRe2Pattern.c_str(), finalRe2Pattern.length());
 			regexp = FB_NEW_POOL(pool) RE2(sp, options);

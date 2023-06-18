@@ -279,10 +279,10 @@ namespace
 
 				PathName file(par->value.ToPathName());
 				PathUtils::fixupSeparators(file);
-				if (PathUtils::isRelative(file))
+				if (PathUtils::isRelative(file) && !ISC_check_if_remote(file, false))
 				{
 					gds__log("Value %s configured for alias %s "
-						"is not a fully qualified path name, ignored",
+						"is not a fully qualified path name nor remote server reference, ignored",
 								file.c_str(), par->name.c_str());
 					continue;
 				}
@@ -410,9 +410,9 @@ static inline bool hasSeparator(const PathName& name)
 	return false;
 }
 
-// Search for 'alias' in databases.conf, return its value in 'file' if found. Else set file to alias.
+// Search for 'alias' in databases.conf, return its value in 'file' if found.
 // Returns true if alias is found in databases.conf.
-static bool resolveAlias(const PathName& alias, PathName& file, RefPtr<const Config>* config)
+bool resolveAlias(const PathName& alias, PathName& file, RefPtr<const Config>* config)
 {
 	PathName correctedAlias = alias;
 	PathUtils::fixupSeparators(correctedAlias);
@@ -544,8 +544,13 @@ bool expandDatabaseName(Firebird::PathName alias,
 			{
 				Id* i = aliasesConf().idHash.lookup(id);
 				if (i)
+				{
+					UCharBuffer oldId;
+					os_utils::getUniqueFileId(i->db->name.c_str(), oldId);
+					if (oldId == id)	// Yes, that's really same file, and we should use same config
 					db = i->db;
 			}
+		}
 		}
 #endif
 		*config = (db && db->config.hasData()) ? db->config : Config::getDefaultConfig();

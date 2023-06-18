@@ -619,8 +619,8 @@ without specifying a character set.', NULL);
 ('no_update', 'several', 'dfw.epp', NULL, 0, 520, NULL, 'cannot update', NULL, NULL);
 ('cursor_already_open', NULL, 'exe.epp', NULL, 0, 521, NULL, 'Cursor is already open', NULL, NULL);
 ('stack_trace', 'looper', 'exe.epp', NULL, 0, 522, NULL, '@1', NULL, NULL);
-('ctx_var_not_found', NULL, 'functions.cpp', NULL, 0, 523, NULL, 'Context variable @1 is not found in namespace @2', NULL, NULL);
-('ctx_namespace_invalid', NULL, 'functions.cpp', NULL, 0, 524, NULL, 'Invalid namespace name @1 passed to @2', NULL, NULL);
+('ctx_var_not_found', NULL, 'functions.cpp', NULL, 0, 523, NULL, 'Context variable ''@1'' is not found in namespace ''@2''', NULL, NULL);
+('ctx_namespace_invalid', NULL, 'functions.cpp', NULL, 0, 524, NULL, 'Invalid namespace name ''@1'' passed to @2', NULL, NULL);
 ('ctx_too_big', NULL, 'functions.cpp', NULL, 0, 525, NULL, 'Too many context variables', NULL, NULL);
 ('ctx_bad_argument', NULL, 'functions.cpp', NULL, 0, 526, NULL, 'Invalid argument passed to @1', NULL, NULL);
 ('identifier_too_long', NULL, 'par.cpp', NULL, 0, 527, NULL, 'BLR syntax error. Identifier @1... is too long', NULL, NULL);
@@ -3593,7 +3593,7 @@ Analyzing database pages ...', NULL, NULL);
 ('nbackup_lostguid_l0bk', 'NBackup::restore_database', 'nbackup.cpp', NULL, 24, 67, NULL, 'Cannot get backup guid clumplet from L0 backup', NULL, NULL)
 (NULL, 'nbackup', 'nbackup.cpp', NULL, 24, 68, NULL, 'Physical Backup Manager version @1', NULL, NULL)
 (NULL, 'restore_database', 'nbackup.cpp', NULL, 24, 69, NULL, 'Enter name of the backup file of level @1 ("." - do not restore further):', NULL, NULL)
-(NULL, 'usage', 'nbackup.cpp', NULL, 24, 70, NULL, '  -D(IRECT) [ON | OFF]                   Use or not direct I/O when backing up database', NULL, NULL)
+(NULL, 'usage', 'nbackup.cpp', NULL, 24, 70, NULL, '  -D(IRECT) <ON | OFF>                   Use or not direct I/O when backing up database', NULL, NULL)
 ('nbackup_switchd_parameter', 'main', 'nbackup.cpp', NULL, 24, 71, NULL, 'Wrong parameter @1 for switch -D, need ON or OFF', NULL, NULL)
 (NULL, 'usage', 'nbackup.cpp', NULL, 24, 72, NULL, 'special options are:', NULL, NULL)
 ('nbackup_user_stop', 'checkCtrlC()', 'nbackup.cpp', NULL, 24, 73, NULL, 'Terminated due to user request', NULL, NULL)
@@ -3605,6 +3605,13 @@ Analyzing database pages ...', NULL, NULL);
 (NULL, 'usage', 'nbackup.cpp', NULL, 24, 79, NULL, '  -INPLACE option could corrupt the database that has changed since previous restore.', NULL, NULL)
 (NULL, 'usage', 'nbackup.cpp', NULL, 24, 80, NULL, '  -SEQ(UENCE)                            Preserve original replication sequence', NULL, NULL)
 ('nbackup_seq_misuse', 'nbackup', 'nbackup.cpp', NULL, 24, 81, NULL, 'Switch -SEQ(UENCE) can be used only with -FIXUP or -RESTORE', NULL, NULL)
+(NULL, 'usage', 'nbackup.cpp', NULL, 24, 82, NULL, '  -CLEAN_HIST(ORY)                       Clean old records from backup history', NULL, NULL)
+(NULL, 'usage', 'nbackup.cpp', NULL, 24, 83, NULL, '  -K(EEP) <N> <(R)OWS | (D)AYS>          How many recent rows (or days back from today) should be kept in the history', NULL, NULL)
+('nbackup_wrong_param', 'nbackup', 'nbackup.cpp', NULL, 24, 84, NULL, 'Wrong parameter value for switch @1', NULL, NULL)
+('nbackup_clean_hist_misuse', 'nbackup', 'nbackup.cpp', NULL, 24, 85, NULL, 'Switch -CLEAN_HISTORY can be used only with -BACKUP', NULL, NULL)
+('nbackup_clean_hist_missed', 'nbackup', 'nbackup.cpp', NULL, 24, 86, NULL, '-KEEP can be used only with -CLEAN_HISTORY', NULL, NULL)
+('nbackup_keep_hist_missed', 'nbackup', 'nbackup.cpp', NULL, 24, 87, NULL, '-KEEP is required with -CLEAN_HISTORY', NULL, NULL)
+('nbackup_second_keep_switch', 'nbackup', 'nbackup.cpp', NULL, 24, 88, NULL, '-KEEP can be used one time only', NULL, NULL)
 -- FBTRACEMGR
 -- All messages use the new format.
 (NULL, 'usage', 'TraceCmdLine.cpp', NULL, 25, 1, NULL, 'Firebird Trace Manager version @1', NULL, NULL)

@@ -1457,6 +1457,11 @@ COMMIT WORK;
 (-901, '54', '023', 24, 75, 'nbackup_deco_parse', NULL, NULL)
 (-901, '00', '000', 24, 77, 'nbackup_lostrec_guid_db', NULL, NULL)
 (-901, '00', '000', 24, 81, 'nbackup_seq_misuse', NULL, NULL)
+(-901, '00', '000', 24, 84, 'nbackup_wrong_param', NULL, NULL)
+(-901, '00', '000', 24, 85, 'nbackup_clean_hist_misuse', NULL, NULL)
+(-901, '00', '000', 24, 86, 'nbackup_clean_hist_missed', NULL, NULL)
+(-901, '00', '000', 24, 87, 'nbackup_keep_hist_missed', NULL, NULL)
+(-901, '00', '000', 24, 88, 'nbackup_second_keep_switch', NULL, NULL)
 -- FBTRACEMGR
 (-901, '00', '000', 25, 30, 'trace_conflict_acts', NULL, NULL)
 (-901, '00', '000', 25, 31, 'trace_act_notfound', NULL, NULL)

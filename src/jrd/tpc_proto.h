@@ -213,6 +213,7 @@ private:
 		Firebird::SharedMemory<TransactionStatusBlock>* memory;
 		Lock existenceLock;
 		TipCache* cache;
+		bool acceptAst;
 
 		inline static TpcBlockNumber& generate(const void* /*sender*/, StatusBlockData* item)
 		{

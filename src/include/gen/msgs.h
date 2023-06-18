@@ -544,8 +544,8 @@ static const struct {
 	{335544840, "cannot update"},		/* no_update */
 	{335544841, "Cursor is already open"},		/* cursor_already_open */
 	{335544842, "@1"},		/* stack_trace */
-	{335544843, "Context variable @1 is not found in namespace @2"},		/* ctx_var_not_found */
-	{335544844, "Invalid namespace name @1 passed to @2"},		/* ctx_namespace_invalid */
+	{335544843, "Context variable '@1' is not found in namespace '@2'"},		/* ctx_var_not_found */
+	{335544844, "Invalid namespace name '@1' passed to @2"},		/* ctx_namespace_invalid */
 	{335544845, "Too many context variables"},		/* ctx_too_big */
 	{335544846, "Invalid argument passed to @1"},		/* ctx_bad_argument */
 	{335544847, "BLR syntax error. Identifier @1... is too long"},		/* identifier_too_long */
@@ -1462,6 +1462,11 @@ Data source : @4"},		/* eds_statement */
 	{337117259, "Too complex decompress command (> @1 arguments)"},		/* nbackup_deco_parse */
 	{337117261, "Cannot find record for database \"@1\" backup GUID @2 in the backup history"},		/* nbackup_lostrec_guid_db */
 	{337117265, "Switch -SEQ(UENCE) can be used only with -FIXUP or -RESTORE"},		/* nbackup_seq_misuse */
+	{337117268, "Wrong parameter value for switch @1"},		/* nbackup_wrong_param */
+	{337117269, "Switch -CLEAN_HISTORY can be used only with -BACKUP"},		/* nbackup_clean_hist_misuse */
+	{337117270, "-KEEP can be used only with -CLEAN_HISTORY"},		/* nbackup_clean_hist_missed */
+	{337117271, "-KEEP is required with -CLEAN_HISTORY"},		/* nbackup_keep_hist_missed */
+	{337117272, "-KEEP can be used one time only"},		/* nbackup_second_keep_switch */
 	{337182750, "conflicting actions \"@1\" and \"@2\" found"},		/* trace_conflict_acts */
 	{337182751, "action switch not found"},		/* trace_act_notfound */
 	{337182752, "switch \"@1\" must be set only once"},		/* trace_switch_once */

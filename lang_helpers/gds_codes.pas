@@ -2921,6 +2921,16 @@ const
 	gds_nbackup_lostrec_guid_db          = 337117261;
 	isc_nbackup_seq_misuse               = 337117265;
 	gds_nbackup_seq_misuse               = 337117265;
+	isc_nbackup_wrong_param              = 337117268;
+	gds_nbackup_wrong_param              = 337117268;
+	isc_nbackup_clean_hist_misuse        = 337117269;
+	gds_nbackup_clean_hist_misuse        = 337117269;
+	isc_nbackup_clean_hist_missed        = 337117270;
+	gds_nbackup_clean_hist_missed        = 337117270;
+	isc_nbackup_keep_hist_missed         = 337117271;
+	gds_nbackup_keep_hist_missed         = 337117271;
+	isc_nbackup_second_keep_switch       = 337117272;
+	gds_nbackup_second_keep_switch       = 337117272;
 	isc_trace_conflict_acts              = 337182750;
 	gds_trace_conflict_acts              = 337182750;
 	isc_trace_act_notfound               = 337182751;

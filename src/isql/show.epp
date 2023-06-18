@@ -46,6 +46,7 @@
 #include "../jrd/intl.h"
 #include "../common/intlobj_new.h"
 #include "../common/classes/AlignedBuffer.h"
+#include "../common/classes/ClumpletReader.h"
 #include "../isql/isql_proto.h"
 #include "../isql/show_proto.h"
 #include "../isql/iutils_proto.h"
@@ -256,6 +257,7 @@ static const UCHAR db_items[] =
 	fb_info_wire_crypt,
 	fb_info_creation_timestamp_tz,
 	isc_info_creation_date,
+	fb_info_replica_mode,
 	isc_info_end
 };
 
@@ -408,12 +410,12 @@ bool SHOW_dbb_parameters(Firebird::IAttachment* db_handle,
 
 	*info_buf = '\0';
 	SCHAR* info = info_buf;
-	for (const UCHAR* d = buffer; *d != isc_info_end;)
+
+	for (Firebird::ClumpletReader p(Firebird::ClumpletReader::InfoResponse, buffer, sizeof(buffer)); !p.isEof(); p.moveNext())
 	{
+		UCHAR item = p.getClumpTag();
 		SINT64 value_out = 0;
-		const UCHAR item = *d++;
-		const int length = ISQL_vax_integer(d, 2);
-		d += 2;
+
 		/*
 		 * This is not the best solution but it fixes the lack of <LF> characters
 		 * in Windows ISQL.  This will need to remain until we modify the messages
@@ -426,12 +428,12 @@ bool SHOW_dbb_parameters(Firebird::IAttachment* db_handle,
 			break;
 
 		case isc_info_page_size:
-			value_out = ISQL_vax_integer(d, length);
+			value_out = p.getInt();
 			sprintf(info, "PAGE_SIZE %" SQUADFORMAT"%s", value_out, separator);
 			break;
 
 		case isc_info_db_size_in_pages:
-			value_out = ISQL_vax_integer(d, length);
+			value_out = p.getInt();
 			if (translate)
 			{
 				IUTILS_msg_get(NUMBER_PAGES, msg, SafeArg() << value_out);
@@ -442,7 +444,7 @@ bool SHOW_dbb_parameters(Firebird::IAttachment* db_handle,
 			break;
 
 		case fb_info_pages_used:
-			value_out = ISQL_vax_integer(d, length);
+			value_out = p.getInt();
 			if (translate)
 			{
 				IUTILS_msg_get(NUMBER_USED_PAGES, msg, SafeArg() << value_out);
@@ -453,7 +455,7 @@ bool SHOW_dbb_parameters(Firebird::IAttachment* db_handle,
 			break;
 
 		case fb_info_pages_free:
-			value_out = ISQL_vax_integer(d, length);
+			value_out = p.getInt();
 			if (translate)
 			{
 				IUTILS_msg_get(NUMBER_FREE_PAGES, msg, SafeArg() << value_out);
@@ -464,8 +466,7 @@ bool SHOW_dbb_parameters(Firebird::IAttachment* db_handle,
 			break;
 
 		case fb_info_crypt_state:
-			value_out = ISQL_vax_integer(d, length);
-
+			value_out = p.getInt();
 			if (translate)
 			{
 				Firebird::string s;
@@ -495,7 +496,7 @@ bool SHOW_dbb_parameters(Firebird::IAttachment* db_handle,
 			break;
 
 		case isc_info_sweep_interval:
-			value_out = ISQL_vax_integer(d, length);
+			value_out = p.getInt();
 			if (translate)
 			{
 				IUTILS_msg_get(SWEEP_INTERV, msg, SafeArg() << value_out);
@@ -506,32 +507,32 @@ bool SHOW_dbb_parameters(Firebird::IAttachment* db_handle,
 			break;
 
 		case isc_info_forced_writes:
-			value_out = ISQL_vax_integer (d, length);
+			value_out = p.getInt();
 			sprintf (info, "Forced Writes are %s%s", (value_out == 1 ? "ON" : "OFF"), separator);
 			break;
 
 		case isc_info_oldest_transaction :
-			value_out = ISQL_vax_integer (d, length);
+			value_out = p.getInt();
 			sprintf(info, "Transaction - oldest = %" SQUADFORMAT"%s", value_out, separator);
 			break;
 
 		case isc_info_oldest_active :
-			value_out = ISQL_vax_integer (d, length);
+			value_out = p.getInt();
 			sprintf(info, "Transaction - oldest active = %" SQUADFORMAT"%s", value_out, separator);
 			break;
 
 		case isc_info_oldest_snapshot :
-			value_out = ISQL_vax_integer (d, length);
+			value_out = p.getInt();
 			sprintf(info, "Transaction - oldest snapshot = %" SQUADFORMAT"%s", value_out, separator);
 			break;
 
 		case isc_info_next_transaction :
-			value_out = ISQL_vax_integer (d, length);
+			value_out = p.getInt();
 			sprintf (info, "Transaction - Next = %" SQUADFORMAT"%s", value_out, separator);
 			break;
 
 		case isc_info_base_level:
-			value_out = ISQL_vax_integer(d, length);
+			value_out = p.getInt();
 			if (translate)
 			{
 				IUTILS_msg_get(BASE_LEVEL, msg, SafeArg() << value_out);
@@ -542,7 +543,7 @@ bool SHOW_dbb_parameters(Firebird::IAttachment* db_handle,
 			break;
 
 		case isc_info_limbo:
-			value_out = ISQL_vax_integer(d, length);
+			value_out = p.getInt();
 			if (translate)
 			{
 				IUTILS_msg_get(LIMBO, msg, SafeArg() << value_out);
@@ -553,49 +554,49 @@ bool SHOW_dbb_parameters(Firebird::IAttachment* db_handle,
 			break;
 
 		case isc_info_ods_version:
-			isqlGlob.major_ods = ISQL_vax_integer(d, length);
+			isqlGlob.major_ods = p.getInt();
 			break;
 		case isc_info_ods_minor_version:
-			value_out = ISQL_vax_integer(d, length);
+			value_out = p.getInt();
 			sprintf(info, "ODS = %" SLONGFORMAT".%" SQUADFORMAT"%s",
 					(SLONG) isqlGlob.major_ods, value_out, separator);
 			break;
 
 		case fb_info_wire_crypt:
-			if (d && length)
-				sprintf (info, "Wire crypt plugin: %.*s%s", length, d, separator);
+			if (p.getClumpLength())
+				sprintf (info, "Wire crypt plugin: %.*s%s", p.getClumpLength(), p.getBytes(), separator);
 			break;
 
 		case isc_info_creation_date:
-			if (length == sizeof(ISC_TIMESTAMP) && !crdatePrinted)
+			if (p.getClumpLength() == sizeof(ISC_TIMESTAMP) && !crdatePrinted)
 			{
 				ISC_TIMESTAMP ts;
 
-				const UCHAR* p = d;
-				ts.timestamp_date = ISQL_vax_integer(p, sizeof(ISC_DATE));
-				p += sizeof(ISC_DATE);
-				ts.timestamp_time = ISQL_vax_integer(p, sizeof(ISC_TIME));
+				const UCHAR* t = p.getBytes();
+				ts.timestamp_date = ISQL_vax_integer(t, sizeof(ISC_DATE));
+				t += sizeof(ISC_DATE);
+				ts.timestamp_time = ISQL_vax_integer(t, sizeof(ISC_TIME));
 
 				struct tm time;
 				isc_decode_timestamp(&ts, &time);
 
-				sprintf(info, "Creation date: %s %d, %d %d:%02d:%02d\n",
+				sprintf(info, "Creation date: %s %d, %d %d:%02d:%02d%s",
 					FB_SHORT_MONTHS[time.tm_mon], time.tm_mday, time.tm_year + 1900,
-					time.tm_hour, time.tm_min, time.tm_sec);
+					time.tm_hour, time.tm_min, time.tm_sec, separator);
 			}
 			break;
 
 		case fb_info_creation_timestamp_tz:
-			if (length == sizeof(ISC_TIMESTAMP_TZ))
+			if (p.getClumpLength() == sizeof(ISC_TIMESTAMP))
 			{
 				ISC_TIMESTAMP_TZ tsz;
 
-				const UCHAR* p = d;
-				tsz.utc_timestamp.timestamp_date = ISQL_vax_integer(p, sizeof(ISC_DATE));
-				p += sizeof(ISC_DATE);
-				tsz.utc_timestamp.timestamp_time = ISQL_vax_integer(p, sizeof(ISC_TIME));
-				p += sizeof(ISC_TIME);
-				tsz.time_zone = ISQL_vax_integer(p, sizeof(ULONG));
+				const UCHAR* t = p.getBytes();
+				tsz.utc_timestamp.timestamp_date = ISQL_vax_integer(t, sizeof(ISC_DATE));
+				t += sizeof(ISC_DATE);
+				tsz.utc_timestamp.timestamp_time = ISQL_vax_integer(t, sizeof(ISC_TIME));
+				t += sizeof(ISC_TIME);
+				tsz.time_zone = ISQL_vax_integer(t, sizeof(ULONG));
 
 				unsigned year, month, day, hours, minutes, seconds, fractions;
 				char timeZone[Firebird::TimeZoneUtil::MAX_SIZE];
@@ -606,16 +607,16 @@ bool SHOW_dbb_parameters(Firebird::IAttachment* db_handle,
 				if (ISQL_errmsg(fbStatus))
 					break;
 
-				sprintf(info, "Creation date: %s %d, %d %d:%02d:%02d %s\n",
+				sprintf(info, "Creation date: %s %d, %d %d:%02d:%02d %s%s",
 					FB_SHORT_MONTHS[month - 1], day, year,
-					hours, minutes, seconds, timeZone);
+					hours, minutes, seconds, timeZone, separator);
 
 				crdatePrinted = true;
 			}
 			break;
 
 		case fb_info_protocol_version:
-			value_out = ISQL_vax_integer(d, length);
+			value_out = p.getInt();
 			if (value_out)
 				sprintf(info, "Protocol version = %" SQUADFORMAT"%s", value_out, separator);
 			else
@@ -627,8 +628,8 @@ bool SHOW_dbb_parameters(Firebird::IAttachment* db_handle,
 			{
 				// Will print with garbage for now.
 				//It's sprintf(info, "DB/Host = %.*s", length, d);
-				const UCHAR* s = d;
-				const UCHAR* end = s + length;
+				const UCHAR* s = p.getBytes();
+				const UCHAR* end = s + p.getClumpLength();
 				++s; // Skip useless indicator.
 				int len = *s++;
 				printf("DB = %.*s\n", len, s);
@@ -643,11 +644,21 @@ bool SHOW_dbb_parameters(Firebird::IAttachment* db_handle,
 			break;
 #endif
 
+		case fb_info_replica_mode:
+			{
+				value_out = p.getInt();
+				const char* mode =
+					(value_out == fb_info_replica_none) ? "NONE" :
+					(value_out == fb_info_replica_read_only) ? "READ_ONLY" :
+					(value_out == fb_info_replica_read_write) ? "READ_WRITE" :
+					"unknown";
+				sprintf(info, "Replica mode: %s%s", mode, separator);
+			}
+			break;
+
 		case isc_info_truncated:
 			return info > info_buf; // If we got some items, we are (partially) successful.
 		}
-
-		d += length;
 		info += strlen(info);
 	}
 
@@ -6455,17 +6466,10 @@ static processing_state show_users()
 
 	processing_state rc = OBJECT_NOT_FOUND;
 
-	for (const UCHAR* data = buffer; *data != isc_info_end;)
+	for (Firebird::ClumpletReader p(Firebird::ClumpletReader::InfoResponse, buffer, sizeof(buffer)); !p.isEof(); p.moveNext())
 	{
-		const UCHAR item = *data++;
-		const int length = gds__vax_integer(data, 2);
-		data += 2;
-
-		switch (item)
+		switch (p.getClumpTag())
 		{
-		case isc_info_end:
-			break;
-
 		case isc_info_user_names:
 			{
 				if (rc == OBJECT_NOT_FOUND)
@@ -6476,9 +6480,9 @@ static processing_state show_users()
 					rc = SKIP; // We found at least one user.
 				}
 
-				int len = *data;
-				fb_assert(len == length - 1);
-				const UCHAR* uname = data + 1;
+				unsigned len = p.getBytes()[0];
+				fb_assert(len == p.getClumpLength() - 1);
+				const UCHAR* uname = p.getBytes() + 1;
 				// Let's mark all attachments with our same user with a # prefix.
 				bool same(len == my_user->vary_length && !memcmp(my_user->vary_string, uname, len));
 				isqlGlob.printf("%c %.*s", same ? '#' : ' ', len, uname);
@@ -6493,10 +6497,6 @@ static processing_state show_users()
 			isqlGlob.printf("%s\n", msg);
 			return rc; // If we got some items, we are (partially) successful.
 		}
-
-		data += length;
-		if (data >= buffer + sizeof(buffer))
-			break;
 	}
 
 	return rc;

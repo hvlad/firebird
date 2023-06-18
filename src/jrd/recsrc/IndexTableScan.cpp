@@ -320,7 +320,7 @@ void IndexTableScan::cacheRecordInfo(thread_db* tdbb) const
 			// skip this record if:
 			// 1) there is an inversion tree for this index and this record
 			//    is not in the bitmap for the inversion, or
-			// 2) the record has already been visited, or
+			// 2) the record has already been visited
 
 			if ((!(impure->irsb_flags & irsb_mustread) &&
 				(!impure->irsb_nav_bitmap ||

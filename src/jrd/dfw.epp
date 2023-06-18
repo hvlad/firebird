@@ -2646,10 +2646,9 @@ static bool grant_privileges(thread_db* tdbb, SSHORT phase, DeferredWork* work, 
 	switch (phase)
 	{
 	case 1:
-	case 2:
 		return true;
 
-	case 3:
+	case 2:
 		GRANT_privileges(tdbb, work->dfw_name, work->dfw_id, transaction);
 		break;
 
@@ -4520,9 +4519,9 @@ static void check_partners(thread_db* tdbb, const USHORT rel_id)
 	jrd_rel *relation = (*relations)[rel_id];
 	fb_assert(relation);
 
+	relation->rel_flags |= REL_check_partners;
 	LCK_lock(tdbb, relation->rel_partners_lock, LCK_EX, LCK_WAIT);
 	LCK_release(tdbb, relation->rel_partners_lock);
-	relation->rel_flags |= REL_check_partners;
 }
 
 
@@ -5719,6 +5718,7 @@ static bool make_version(thread_db* tdbb, SSHORT phase, DeferredWork* work, jrd_
 						FLD IN RDB$FIELDS WITH
 						RFR.RDB$RELATION_NAME EQ work->dfw_name.c_str() AND
 						RFR.RDB$FIELD_SOURCE EQ FLD.RDB$FIELD_NAME
+						SORTED BY RFR.RDB$FIELD_POSITION
 				{
 					// Update RFR to reflect new fields id
 
@@ -5921,9 +5921,12 @@ static bool make_version(thread_db* tdbb, SSHORT phase, DeferredWork* work, jrd_
 
 							defaultRequest->validateTimeStamp();
 
-							TRA_attach_request(transaction, defaultRequest);
-							dsc* result = EVL_expr(tdbb, defaultRequest, defaultNode);
-							TRA_detach_request(defaultRequest);
+							dsc* result = nullptr;
+							{ // scope
+								Firebird::Cleanup detach([&defaultRequest] {TRA_detach_request(defaultRequest);});
+								TRA_attach_request(transaction, defaultRequest);
+								result = EVL_expr(tdbb, defaultRequest, defaultNode);
+							}
 
 							if (result)
 							{

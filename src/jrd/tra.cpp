@@ -238,6 +238,15 @@ void TRA_detach_request(Jrd::jrd_req* request)
 
 	// Release stored looper savepoints
 	Savepoint::destroy(request->req_savepoints);
+	fb_assert(!request->req_savepoints);
+
+	// Release procedure savepoints used by this request
+	if (request->req_proc_sav_point)
+	{
+		fb_assert(request->req_flags & req_proc_fetch);
+		Savepoint::destroy(request->req_proc_sav_point);
+		fb_assert(!request->req_proc_sav_point);
+	}
 
 	// Remove request from the doubly linked list
 	if (request->req_tra_next)
@@ -3566,16 +3575,8 @@ static void transaction_start(thread_db* tdbb, jrd_tra* trans)
 
 		if (!(trans->tra_flags & TRA_read_committed))
 		{
-			try
-			{
-				trans->tra_snapshot_handle = dbb->dbb_tip_cache->beginSnapshot(
-					tdbb, attachment->att_attachment_id, trans->tra_snapshot_number);
-			}
-			catch (const Firebird::Exception&)
-			{
-				LCK_release(tdbb, lock);
-				throw;
-			}
+			trans->tra_snapshot_handle = dbb->dbb_tip_cache->beginSnapshot(
+				tdbb, attachment->att_attachment_id, trans->tra_snapshot_number);
 		}
 
 		// Next task is to find the oldest active transaction on the system.  This
@@ -3754,6 +3755,8 @@ static void transaction_start(thread_db* tdbb, jrd_tra* trans)
 	}
 	catch (const Firebird::Exception&)
 	{
+		LCK_release(tdbb, lock);
+		trans->tra_lock = nullptr;
 		trans->unlinkFromAttachment();
 		throw;
  	}

@@ -621,6 +621,9 @@
 #define isc_spb_nbk_file			6
 #define isc_spb_nbk_direct			7
 #define isc_spb_nbk_guid			8
+#define isc_spb_nbk_clean_history	9
+#define isc_spb_nbk_keep_days		10
+#define isc_spb_nbk_keep_rows		11
 #define isc_spb_nbk_no_triggers		0x01
 #define isc_spb_nbk_inplace			0x02
 #define isc_spb_nbk_sequence		0x04

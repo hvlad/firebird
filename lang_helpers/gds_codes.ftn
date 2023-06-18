@@ -2926,6 +2926,16 @@ C --
       PARAMETER (GDS__nbackup_lostrec_guid_db          = 337117261)
       INTEGER*4 GDS__nbackup_seq_misuse              
       PARAMETER (GDS__nbackup_seq_misuse               = 337117265)
+      INTEGER*4 GDS__nbackup_wrong_param             
+      PARAMETER (GDS__nbackup_wrong_param              = 337117268)
+      INTEGER*4 GDS__nbackup_clean_hist_misuse       
+      PARAMETER (GDS__nbackup_clean_hist_misuse        = 337117269)
+      INTEGER*4 GDS__nbackup_clean_hist_missed       
+      PARAMETER (GDS__nbackup_clean_hist_missed        = 337117270)
+      INTEGER*4 GDS__nbackup_keep_hist_missed        
+      PARAMETER (GDS__nbackup_keep_hist_missed         = 337117271)
+      INTEGER*4 GDS__nbackup_second_keep_switch      
+      PARAMETER (GDS__nbackup_second_keep_switch       = 337117272)
       INTEGER*4 GDS__trace_conflict_acts             
       PARAMETER (GDS__trace_conflict_acts              = 337182750)
       INTEGER*4 GDS__trace_act_notfound              
