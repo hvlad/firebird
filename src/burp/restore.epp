@@ -590,9 +590,9 @@ int RESTORE_restore (const TEXT* file_name, const TEXT* database_name)
 	{
 		FbLocalStatus st;
 		(Firebird::Arg::Gds(ENCODE_ISC_MSG(246, burp_msg_fac)) <<
-		// msg 246 Database is not online due to failure to activate one or more indices.
+			// msg 246 Database is not online due to failure to activate one or more indices.
 		 Firebird::Arg::Gds(ENCODE_ISC_MSG(247, burp_msg_fac))).copyTo(&st);
-		// msg 247 Run gfix -online to bring database online without active indices.
+			// msg 247 Run gfix -online to bring database online without active indices.
 		BURP_print_status(true, &st);
 
 		return FINI_DB_NOT_ONLINE;
@@ -2990,19 +2990,19 @@ rec_type get_data(BurpGlobals* tdgbl, burp_rel* relation, bool skip_relation)
 
 			if (strncmp(dom, "RDB$", 4) == 0)
 			{
-			for (dom += 4; *dom; ++dom)
-			{
-#ifdef HAVE_CTYPE_H
-				if (!isdigit(*dom))
-#else
-				if (*dom < '0' || *dom > '9')
-#endif
+				for (dom += 4; *dom; ++dom)
 				{
-					sysDomFlag = true;
-					break;
+#ifdef HAVE_CTYPE_H
+					if (!isdigit(*dom))
+#else
+					if (*dom < '0' || *dom > '9')
+#endif
+					{
+						sysDomFlag = true;
+						break;
+					}
 				}
 			}
-		}
 
 			// Not all system domains starts with RDB$
 			// There is also SEC$ fields. Here we are mostly interested in legacy UNICODE_FSS fields - see #7611.

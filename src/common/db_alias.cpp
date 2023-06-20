@@ -548,9 +548,9 @@ bool expandDatabaseName(Firebird::PathName alias,
 					UCharBuffer oldId;
 					os_utils::getUniqueFileId(i->db->name.c_str(), oldId);
 					if (oldId == id)	// Yes, that's really same file, and we should use same config
-					db = i->db;
+						db = i->db;
+				}
 			}
-		}
 		}
 #endif
 		*config = (db && db->config.hasData()) ? db->config : Config::getDefaultConfig();
