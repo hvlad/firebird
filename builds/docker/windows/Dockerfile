@@ -27,11 +27,13 @@ RUN `
         --quiet --wait --norestart --nocache `
         --locale en-US `
         --add Microsoft.Component.MSBuild `
+		--add Microsoft.VisualStudio.Workload.VCTools `
+		--add Microsoft.VisualStudio.Component.Windows10SDK `
+        --add Microsoft.VisualStudio.Component.Windows11SDK.22000 `
         --add Microsoft.VisualStudio.Component.VC.ATLMFC `
         --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
         --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
 		--add Microsoft.VisualStudio.Component.VC.CoreBuildTools `
-        --add Microsoft.VisualStudio.Component.Windows11SDK.22621 `
         --add Microsoft.VisualStudio.Component.VC.CMake.Project `
         --add Microsoft.VisualStudio.ComponentGroup.NativeDesktop.Core `
         --add Microsoft.VisualStudio.Workload.NativeDesktop `
