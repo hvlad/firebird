@@ -165,7 +165,9 @@ goto :END
 @echo    We use that variable to run the appropriate Visual Studio batch file
 @echo    to set up the build environment.
 @echo.
+
 @set
+
 :: set errorlevel
 @set ERRLEV=1
 @exit /B 1
@@ -183,5 +185,7 @@ goto :END
 @echo.
 @echo    (End of %0)
 @echo.
+
+@set
 
 @exit /B 0
