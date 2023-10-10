@@ -4,7 +4,7 @@ FROM mcr.microsoft.com/dotnet/framework/sdk:4.8-windowsservercore-ltsc2022
 
 SHELL ["cmd", "/S", "/C"]
 
-# set visualstudio2019buildtools --version and --installChannelUri.
+# set visualstudio2022buildtools --version and --installChannelUri.
 #
 # Open https://docs.microsoft.com/en-us/visualstudio/releases/2019/history#installing-an-earlier-release
 # Download BuildTools for a specific version.
@@ -29,9 +29,10 @@ RUN `
         --add Microsoft.Component.MSBuild `
         --add Microsoft.VisualStudio.Component.VC.ATLMFC `
         --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-        --add Microsoft.VisualStudio.Component.VC.CMake.Project `
         --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-        --add Microsoft.VisualStudio.Component.Windows10SDK.19041 `
+		--add Microsoft.VisualStudio.Component.VC.CoreBuildTools `
+        --add Microsoft.VisualStudio.Component.Windows11SDK.22621 `
+        --add Microsoft.VisualStudio.Component.VC.CMake.Project `
         --add Microsoft.VisualStudio.ComponentGroup.NativeDesktop.Core `
         --add Microsoft.VisualStudio.Workload.NativeDesktop `
         --remove Microsoft.VisualStudio.Component.Windows10SDK.10240 `
