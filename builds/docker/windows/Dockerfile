@@ -22,6 +22,8 @@ RUN `
     powershell -NoProfile -ExecutionPolicy Bypass -Command "iex ((New-Object System.Net.WebClient).DownloadString('https://chocolatey.org/install.ps1'))" && `
     set "PATH=%PATH%;%ALLUSERSPROFILE%\chocolatey\bin" && `
     `
+	dir|find "bytes free" &&  `
+	`
     choco install --no-progress --yes visualstudio2022buildtools --version=117.7.4 --package-parameters " `
         --installChannelUri https://aka.ms/vs/17/release/195514069_314016176/channel `
         --quiet --wait --norestart --nocache `
@@ -44,7 +46,9 @@ RUN `
     choco install --no-progress --yes innosetup --version=6.1.2 && `
     `
     refreshenv && `
-    setx PATH "%PATH%;C:\Program Files\Git\usr\bin"
+    setx PATH "%PATH%;C:\Program Files\Git\usr\bin" && `
+    `
+	dir|find "bytes free"
 
 ENV SEVENZIP='C:\Program Files\7-Zip'
 ENV INNO6_SETUP_PATH='C:\Program Files (x86)\Inno Setup 6'
