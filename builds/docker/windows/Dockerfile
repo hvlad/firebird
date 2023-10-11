@@ -16,7 +16,7 @@ SHELL ["cmd", "/S", "/C"]
 #
 # Replace URL below to the link to vs_BuildTools.exe
 
-ADD https://download.visualstudio.microsoft.com/download/pr/e514a25b-a89d-4051-a63c-05ccd9be41e9/6ca2980598be2c888c3bb3b288c688a04b3fc1f1acb62d7c3cdaada47b36c3ea/vs_BuildTools.exe C:/temp/vs_BuildTools.exe
+ADD https://aka.ms/vs/17/release/vs_buildtools.exe C:/temp/vs_BuildTools.exe
 
 RUN `
     set chocolateyUseWindowsCompression='false' && `
@@ -24,7 +24,7 @@ RUN `
     set "PATH=%PATH%;%ALLUSERSPROFILE%\chocolatey\bin" && `
     `
     (start /w C:\temp\vs_BuildTools.exe `
-        --installChannelUri https://aka.ms/vs/17/release/134599118_118780349/channel `
+        --installChannelUri https://aka.ms/vs/17/release/channel `
         --quiet --wait --norestart --nocache --noUpdateInstaller `
         --locale en-US `
         --add Microsoft.Component.MSBuild `
@@ -33,13 +33,9 @@ RUN `
         --add Microsoft.VisualStudio.Component.VC.CMake.Project `
         --add Microsoft.VisualStudio.Component.VC.Redist.14.Latest `
         --add Microsoft.VisualStudio.Component.VC.Redist.MSM `
-        --add Microsoft.VisualStudio.Component.Windows10SDK.19041 `
+        --add Microsoft.VisualStudio.Component.Windows11SDK.22621 `
         --add Microsoft.VisualStudio.ComponentGroup.NativeDesktop.Core `
         --add Microsoft.VisualStudio.Workload.NativeDesktop `
-        --remove Microsoft.VisualStudio.Component.Windows10SDK.10240 `
-        --remove Microsoft.VisualStudio.Component.Windows10SDK.10586 `
-        --remove Microsoft.VisualStudio.Component.Windows10SDK.14393 `
-        --remove Microsoft.VisualStudio.Component.Windows81SDK `
         || if "%ERRORLEVEL%"=="3010" exit 0) && `
     choco install --no-progress --yes git --version=2.33.1 && `
     choco install --no-progress --yes 7zip.install --version=19.0 && `
