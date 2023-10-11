@@ -32,9 +32,6 @@ for %%v in ( %* )  do (
 ( if /I "%%v"=="SNAPSHOT" (set FB2_SNAPSHOT=1) )
 )
 
-echo Before 1st setenvvar
-set
-
 @call setenvvar.bat %FBBUILD_BUILDTYPE% %*
 if "%ERRLEV%"=="1" goto :END
 
