@@ -23,7 +23,7 @@ RUN `
     set "PATH=%PATH%;%ALLUSERSPROFILE%\chocolatey\bin" && `
     `
     choco install --no-progress --yes visualstudio2022buildtools --version=117.7.4 --package-parameters " `
-        --installChannelUri https://aka.ms/vs/17/release/134599118_118780349/channel `
+        --installChannelUri https://aka.ms/vs/17/release/195514069_314016176/channel `
         --quiet --wait --norestart --nocache `
         --locale en-US `
         --add Microsoft.Component.MSBuild `
