@@ -32,8 +32,7 @@ RUN `
         --add Microsoft.VisualStudio.Component.VC.Redist.14.Latest `
         --add Microsoft.VisualStudio.ComponentGroup.NativeDesktop.Core `
         --add Microsoft.VisualStudio.Component.VC.CMake.Project `
-        --add Microsoft.VisualStudio.Component.Windows11SDK.22000 `
-        --add Microsoft.Component.VC.Runtime.UCRTSDK `		
+        --add Microsoft.VisualStudio.Component.Windows11SDK.22621 `
         --add Microsoft.VisualStudio.Workload.NativeDesktop `
         " && `
     choco install --no-progress --yes git --version=2.33.1 && `
