@@ -24,7 +24,6 @@ RUN `
     set "PATH=%PATH%;%ALLUSERSPROFILE%\chocolatey\bin" && `
     `
     (start /w C:\temp\vs_BuildTools.exe `
-        --installChannelUri https://aka.ms/vs/17/release/channel `
         --quiet --wait --norestart --nocache --noUpdateInstaller `
         --locale en-US `
         --add Microsoft.Component.MSBuild `
