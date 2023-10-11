@@ -14,6 +14,7 @@ SHELL ["cmd", "/S", "/C"]
 # 16.11.6.0 - https://aka.ms/vs/16/release/201528995_-1285443981/channel
 # 16.11.7.0 - https://aka.ms/vs/16/release/152566872_220409660/channel
 # 16.11.16 - https://aka.ms/vs/16/release/377566269_-1382739058/channel
+# 17.7.4	- https://aka.ms/vs/17/release/134599118_118780349/channel
 # 17.7.5	- https://aka.ms/vs/17/release/195514069_314016176/channel
 
 RUN `
@@ -22,7 +23,7 @@ RUN `
     set "PATH=%PATH%;%ALLUSERSPROFILE%\chocolatey\bin" && `
     `
     choco install --no-progress --yes visualstudio2022buildtools --version=117.7.4 --package-parameters " `
-        --installChannelUri https://aka.ms/vs/17/release/195514069_314016176/channel `
+        --installChannelUri https://aka.ms/vs/17/release/134599118_118780349/channel `
         --quiet --wait --norestart --nocache `
         --locale en-US `
         --add Microsoft.Component.MSBuild `
