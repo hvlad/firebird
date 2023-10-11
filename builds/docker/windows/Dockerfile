@@ -16,10 +16,10 @@ SHELL ["cmd", "/S", "/C"]
 #
 # Replace URL below to the link to vs_BuildTools.exe
 
-ADD https://aka.ms/vs/17/release/vs_buildtools.exe C:/temp/vs_BuildTools.exe
-
 RUN `
-    set chocolateyUseWindowsCompression='false' && `
+    curl -SL --output vs_buildtools.exe https://aka.ms/vs/17/release/vs_buildtools.exe && `
+    `
+	set chocolateyUseWindowsCompression='false' && `
     powershell -NoProfile -ExecutionPolicy Bypass -Command "iex ((New-Object System.Net.WebClient).DownloadString('https://chocolatey.org/install.ps1'))" && `
     set "PATH=%PATH%;%ALLUSERSPROFILE%\chocolatey\bin" && `
     `
@@ -27,7 +27,6 @@ RUN `
         --quiet --wait --norestart --nocache --noUpdateInstaller `
         --locale en-US `
         --add Microsoft.Component.MSBuild `
-        --add Microsoft.VisualStudio.Component.VC.ATLMFC `
         --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
         --add Microsoft.VisualStudio.Component.VC.CMake.Project `
         --add Microsoft.VisualStudio.Component.VC.Redist.14.Latest `
@@ -39,7 +38,6 @@ RUN `
     choco install --no-progress --yes git --version=2.33.1 && `
     choco install --no-progress --yes 7zip.install --version=19.0 && `
     choco install --no-progress --yes innosetup --version=6.1.2 && `
-    choco install --no-progress --yes wixtoolset --version=3.11.2 && `
     `
     refreshenv && `
     setx PATH "%PATH%;C:\Program Files\Git\usr\bin"
