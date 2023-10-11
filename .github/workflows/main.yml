@@ -12,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform: [x64, x86]
+        platform: [x64]
 
     steps:
       - name: Checkout
