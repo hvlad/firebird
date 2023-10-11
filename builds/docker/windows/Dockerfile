@@ -15,7 +15,6 @@ SHELL ["cmd", "/S", "/C"]
 # 16.11.7.0 - https://aka.ms/vs/16/release/152566872_220409660/channel
 # 16.11.16 - https://aka.ms/vs/16/release/377566269_-1382739058/channel
 # 17.7.5	- https://aka.ms/vs/17/release/195514069_314016176/channel
-# 17		- https://aka.ms/vs/17/release/channel
 
 RUN `
     set chocolateyUseWindowsCompression='false' && `
@@ -27,20 +26,13 @@ RUN `
         --quiet --wait --norestart --nocache `
         --locale en-US `
         --add Microsoft.Component.MSBuild `
-		--add Microsoft.VisualStudio.Workload.VCTools `
-		--add Microsoft.VisualStudio.Component.Windows10SDK `
-        --add Microsoft.VisualStudio.Component.Windows11SDK.22000 `
-        --add Microsoft.VisualStudio.Component.VC.ATLMFC `
+        --add Microsoft.VisualStudio.Component.Windows10SDK `
         --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-        --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-		--add Microsoft.VisualStudio.Component.VC.CoreBuildTools `
-        --add Microsoft.VisualStudio.Component.VC.CMake.Project `
+        --add Microsoft.VisualStudio.Component.VC.Redist.14.Latest `
         --add Microsoft.VisualStudio.ComponentGroup.NativeDesktop.Core `
+        --add Microsoft.VisualStudio.Component.VC.CMake.Project `
+        --add Microsoft.VisualStudio.Component.Windows11SDK.22000 `
         --add Microsoft.VisualStudio.Workload.NativeDesktop `
-        --remove Microsoft.VisualStudio.Component.Windows10SDK.10240 `
-        --remove Microsoft.VisualStudio.Component.Windows10SDK.10586 `
-        --remove Microsoft.VisualStudio.Component.Windows10SDK.14393 `
-        --remove Microsoft.VisualStudio.Component.Windows81SDK `
         " && `
     choco install --no-progress --yes git --version=2.33.1 && `
     choco install --no-progress --yes 7zip.install --version=19.0 && `
