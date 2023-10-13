@@ -34,6 +34,10 @@ RUN `
         --add Microsoft.VisualStudio.Component.Windows11SDK.22621 `
         --add Microsoft.VisualStudio.ComponentGroup.NativeDesktop.Core `
         --add Microsoft.VisualStudio.Workload.NativeDesktop `
+        --remove Microsoft.VisualStudio.Component.Windows10SDK.10240 `
+        --remove Microsoft.VisualStudio.Component.Windows10SDK.10586 `
+        --remove Microsoft.VisualStudio.Component.Windows10SDK.14393 `
+        --remove Microsoft.VisualStudio.Component.Windows81SDK `
         || if "%ERRORLEVEL%"=="3010" exit 0) && `
     choco install --no-progress --yes git --version=2.33.1 && `
     choco install --no-progress --yes 7zip.install --version=19.0 && `
