@@ -6,13 +6,11 @@ jobs:
 
   build-windows-docker:
     runs-on: windows-2022
-    env:
-      VS_VERSION: ${{ (matrix.os == 'windows-2019' && '2019' || (matrix.os == 'windows-2022' && '2022' || '')) }}
 
     strategy:
       fail-fast: false
       matrix:
-        platform: [x64]
+        platform: [x64, x86]
 
     steps:
       - name: Checkout
