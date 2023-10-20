@@ -830,6 +830,9 @@ AttachmentHolder::~AttachmentHolder()
 {
 	Jrd::Attachment* attachment = sAtt->getHandle();
 
+	if (attachment)
+		attachment->mergeStats(true);
+
 	if (attachment && !async)
 	{
 		attachment->att_use_count--;
@@ -9262,7 +9265,12 @@ void thread_db::reschedule()
 	Monitoring::checkState(this);
 
 	if (tdbb_quantum <= 0)
+	{
 		tdbb_quantum = (tdbb_flags & TDBB_sweeper) ? SWEEP_QUANTUM : QUANTUM;
+
+		//if (attachment)
+		//	attachment->mergeStats(true);
+	}
 }
 
 ULONG thread_db::adjustWait(ULONG wait) const
