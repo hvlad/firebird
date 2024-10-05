@@ -7179,7 +7179,7 @@ static rem_port* analyze(ClntAuthBlock& cBlock, PathName& attach_name, unsigned 
 	while (true)
 	{
 		authenticateStep0(cBlock);
-		const NoCaseString savePluginName(cBlock.plugins.name());
+		NoCaseString savePluginName(cBlock.plugins.name());
 
 		try
 		{
