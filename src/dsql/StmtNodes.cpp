@@ -71,6 +71,7 @@ using namespace Jrd;
 
 namespace Jrd {
 
+static void checkMutating(thread_db* tdbb, Request* request, const RseNode* rseNode);
 template <typename T> static void dsqlExplodeFields(dsql_rel* relation, Array<NestConst<T> >& fields,
 	bool includeComputed);
 static dsql_par* dsqlFindDbKey(const DsqlDmlStatement*, const RelationSourceNode*);
@@ -5199,6 +5200,8 @@ const StmtNode* ForNode::execute(thread_db* tdbb, Request* request, ExeState* /*
 			if (marks & MARK_MERGE)
 				merge->recUpdated = nullptr;
 
+			checkMutating(tdbb, request, rse);
+
 			if (!(transaction->tra_flags & TRA_system) &&
 				transaction->tra_save_point &&
 				transaction->tra_save_point->hasChanges())
@@ -5308,6 +5311,9 @@ const StmtNode* ForNode::execute(thread_db* tdbb, Request* request, ExeState* /*
 				merge->recUpdated = nullptr;
 			}
 
+			if (marks & MARK_FOR_UPDATE)
+				clearMutating(tdbb, request);
+
 			return parentStmt;
 		}
 	}
@@ -5354,6 +5360,35 @@ void ForNode::setRecordUpdated(thread_db* tdbb, Request* request, record_param* 
 	ImpureMerge* impure = request->getImpure<ImpureMerge>(impureOffset);
 
 	RBM_SET(tdbb->getDefaultPool(), &impure->recUpdated, rpb->rpb_number.getValue());
+}
+
+void ForNode::setMutating(thread_db* tdbb, Request* request, USHORT relId) const
+{
+	fb_assert(marks & MARK_FOR_UPDATE);
+
+	if (request->getStatement()->flags & (Statement::FLAG_SYS_TRIGGER | Statement::FLAG_INTERNAL))
+		return;
+
+	Impure* impure = request->getImpure<Impure>(impureOffset);
+	if (!impure->mutatingRelId)
+	{
+		jrd_tra* transaction = tdbb->getTransaction();
+		transaction->setMutating(relId, true);
+		impure->mutatingRelId = relId;
+	}
+}
+
+void ForNode::clearMutating(thread_db* tdbb, Request* request) const
+{
+	fb_assert(marks & MARK_FOR_UPDATE);
+
+	Impure* impure = request->getImpure<Impure>(impureOffset);
+	if (impure->mutatingRelId)
+	{
+		jrd_tra* transaction = tdbb->getTransaction();
+		transaction->setMutating(impure->mutatingRelId, false);
+		impure->mutatingRelId = 0;
+	}
 }
 
 //--------------------
@@ -7110,6 +7145,14 @@ const StmtNode* ModifyNode::modify(thread_db* tdbb, Request* request, WhichTrigg
 				CondSavepointAndMarker spPreTriggers(tdbb, transaction,
 					skipLocked && !(transaction->tra_flags & TRA_system) && relation->rel_pre_modify);
 
+				if (relation->canMutate())
+				{
+					if (forNode)
+						forNode->setMutating(tdbb, request, relation->rel_id);
+					else
+						transaction->setMutating(relation->rel_id, true); //??
+				}
+
 				preModifyEraseTriggers(tdbb, &relation->rel_pre_modify, whichTrig, orgRpb, newRpb,
 					TRIGGER_UPDATE);
 
@@ -7159,6 +7202,12 @@ const StmtNode* ModifyNode::modify(thread_db* tdbb, Request* request, WhichTrigg
 
 				if (forNode && (marks & StmtNode::MARK_MERGE))
 					forNode->setRecordUpdated(tdbb, request, orgRpb);
+
+				if (relation->canMutate())
+				{
+					if (!forNode)
+						transaction->setMutating(relation->rel_id, false); //??
+				}
 
 				// Now call IDX_modify_check_constrints after all post modify triggers
 				// have fired.  This is required for cascading referential integrity,
@@ -10915,6 +10964,30 @@ ForNode* pass2FindForNode(StmtNode* node, StreamType stream)
 
 	return nullptr;
 };
+
+void checkMutating(thread_db* tdbb, Request* request, const RseNode* rseNode)
+{
+	if (request->getStatement()->flags & (Statement::FLAG_SYS_TRIGGER | Statement::FLAG_INTERNAL))
+		return;
+
+	const jrd_tra* transaction = tdbb->getTransaction();
+	if (!transaction->hasMutating())
+		return;
+
+	SortedStreamList streams;
+	rseNode->collectStreams(streams);
+
+	for (auto stream : streams)
+	{
+		const jrd_rel* relation = request->req_rpb[stream].rpb_relation;
+		if (relation && transaction->checkMutating(relation->rel_id))
+		{
+			string err;
+			err.printf("Attempt access of mutating table ''%s''", relation->rel_name.c_str());
+			(Arg::Gds(isc_random) << err).raise();
+		}
+	}
+}
 
 // Inherit access to triggers to be fired.
 //

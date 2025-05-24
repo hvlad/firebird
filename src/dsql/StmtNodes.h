@@ -911,10 +911,14 @@ public:
 	void checkRecordUpdated(thread_db* tdbb, Request* request, record_param* rpb) const;
 	void setRecordUpdated(thread_db* tdbb, Request* request, record_param* rpb) const;
 
+	void setMutating(thread_db* tdbb, Request* request, USHORT relId) const;
+	void clearMutating(thread_db* tdbb, Request* request) const;
+
 public:
 	struct Impure
 	{
 		SavNumber savepoint;
+		USHORT mutatingRelId;
 		bool writeLockMode;		// true - driven statement (UPDATE\DELETE\SELECT WITH LOCK) works in "write lock" mode, false - normal mode
 	};
 

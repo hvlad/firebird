@@ -158,6 +158,7 @@ class jrd_tra : public pool_alloc<type_tra>
 
 	static const size_t MAX_UNDO_RECORDS = 2;
 	typedef Firebird::HalfStaticArray<Record*, MAX_UNDO_RECORDS> UndoRecordList;
+	typedef Firebird::SortedArray<USHORT> MutatingRelations;
 
 public:
 	enum wait_t {
@@ -200,7 +201,8 @@ public:
 		tra_mapping_list(NULL),
 		tra_dbcreators_list(nullptr),
 		tra_autonomous_pool(NULL),
-		tra_autonomous_cnt(0)
+		tra_autonomous_cnt(0),
+		tra_mutating(*p)
 	{
 	}
 
@@ -324,6 +326,8 @@ private:
 	USHORT tra_autonomous_cnt;
 	static const USHORT TRA_AUTONOMOUS_PER_POOL = 64;
 
+	MutatingRelations tra_mutating;
+
 public:
 	MemoryPool* getAutonomousPool();
 	void releaseAutonomousPool(MemoryPool* toRelease);
@@ -405,6 +409,28 @@ public:
 			tra_gen_ids = FB_NEW_POOL(*tra_pool) GenIdCache(*tra_pool);
 
 		return tra_gen_ids;
+	}
+
+	bool checkMutating(USHORT relId) const
+	{
+		return tra_mutating.exist(relId);
+	}
+
+	bool hasMutating() const
+	{
+		return tra_mutating.hasData();
+	}
+
+	void setMutating(USHORT relId, bool set)
+	{
+		FB_SIZE_T pos;
+		const bool found = tra_mutating.find(relId, pos);
+		fb_assert(set != found);
+
+		if (set)
+			tra_mutating.insert(pos, relId);
+		else
+			tra_mutating.remove(pos);
 	}
 };
 

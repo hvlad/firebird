@@ -272,6 +272,7 @@ public:
 	bool isTemporary() const;
 	bool isVirtual() const;
 	bool isView() const;
+	bool canMutate() const;
 
 	bool isReplicating(thread_db* tdbb);
 
@@ -429,6 +430,12 @@ inline bool jrd_rel::isVirtual() const
 inline bool jrd_rel::isView() const
 {
 	return (rel_flags & REL_jrd_view);
+}
+
+inline bool jrd_rel::canMutate() const
+{
+	return !(rel_flags & (REL_system | REL_virtual | REL_jrd_view))
+		&& !rel_file;
 }
 
 inline RelationPages* jrd_rel::getPages(thread_db* tdbb, TraNumber tran, bool allocPages)
