@@ -903,7 +903,7 @@ void Trigger::compile(thread_db* tdbb)
 		// Trigger request is not compiled yet. Lets do it now
 		USHORT par_flags = (USHORT) (flags & TRG_ignore_perm) ? csb_ignore_perm : 0;
 
-		if (type & 1)
+		if (trigType & 1)
 			par_flags |= csb_pre_trigger;
 		else
 			par_flags |= csb_post_trigger;
@@ -936,7 +936,7 @@ void Trigger::compile(thread_db* tdbb)
 			{
 				dbb->dbb_extManager->makeTrigger(tdbb, csb, this, engine, entryPoint, extBody.c_str(),
 					(relation ?
-						(type & 1 ? IExternalTrigger::TYPE_BEFORE : IExternalTrigger::TYPE_AFTER) :
+						(trigType & 1 ? IExternalTrigger::TYPE_BEFORE : IExternalTrigger::TYPE_AFTER) :
 						IExternalTrigger::TYPE_DATABASE));
 			}
 		}
@@ -953,6 +953,7 @@ void Trigger::compile(thread_db* tdbb)
 			throw;
 		}
 
+		statement->trigger = this;
 		statement->triggerName = name;
 		if (ssDefiner.orElse(false))
 			statement->triggerInvoker = att->getUserId(owner);

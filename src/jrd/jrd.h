@@ -140,7 +140,7 @@ public:
 	Statement* statement;							// Compiled statement
 	bool		releaseInProgress;
 	bool		sysTrigger;
-	FB_UINT64	type;						// Trigger type
+	FB_UINT64	trigType;					// Trigger type
 	USHORT		flags;						// Flags as they are in RDB$TRIGGERS table
 	jrd_rel*	relation;					// Trigger parent relation
 	MetaName	name;				// Trigger name

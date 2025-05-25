@@ -440,9 +440,9 @@ public:
 		m_name = trigger->name.c_str();
 		m_relationName = trigger->relation ? trigger->relation->rel_name.c_str() : "";
 
-		const auto type = (trigger->type & ~TRIGGER_TYPE_MASK);
+		const auto type = (trigger->trigType & ~TRIGGER_TYPE_MASK);
 
-		switch (trigger->type & TRIGGER_TYPE_MASK)
+		switch (trigger->trigType & TRIGGER_TYPE_MASK)
 		{
 			case TRIGGER_TYPE_DML:
 				{

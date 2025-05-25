@@ -1164,7 +1164,7 @@ void EXE_execute_triggers(thread_db* tdbb,
 				fb_assert(which_trig == StmtNode::PRE_TRIG || which_trig == StmtNode::POST_TRIG);
 				const bool preTriggers = (which_trig == StmtNode::PRE_TRIG);
 
-				const auto type = ptr->type & ~TRIGGER_TYPE_MASK;
+				const auto type = ptr->trigType & ~TRIGGER_TYPE_MASK;
 				const bool preTrigger = ((type & 1) == 0);
 
 				if (!(type & (1LL << ddl_action)) || preTriggers != preTrigger)
