@@ -434,6 +434,9 @@ void Config::checkValues()
 
 	checkIntForLoBound(KEY_PARALLEL_WORKERS, 1, true);
 	checkIntForHiBound(KEY_PARALLEL_WORKERS, values[KEY_MAX_PARALLEL_WORKERS].intVal, false);
+
+	checkIntForLoBound(KEY_CHECK_MUTATING_TABLES, 0, true);
+	checkIntForHiBound(KEY_CHECK_MUTATING_TABLES, 2, true);
 }
 
 
