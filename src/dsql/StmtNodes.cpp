@@ -106,7 +106,7 @@ static RelationSourceNode* pass1Update(thread_db* tdbb, CompilerScratch* csb, jr
 	const TrigVector* trigger, StreamType stream, StreamType updateStream, SecurityClass::flags_t priv,
 	jrd_rel* view, StreamType viewStream, StreamType viewUpdateStream);
 static void pass1Validations(thread_db* tdbb, CompilerScratch* csb, Array<ValidateInfo>& validations);
-static ForNode* pass2FindForNode(StmtNode* node, StreamType stream);
+static ForNode* pass2FindForNode(StmtNode* node, StreamType stream, bool noStream = false);
 static void postTriggerAccess(CompilerScratch* csb, jrd_rel* ownerRelation,
 	ExternalAccess::exa_act operation, jrd_rel* view);
 static void preModifyEraseTriggers(thread_db* tdbb, TrigVector** trigs,
@@ -2735,6 +2735,14 @@ const StmtNode* EraseNode::erase(thread_db* tdbb, Request* request, WhichTrigger
 	CondSavepointAndMarker spPreTriggers(tdbb, transaction,
 		skipLocked && !(transaction->tra_flags & TRA_system) && relation->rel_pre_erase);
 
+	if (relation->canMutate())
+	{
+		if (forNode)
+			forNode->setMutating(tdbb, request, relation->rel_id);
+		else
+			transaction->setMutating(relation->rel_id, true); //??
+	}
+
 	// Handle pre-operation trigger.
 	preModifyEraseTriggers(tdbb, &relation->rel_pre_erase, whichTrig, rpb, NULL, TRIGGER_DELETE);
 
@@ -2804,6 +2812,12 @@ const StmtNode* EraseNode::erase(thread_db* tdbb, Request* request, WhichTrigger
 			request->req_records_deleted++;
 			request->req_records_affected.bumpModified(true);
 		}
+	}
+
+	if (relation->canMutate())
+	{
+		if (!forNode)
+			transaction->setMutating(relation->rel_id, true); //??
 	}
 
 	if (returningStatement)
@@ -6296,6 +6310,7 @@ void MergeNode::genBlr(DsqlCompilerScratch* dsqlScratch)
 
 		if (notMatched->overrideClause.specified)
 			dsqlScratch->appendUChar(UCHAR(notMatched->overrideClause.value));
+		dsqlScratch->putBlrMarkers(MARK_INSERT_SELECT);
 
 		GEN_expr(dsqlScratch, notMatched->storeRelation);
 
@@ -7203,12 +7218,6 @@ const StmtNode* ModifyNode::modify(thread_db* tdbb, Request* request, WhichTrigg
 				if (forNode && (marks & StmtNode::MARK_MERGE))
 					forNode->setRecordUpdated(tdbb, request, orgRpb);
 
-				if (relation->canMutate())
-				{
-					if (!forNode)
-						transaction->setMutating(relation->rel_id, false); //??
-				}
-
 				// Now call IDX_modify_check_constrints after all post modify triggers
 				// have fired.  This is required for cascading referential integrity,
 				// which can be implemented as post_erase triggers.
@@ -7224,6 +7233,12 @@ const StmtNode* ModifyNode::modify(thread_db* tdbb, Request* request, WhichTrigg
 						request->req_records_updated++;
 						request->req_records_affected.bumpModified(true);
 					}
+				}
+
+				if (relation->canMutate())
+				{
+					if (!forNode)
+						transaction->setMutating(relation->rel_id, false); //??
 				}
 
 				if (statement2)
@@ -7880,12 +7895,17 @@ void StoreNode::genBlr(DsqlCompilerScratch* dsqlScratch)
 		dsqlScratch->appendUChar(blr_for);
 		dsqlScratch->putBlrMarkers(StmtNode::MARK_FOR_UPDATE);
 		GEN_expr(dsqlScratch, dsqlRse);
+
+		marks |= MARK_INSERT_SELECT;
 	}
 
 	dsqlScratch->appendUChar(overrideClause.specified ? blr_store3 : (dsqlReturning ? blr_store2 : blr_store));
 
 	if (overrideClause.specified)
 		dsqlScratch->appendUChar(UCHAR(overrideClause.value));
+
+	if (marks)
+		dsqlScratch->putBlrMarkers(marks);
 
 	GEN_expr(dsqlScratch, target);
 
@@ -8141,6 +8161,9 @@ StoreNode* StoreNode::pass2(thread_db* tdbb, CompilerScratch* csb)
 		ExprNode::doPass2(tdbb, csb, i->value.getAddress());
 	}
 
+	if (marks & StmtNode::MARK_INSERT_SELECT)
+		forNode = pass2FindForNode(parentStmt, 0, true);
+
 	impureOffset = csb->allocImpure<impure_state>();
 
 	return this;
@@ -8229,6 +8252,14 @@ const StmtNode* StoreNode::store(thread_db* tdbb, Request* request, WhichTrigger
 			{
 				SavepointChangeMarker scMarker(transaction);
 
+				if (relation->canMutate())
+				{
+					if (forNode)
+						forNode->setMutating(tdbb, request, relation->rel_id);
+					else
+						transaction->setMutating(relation->rel_id, true); //??
+				}
+
 				if (relation && relation->rel_pre_store && whichTrig != POST_TRIG)
 				{
 					EXE_execute_triggers(tdbb, &relation->rel_pre_store, NULL, rpb,
@@ -8277,6 +8308,12 @@ const StmtNode* StoreNode::store(thread_db* tdbb, Request* request, WhichTrigger
 						request->req_records_inserted++;
 						request->req_records_affected.bumpModified(true);
 					}
+				}
+
+				if (relation->canMutate())
+				{
+					if (!forNode)
+						transaction->setMutating(relation->rel_id, false); //??
 				}
 
 				if (statement2)
@@ -10948,14 +10985,14 @@ static void pass1Validations(thread_db* tdbb, CompilerScratch* csb, Array<Valida
 	}
 }
 
-ForNode* pass2FindForNode(StmtNode* node, StreamType stream)
+ForNode* pass2FindForNode(StmtNode* node, StreamType stream, bool noStream)
 {
 	// lookup for parent ForNode
 	while (node && !nodeIs<ForNode>(node))
 		node = node->parentStmt;
 
 	ForNode* forNode = nodeAs<ForNode>(node);
-	if (forNode && forNode->rse->containsStream(stream))
+	if (forNode && (!noStream || forNode->rse->containsStream(stream)))
 	{
 		//fb_assert(forNode->marks & StmtNode::MARK_FOR_UPDATE);
 		if (forNode->marks & StmtNode::MARK_FOR_UPDATE)
@@ -10984,7 +11021,8 @@ void checkMutating(thread_db* tdbb, Request* request, const RseNode* rseNode)
 		{
 			string err;
 			err.printf("Attempt access of mutating table ''%s''", relation->rel_name.c_str());
-			(Arg::Gds(isc_random) << err).raise();
+
+			ERR_post_warning(Arg::Warning(isc_random) << err);
 		}
 	}
 }

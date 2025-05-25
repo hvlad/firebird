@@ -1316,6 +1316,7 @@ public:
 	NestConst<StmtNode> statement;
 	NestConst<StmtNode> statement2;
 	NestConst<StmtNode> subStore;
+	NestConst<ForNode> forNode;							// parent implicit cursor, if present
 	Firebird::Array<ValidateInfo> validations;
 	unsigned marks;
 	Nullable<USHORT> dsqlReturningLocalTableNumber;
