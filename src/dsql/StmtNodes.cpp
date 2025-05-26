@@ -187,6 +187,58 @@ namespace
 		AutoSavePoint m_savepoint;
 		Savepoint::ChangeMarker m_marker;
 	};
+
+
+	// Used to mark relation as mutating.
+	// Before storing of first record, table is not mutated yet, and pre-store
+	// triggers can't overwrite any changes. Thus mutating mark is set after
+	// pre-store triggers, not before them.
+	//
+	// In the case of modify and erase, mark is set before run of pre- triggers.
+	// For the multy-record operations, mark is removed by ForNode after last record
+	// processed. For the single-record operations there is no ForNode and mark is
+	// removed after run of post- triggers.
+	class MutationMark
+	{
+	public:
+		MutationMark(thread_db* tdbb, Request* request, const jrd_rel* relation, const ForNode* forNode)
+		{
+			if (request->getStatement()->flags & (Statement::FLAG_SYS_TRIGGER | Statement::FLAG_INTERNAL))
+				return;
+
+			if (!relation || !relation->isMutable())
+				return;
+
+			m_relId = relation->rel_id;
+			if (forNode)
+			{
+				forNode->setMutating(tdbb, request, m_relId);
+			}
+			else
+			{
+				m_transaction = tdbb->getTransaction();
+				m_transaction->setMutating(m_relId, true);
+			}
+		}
+
+		~MutationMark()
+		{
+			release();
+		}
+
+		void release()
+		{
+			if (m_transaction)
+			{
+				m_transaction->setMutating(m_relId, false);
+				m_transaction = nullptr;
+			}
+		}
+
+	private:
+		jrd_tra* m_transaction = nullptr;
+		USHORT m_relId = 0;
+	};
 }	// namespace
 
 
@@ -2735,13 +2787,7 @@ const StmtNode* EraseNode::erase(thread_db* tdbb, Request* request, WhichTrigger
 	CondSavepointAndMarker spPreTriggers(tdbb, transaction,
 		skipLocked && !(transaction->tra_flags & TRA_system) && relation->rel_pre_erase);
 
-	if (relation->canMutate())
-	{
-		if (forNode)
-			forNode->setMutating(tdbb, request, relation->rel_id);
-		else
-			transaction->setMutating(relation->rel_id, true); //??
-	}
+	MutationMark mutation(tdbb, request, relation, forNode);
 
 	// Handle pre-operation trigger.
 	preModifyEraseTriggers(tdbb, &relation->rel_pre_erase, whichTrig, rpb, NULL, TRIGGER_DELETE);
@@ -2814,11 +2860,7 @@ const StmtNode* EraseNode::erase(thread_db* tdbb, Request* request, WhichTrigger
 		}
 	}
 
-	if (relation->canMutate())
-	{
-		if (!forNode)
-			transaction->setMutating(relation->rel_id, true); //??
-	}
+	mutation.release();
 
 	if (returningStatement)
 	{
@@ -5380,9 +5422,6 @@ void ForNode::setMutating(thread_db* tdbb, Request* request, USHORT relId) const
 {
 	fb_assert(marks & MARK_FOR_UPDATE);
 
-	if (request->getStatement()->flags & (Statement::FLAG_SYS_TRIGGER | Statement::FLAG_INTERNAL))
-		return;
-
 	Impure* impure = request->getImpure<Impure>(impureOffset);
 	if (!impure->mutatingRelId)
 	{
@@ -5390,6 +5429,7 @@ void ForNode::setMutating(thread_db* tdbb, Request* request, USHORT relId) const
 		transaction->setMutating(relId, true);
 		impure->mutatingRelId = relId;
 	}
+	fb_assert(impure->mutatingRelId == relId);
 }
 
 void ForNode::clearMutating(thread_db* tdbb, Request* request) const
@@ -7160,13 +7200,7 @@ const StmtNode* ModifyNode::modify(thread_db* tdbb, Request* request, WhichTrigg
 				CondSavepointAndMarker spPreTriggers(tdbb, transaction,
 					skipLocked && !(transaction->tra_flags & TRA_system) && relation->rel_pre_modify);
 
-				if (relation->canMutate())
-				{
-					if (forNode)
-						forNode->setMutating(tdbb, request, relation->rel_id);
-					else
-						transaction->setMutating(relation->rel_id, true); //??
-				}
+				MutationMark mutation(tdbb, request, relation, forNode);
 
 				preModifyEraseTriggers(tdbb, &relation->rel_pre_modify, whichTrig, orgRpb, newRpb,
 					TRIGGER_UPDATE);
@@ -7235,11 +7269,7 @@ const StmtNode* ModifyNode::modify(thread_db* tdbb, Request* request, WhichTrigg
 					}
 				}
 
-				if (relation->canMutate())
-				{
-					if (!forNode)
-						transaction->setMutating(relation->rel_id, false); //??
-				}
+				mutation.release();
 
 				if (statement2)
 				{
@@ -8252,19 +8282,13 @@ const StmtNode* StoreNode::store(thread_db* tdbb, Request* request, WhichTrigger
 			{
 				SavepointChangeMarker scMarker(transaction);
 
-				if (relation->canMutate())
-				{
-					if (forNode)
-						forNode->setMutating(tdbb, request, relation->rel_id);
-					else
-						transaction->setMutating(relation->rel_id, true); //??
-				}
-
 				if (relation && relation->rel_pre_store && whichTrig != POST_TRIG)
 				{
 					EXE_execute_triggers(tdbb, &relation->rel_pre_store, NULL, rpb,
 						TRIGGER_INSERT, PRE_TRIG);
 				}
+
+				MutationMark mutation(tdbb, request, relation, forNode);
 
 				if (validations.hasData())
 					validateExpressions(tdbb, validations);
@@ -8310,11 +8334,7 @@ const StmtNode* StoreNode::store(thread_db* tdbb, Request* request, WhichTrigger
 					}
 				}
 
-				if (relation->canMutate())
-				{
-					if (!forNode)
-						transaction->setMutating(relation->rel_id, false); //??
-				}
+				mutation.release();
 
 				if (statement2)
 				{
@@ -11014,16 +11034,42 @@ void checkMutating(thread_db* tdbb, Request* request, const RseNode* rseNode)
 	SortedStreamList streams;
 	rseNode->collectStreams(streams);
 
+	bool dmlTrigger = false;
+	if (auto trg = request->getStatement()->trigger)
+	{
+		if ((trg->trigType & TRIGGER_TYPE_MASK) == TRIGGER_TYPE_DML)
+			dmlTrigger = true;
+	}
+
+	bool warn = false;
 	for (auto stream : streams)
 	{
+		// Skip OLD and NEW contexts
+		if (dmlTrigger && (stream < 2))
+			continue;
+
 		const jrd_rel* relation = request->req_rpb[stream].rpb_relation;
 		if (relation && transaction->checkMutating(relation->rel_id))
 		{
-			string err;
-			err.printf("Attempt access of mutating table ''%s''", relation->rel_name.c_str());
+			const bool error = (tdbb->getDatabase()->dbb_config->getCheckMutatingTables() == 2);
 
-			ERR_post_warning(Arg::Warning(isc_random) << err);
+			string msg;
+			msg.printf("Access of mutating table ''%s''", relation->rel_name.c_str());
+
+			if (error)
+				ERR_post(Arg::Gds(isc_random) << msg);
+
+			ERR_post_warning(Arg::Warning(isc_random) << msg);
+			warn = true;
+			break;  // should we report more than a single relid ?
 		}
+	}
+
+	if (warn)
+	{
+		string stack;
+		if (EXE_get_stack_trace(request, stack))
+			ERR_post_warning(Arg::Warning(isc_stack_trace) << stack);
 	}
 }
 

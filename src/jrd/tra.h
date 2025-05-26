@@ -158,7 +158,7 @@ class jrd_tra : public pool_alloc<type_tra>
 
 	static const size_t MAX_UNDO_RECORDS = 2;
 	typedef Firebird::HalfStaticArray<Record*, MAX_UNDO_RECORDS> UndoRecordList;
-	typedef Firebird::SortedArray<USHORT> MutatingRelations;
+	typedef Firebird::SortedArray<USHORT> MutatingRelations;  // tree is better ?
 
 public:
 	enum wait_t {
