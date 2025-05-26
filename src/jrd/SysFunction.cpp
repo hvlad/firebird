@@ -77,6 +77,13 @@
 using namespace Firebird;
 using namespace Jrd;
 
+
+namespace Jrd {
+	// todo: replace me
+	extern string WalkRelationDeps(thread_db* tdbb, jrd_rel* relation, bool all);
+}
+
+
 namespace {
 
 #if defined(_MSC_VER) && _MSC_VER < 1900
@@ -237,6 +244,7 @@ void setParamsFirstLastDay(DataTypeUtilBase* dataTypeUtil, const SysFunction* fu
 void setParamsGetSetContext(DataTypeUtilBase* dataTypeUtil, const SysFunction* function, int argsCount, dsc** args);
 void setParamsHash(DataTypeUtilBase*, const SysFunction*, int argsCount, dsc** args);
 void setParamsMakeDbkey(DataTypeUtilBase* dataTypeUtil, const SysFunction* function, int argsCount, dsc** args);
+void setParamsCheckMutating(DataTypeUtilBase* dataTypeUtil, const SysFunction* function, int argsCount, dsc** args);
 void setParamsOverlay(DataTypeUtilBase* dataTypeUtil, const SysFunction* function, int argsCount, dsc** args);
 void setParamsPosition(DataTypeUtilBase* dataTypeUtil, const SysFunction* function, int argsCount, dsc** args);
 void setParamsRoundTrunc(DataTypeUtilBase* dataTypeUtil, const SysFunction* function, int argsCount, dsc** args);
@@ -258,6 +266,7 @@ void makeLongResult(DataTypeUtilBase* dataTypeUtil, const SysFunction* function,
 ///void makeLongStringOrBlobResult(DataTypeUtilBase* dataTypeUtil, const SysFunction* function, dsc* result, int argsCount, const dsc** args);
 void makeShortResult(DataTypeUtilBase* dataTypeUtil, const SysFunction* function, dsc* result, int argsCount, const dsc** args);
 void makeBoolResult(DataTypeUtilBase* dataTypeUtil, const SysFunction* function, dsc* result, int argsCount, const dsc** args);
+void makeTextResult(DataTypeUtilBase* dataTypeUtil, const SysFunction* function, dsc* result, int argsCount, const dsc** args);
 
 // specific make functions
 void makeAbs(DataTypeUtilBase* dataTypeUtil, const SysFunction* function, dsc* result, int argsCount, const dsc** args);
@@ -307,6 +316,7 @@ dsc* evlBinShift(thread_db* tdbb, const SysFunction* function, const NestValueAr
 dsc* evlBlobAppend(thread_db* tdbb, const SysFunction* function, const NestValueArray& args, impure_value* impure);
 dsc* evlCeil(thread_db* tdbb, const SysFunction* function, const NestValueArray& args, impure_value* impure);
 dsc* evlCharToUuid(thread_db* tdbb, const SysFunction* function, const NestValueArray& args, impure_value* impure);
+dsc* evlCheckMutating(thread_db* tdbb, const SysFunction* function, const NestValueArray& args, impure_value* impure);
 dsc* evlDateAdd(thread_db* tdbb, const SysFunction* function, const NestValueArray& args, impure_value* impure);
 dsc* evlDateDiff(thread_db* tdbb, const SysFunction* function, const NestValueArray& args, impure_value* impure);
 dsc* evlDecode64(thread_db* tdbb, const SysFunction* function, const NestValueArray& args, impure_value* impure);
@@ -874,6 +884,20 @@ void setParamsMakeDbkey(DataTypeUtilBase*, const SysFunction*, int argsCount, ds
 }
 
 
+void setParamsCheckMutating(DataTypeUtilBase*, const SysFunction* function, int argsCount, dsc** args)
+{
+	fb_assert(argsCount > 0 && argsCount < 3);
+
+	args[0]->makeVarying(MAX_SQL_IDENTIFIER_LEN, CS_METADATA);
+
+	if (argsCount > 1)
+	{
+		if (args[1]->isUnknown())
+			args[1]->makeBoolean();
+	}
+}
+
+
 void setParamsOverlay(DataTypeUtilBase*, const SysFunction*, int argsCount, dsc** args)
 {
 	if (argsCount >= 3)
@@ -1038,6 +1062,7 @@ void makeLongResult(DataTypeUtilBase*, const SysFunction*, dsc* result,
 	result->setNullable(isNullable);
 }
 
+
 void makeBooleanResult(DataTypeUtilBase*, const SysFunction*, dsc* result,
 	int argsCount, const dsc** args)
 {
@@ -1081,6 +1106,13 @@ void makeBoolResult(DataTypeUtilBase* dataTypeUtil, const SysFunction* function,
 	dsc* result, int argsCount, const dsc** args)
 {
 	result->makeBoolean();
+}
+
+
+void makeTextResult(DataTypeUtilBase* dataTypeUtil, const SysFunction* function,
+	dsc* result, int argsCount, const dsc** args)
+{
+	result->makeBlob(isc_blob_text, CS_dynamic);
 }
 
 
@@ -1741,7 +1773,7 @@ void makePad(DataTypeUtilBase* dataTypeUtil, const SysFunction* function, dsc* r
 		else
 		{
 			result->dsc_length = static_cast<USHORT>(sizeof(USHORT)) +
-				dataTypeUtil->fixLength(result, MAX_STR_SIZE);
+				dataTypeUtil->fixLength(result, MAX_VARY_COLUMN_SIZE);
 		}
 	}
 
@@ -2664,6 +2696,54 @@ dsc* evlCharToUuid(thread_db* tdbb, const SysFunction* function, const NestValue
 	dsc result;
 	result.makeText(16, ttype_binary, bytes);
 	EVL_make_value(tdbb, &result, impure);
+
+	return &impure->vlu_desc;
+}
+
+
+dsc* evlCheckMutating(thread_db* tdbb, const SysFunction* function, const NestValueArray& args, impure_value* impure)
+{
+	const auto argsCount = args.getCount();
+	fb_assert(argsCount >= 1 && argsCount <= 2);
+
+	Request* request = tdbb->getRequest();
+
+	const dsc* value = EVL_expr(tdbb, request, args[0]);
+	if (request->req_flags & req_null)	// return NULL if value is NULL
+		return NULL;
+
+	if (!value->isText())
+		return NULL;
+
+	MetaName relName;
+	CVT2_make_metaname(value, relName, tdbb->getAttachment()->att_dec_status);
+
+	jrd_rel* const relation = MET_lookup_relation(tdbb, relName);
+
+	if (!relation)
+		return NULL;
+
+	bool all = false;
+	if (argsCount == 2)
+	{
+		value = EVL_expr(tdbb, request, args[1]);
+		if (!(request->req_flags & req_null))
+			all = MOV_get_boolean(value);
+	}
+
+	string str = WalkRelationDeps(tdbb, relation, all);
+
+	//dsc result;
+	//result.makeText(str.length(), CS_METADATA, (UCHAR*)str.begin());
+	//EVL_make_value(tdbb, &result, impure);
+
+	impure->vlu_desc.makeBlob(isc_blob_text, CS_METADATA, (ISC_QUAD*) &impure->vlu_misc.vlu_bid);
+
+	blb * blob = blb::create(tdbb, tdbb->getTransaction(), &impure->vlu_misc.vlu_bid);
+	blob->blb_flags |= BLB_stream;
+	blob->blb_charset = CS_METADATA;
+	blob->BLB_put_data(tdbb, (UCHAR*) str.c_str(), str.length());
+	blob->BLB_close(tdbb);
 
 	return &impure->vlu_desc;
 }
@@ -6922,6 +7002,7 @@ const SysFunction SysFunction::functions[] =
 		{"CEIL", 1, 1, true, setParamsDblDec, makeCeilFloor, evlCeil, NULL},
 		{"CEILING", 1, 1, true, setParamsDblDec, makeCeilFloor, evlCeil, NULL},
 		{"CHAR_TO_UUID", 1, 1, true, setParamsCharToUuid, makeUuid, evlCharToUuid, NULL},
+		{"CHECK_MUTATING", 1, 2, false, setParamsCheckMutating, makeTextResult, evlCheckMutating, NULL},
 		{"COMPARE_DECFLOAT", 2, 2, true, setParamsDecFloat, makeShortResult, evlCompare, (void*) funCmpDec},
 		{"COS", 1, 1, true, setParamsDouble, makeDoubleResult, evlStdMath, (void*) trfCos},
 		{"COSH", 1, 1, true, setParamsDouble, makeDoubleResult, evlStdMath, (void*) trfCosh},

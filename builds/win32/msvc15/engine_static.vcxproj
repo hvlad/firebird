@@ -178,6 +178,7 @@
     <ClCompile Include="..\..\..\src\jrd\vio.cpp" />
     <ClCompile Include="..\..\..\src\jrd\VirtualTable.cpp" />
     <ClCompile Include="..\..\..\src\jrd\WorkerAttachment.cpp" />
+    <ClCompile Include="..\..\..\src\jrd\DepsWalker.cpp" />
     <ClCompile Include="..\..\..\src\lock\lock.cpp" />
     <ClCompile Include="..\..\..\src\utilities\gsec\gsec.cpp" />
     <ClCompile Include="..\..\..\src\utilities\gstat\ppg.cpp" />

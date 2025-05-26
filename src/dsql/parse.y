@@ -698,6 +698,8 @@ using namespace Firebird;
 %token <metaNamePtr> UNICODE_CHAR
 %token <metaNamePtr> UNICODE_VAL
 
+%token <metaNamePtr> CHECK_MUTATING
+
 // precedence declarations for expression evaluation
 
 %left	OR
@@ -8252,6 +8254,7 @@ system_function_std_syntax
 	| BLOB_APPEND
 	| CEIL
 	| CHAR_TO_UUID
+	| CHECK_MUTATING
 	| COS
 	| COSH
 	| COT
@@ -9225,6 +9228,8 @@ non_reserved_word
 	| TIMEZONE_NAME
 	| UNICODE_CHAR
 	| UNICODE_VAL
+	//
+	| CHECK_MUTATING
 	;
 
 %%
