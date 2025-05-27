@@ -71,7 +71,6 @@ using namespace Jrd;
 
 namespace Jrd {
 
-static void checkMutating(thread_db* tdbb, Request* request, const RseNode* rseNode);
 template <typename T> static void dsqlExplodeFields(dsql_rel* relation, Array<NestConst<T> >& fields,
 	bool includeComputed);
 static dsql_par* dsqlFindDbKey(const DsqlDmlStatement*, const RelationSourceNode*);
@@ -188,6 +187,32 @@ namespace
 		Savepoint::ChangeMarker m_marker;
 	};
 
+	// Used before start of read or change relation(s) to check if it(s) currently changing (mutating)
+	class MutationCheck
+	{
+	public:
+		// if any relation of RseNode is mutating, throw error or put warning and returns true
+		// else returns false
+		static void checkRse(thread_db* tdbb, const Request* request, const RseNode* rseNode);
+
+		// if relation is mutating, throw error or put warning and returns true
+		// else returns false
+		static bool checkRelation(thread_db* tdbb, const Request* request, const jrd_rel* relation);
+
+		// returns true if statement is subject of mutation checks
+		static bool needStatement(const Statement* stmt);
+
+		// returns true if trigger is not NULL and it is FK trigger and relId is the trigger's relation
+		static bool isSelfFK(const Trigger* trigger, USHORT relId);
+
+	private:
+		// returns true if further checks are required
+		static bool preCheck(thread_db* tdbb, const Request* request);
+
+		// if relation is mutating, throw error or put warning and returns true
+		// else returns false
+		static bool relMutating(thread_db* tdbb, const Request* request, const jrd_rel* relation);
+	};
 
 	// Used to mark relation as mutating.
 	// Before storing of first record, table is not mutated yet, and pre-store
@@ -203,13 +228,22 @@ namespace
 	public:
 		MutationMark(thread_db* tdbb, Request* request, const jrd_rel* relation, const ForNode* forNode)
 		{
-			if (request->getStatement()->flags & (Statement::FLAG_SYS_TRIGGER | Statement::FLAG_INTERNAL))
+			if (!tdbb->getDatabase()->dbb_config->getCheckMutatingTables())
 				return;
 
 			if (!relation || !relation->isMutable())
 				return;
 
+			if (!MutationCheck::needStatement(request->getStatement()))
+				return;
+
 			m_relId = relation->rel_id;
+
+			// In case of self-ref FK trigger, relation is already mutating
+			// and should not be marked again
+			if (MutationCheck::isSelfFK(request->getStatement()->trigger, m_relId))
+				return;
+
 			if (forNode)
 			{
 				forNode->setMutating(tdbb, request, m_relId);
@@ -239,6 +273,122 @@ namespace
 		jrd_tra* m_transaction = nullptr;
 		USHORT m_relId = 0;
 	};
+
+
+	bool MutationCheck::preCheck(thread_db* tdbb, const Request* request)
+	{
+		const int errMode = tdbb->getDatabase()->dbb_config->getCheckMutatingTables();
+		if (errMode == 0)
+			return false;
+
+		if (!needStatement(request->getStatement()))
+			return false;
+
+		if (!tdbb->getTransaction()->hasMutating())
+			return false;
+
+		return true;
+	}
+
+	void MutationCheck::checkRse(thread_db* tdbb, const Request* request, const RseNode* rseNode)
+	{
+		if (!preCheck(tdbb, request))
+			return;
+
+		const auto* stmt = request->getStatement();
+
+		SortedStreamList streams;
+		rseNode->collectStreams(streams);
+
+		const Trigger* dmlTrigger = stmt->trigger;
+		if ((dmlTrigger->trigType & TRIGGER_TYPE_MASK) != TRIGGER_TYPE_DML)
+			dmlTrigger = nullptr;
+
+		for (auto stream : streams)
+		{
+			// Skip OLD and NEW contexts
+			if (dmlTrigger && (stream < 2))
+				continue;
+
+			const jrd_rel* relation = request->req_rpb[stream].rpb_relation;
+			if (!relation)
+				continue;
+
+			// self-ref system triggers is allowed
+			if (isSelfFK(dmlTrigger, relation->rel_id))
+				continue;
+
+			if (relMutating(tdbb, request, relation))
+				break;  // should we report more than a single relation ?
+		}
+	}
+
+	bool MutationCheck::checkRelation(thread_db* tdbb, const Request* request, const jrd_rel* relation)
+	{
+		if (!relation || !preCheck(tdbb, request))
+			return false;
+
+		if (isSelfFK(request->getStatement()->trigger, relation->rel_id))
+			return false;
+
+		return relMutating(tdbb, request, relation);
+	}
+
+	bool MutationCheck::relMutating(thread_db* tdbb, const Request* request, const jrd_rel* relation)
+	{
+		fb_assert(relation);
+
+		const jrd_tra* transaction = tdbb->getTransaction();
+		if (!transaction->checkMutating(relation->rel_id))
+			return true;
+
+		const int errMode = tdbb->getDatabase()->dbb_config->getCheckMutatingTables();
+		string msg;
+		msg.printf("Access of mutating table ''%s''", relation->rel_name.c_str());
+
+		if (errMode == 2)
+			ERR_post(Arg::Gds(isc_random) << msg);
+
+		ERR_post_warning(Arg::Warning(isc_random) << msg);
+
+		string stack;
+		if (EXE_get_stack_trace(request, stack))
+			ERR_post_warning(Arg::Warning(isc_stack_trace) << stack);
+
+		return false;
+	}
+
+	bool MutationCheck::needStatement(const Statement* stmt)
+	{
+		// return (!(stmt->flags & Statement::FLAG_INTERNAL) || (stmt->flags & Statement::FLAG_SYS_TRIGGER));
+
+		// User statements must be checked
+		if (!(stmt->flags & Statement::FLAG_INTERNAL))
+			return true;
+
+		// Internal statements are not checked, unless it is an constraint trigger
+		const auto* trg = stmt->trigger;
+		if (!trg)
+			return false;
+
+		switch (trg->sysTrigger)
+		{
+		case fb_sysflag_check_constraint:
+		case fb_sysflag_referential_constraint:
+			return true;
+		default:
+			return false;
+		}
+
+		return false;
+	}
+
+	bool MutationCheck::isSelfFK(const Trigger* trg, USHORT relId)
+	{
+		return (trg &&
+			(trg->sysTrigger == fb_sysflag_referential_constraint) &&
+			(trg->relation->rel_id == relId));
+	}
 }	// namespace
 
 
@@ -2781,6 +2931,9 @@ const StmtNode* EraseNode::erase(thread_db* tdbb, Request* request, WhichTrigger
 
 	SavepointChangeMarker scMarker(transaction);
 
+	if (!forNode)
+		MutationCheck::checkRelation(tdbb, request, relation);
+
 	// Prepare to undo changes by PRE-triggers if record is locked by another
 	// transaction and delete should be skipped.
 	const bool skipLocked = rpb->rpb_stream_flags & RPB_s_skipLocked;
@@ -5256,7 +5409,7 @@ const StmtNode* ForNode::execute(thread_db* tdbb, Request* request, ExeState* /*
 			if (marks & MARK_MERGE)
 				merge->recUpdated = nullptr;
 
-			checkMutating(tdbb, request, rse);
+			MutationCheck::checkRse(tdbb, request, rse);
 
 			if (!(transaction->tra_flags & TRA_system) &&
 				transaction->tra_save_point &&
@@ -7188,6 +7341,9 @@ const StmtNode* ModifyNode::modify(thread_db* tdbb, Request* request, WhichTrigg
 					return parentStmt;
 				}
 
+				if (!forNode)
+					MutationCheck::checkRelation(tdbb, request, relation);
+
 				// CVC: This call made here to clear the record in each NULL field and
 				// varchar field whose tail may contain garbage.
 				cleanupRpb(tdbb, newRpb);
@@ -8280,6 +8436,9 @@ const StmtNode* StoreNode::store(thread_db* tdbb, Request* request, WhichTrigger
 		case Request::req_return:
 			if (!impure->sta_state)
 			{
+				if (!forNode)
+					MutationCheck::checkRelation(tdbb, request, relation);
+
 				SavepointChangeMarker scMarker(transaction);
 
 				if (relation && relation->rel_pre_store && whichTrig != POST_TRIG)
@@ -11021,57 +11180,6 @@ ForNode* pass2FindForNode(StmtNode* node, StreamType stream, bool noStream)
 
 	return nullptr;
 };
-
-void checkMutating(thread_db* tdbb, Request* request, const RseNode* rseNode)
-{
-	if (request->getStatement()->flags & (Statement::FLAG_SYS_TRIGGER | Statement::FLAG_INTERNAL))
-		return;
-
-	const jrd_tra* transaction = tdbb->getTransaction();
-	if (!transaction->hasMutating())
-		return;
-
-	SortedStreamList streams;
-	rseNode->collectStreams(streams);
-
-	bool dmlTrigger = false;
-	if (auto trg = request->getStatement()->trigger)
-	{
-		if ((trg->trigType & TRIGGER_TYPE_MASK) == TRIGGER_TYPE_DML)
-			dmlTrigger = true;
-	}
-
-	bool warn = false;
-	for (auto stream : streams)
-	{
-		// Skip OLD and NEW contexts
-		if (dmlTrigger && (stream < 2))
-			continue;
-
-		const jrd_rel* relation = request->req_rpb[stream].rpb_relation;
-		if (relation && transaction->checkMutating(relation->rel_id))
-		{
-			const bool error = (tdbb->getDatabase()->dbb_config->getCheckMutatingTables() == 2);
-
-			string msg;
-			msg.printf("Access of mutating table ''%s''", relation->rel_name.c_str());
-
-			if (error)
-				ERR_post(Arg::Gds(isc_random) << msg);
-
-			ERR_post_warning(Arg::Warning(isc_random) << msg);
-			warn = true;
-			break;  // should we report more than a single relid ?
-		}
-	}
-
-	if (warn)
-	{
-		string stack;
-		if (EXE_get_stack_trace(request, stack))
-			ERR_post_warning(Arg::Warning(isc_stack_trace) << stack);
-	}
-}
 
 // Inherit access to triggers to be fired.
 //
