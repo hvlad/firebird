@@ -292,7 +292,7 @@ namespace
 
 	void MutationCheck::checkRse(thread_db* tdbb, const Request* request, const RseNode* rseNode)
 	{
-		if (!preCheck(tdbb, request))
+		if (!preCheck(tdbb, request) || !rseNode)
 			return;
 
 		const auto* stmt = request->getStatement();
@@ -301,7 +301,7 @@ namespace
 		rseNode->collectStreams(streams);
 
 		const Trigger* dmlTrigger = stmt->trigger;
-		if ((dmlTrigger->trigType & TRIGGER_TYPE_MASK) != TRIGGER_TYPE_DML)
+		if (dmlTrigger && (dmlTrigger->trigType & TRIGGER_TYPE_MASK) != TRIGGER_TYPE_DML)
 			dmlTrigger = nullptr;
 
 		for (auto stream : streams)
@@ -311,7 +311,7 @@ namespace
 				continue;
 
 			const jrd_rel* relation = request->req_rpb[stream].rpb_relation;
-			if (!relation)
+			if (!relation || !relation->isMutable())
 				continue;
 
 			// self-ref system triggers is allowed
@@ -325,7 +325,7 @@ namespace
 
 	bool MutationCheck::checkRelation(thread_db* tdbb, const Request* request, const jrd_rel* relation)
 	{
-		if (!relation || !preCheck(tdbb, request))
+		if (!relation || !relation->isMutable() || !preCheck(tdbb, request))
 			return false;
 
 		if (isSelfFK(request->getStatement()->trigger, relation->rel_id))
