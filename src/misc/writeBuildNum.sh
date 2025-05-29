@@ -18,7 +18,7 @@ cd $NowAt
 Root=`dirname $Root`
 Root=`dirname $Root`
 
-SPECIAL_BUILD_SUFFIX="GLDS.1"
+SPECIAL_BUILD_SUFFIX="GLDS.2"
 
 if [ "$SPECIAL_BUILD_SUFFIX" = "" ]; then
 # Normal builds
