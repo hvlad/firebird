@@ -191,9 +191,9 @@ namespace
 	class MutationCheck
 	{
 	public:
-		// if any relation of RseNode is mutating, throw error or put warning and returns true
+		// if any relation of Select is mutating, throw error or put warning and returns true
 		// else returns false
-		static void checkRse(thread_db* tdbb, const Request* request, const RseNode* rseNode);
+		static void checkSelect(thread_db* tdbb, const Request* request, const Select* select);
 
 		// if relation is mutating, throw error or put warning and returns true
 		// else returns false
@@ -290,15 +290,15 @@ namespace
 		return true;
 	}
 
-	void MutationCheck::checkRse(thread_db* tdbb, const Request* request, const RseNode* rseNode)
+	void MutationCheck::checkSelect(thread_db* tdbb, const Request* request, const Select* select)
 	{
-		if (!preCheck(tdbb, request) || !rseNode)
+		if (!preCheck(tdbb, request) || !select)
 			return;
 
 		const auto* stmt = request->getStatement();
 
-		SortedStreamList streams;
-		rseNode->collectStreams(streams);
+		StreamList streams;
+		select->getRootRecordSource()->findUsedStreams(streams, true);
 
 		const Trigger* dmlTrigger = stmt->trigger;
 		if (dmlTrigger && (dmlTrigger->trigType & TRIGGER_TYPE_MASK) != TRIGGER_TYPE_DML)
@@ -5409,7 +5409,7 @@ const StmtNode* ForNode::execute(thread_db* tdbb, Request* request, ExeState* /*
 			if (marks & MARK_MERGE)
 				merge->recUpdated = nullptr;
 
-			MutationCheck::checkRse(tdbb, request, rse);
+			MutationCheck::checkSelect(tdbb, request, cursor);
 
 			if (!(transaction->tra_flags & TRA_system) &&
 				transaction->tra_save_point &&
