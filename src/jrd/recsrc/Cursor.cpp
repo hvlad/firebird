@@ -28,6 +28,7 @@
 
 #include "RecordSource.h"
 #include "Cursor.h"
+#include "Mutating.h"
 
 using namespace Firebird;
 using namespace Jrd;
@@ -151,6 +152,11 @@ void Select::print(thread_db* tdbb, Firebird::string& plan, bool detailed, unsig
 		m_root->print(tdbb, plan, detailed, level, true);
 }
 
+void Select::open(thread_db* tdbb) const
+{
+	MutationCheck::checkSelect(tdbb, tdbb->getRequest(), this);
+}
+
 // ---------------------
 // SubQuery implementation
 // ---------------------
@@ -163,6 +169,8 @@ SubQuery::SubQuery(CompilerScratch* csb, const RecordSource* rsb, const RseNode*
 
 void SubQuery::open(thread_db* tdbb) const
 {
+	Select::open(tdbb);
+
 	ProfilerSelectStopWatcher profilerSelectStopWatcher(tdbb, this,
 		ProfilerManager::RecordSourceStopWatcher::Event::OPEN);
 
@@ -203,6 +211,8 @@ Cursor::Cursor(CompilerScratch* csb, const RecordSource* rsb, const RseNode* rse
 
 void Cursor::open(thread_db* tdbb) const
 {
+	Select::open(tdbb);
+
 	const auto request = tdbb->getRequest();
 
 	ProfilerSelectStopWatcher profilerSelectStopWatcher(tdbb, this,

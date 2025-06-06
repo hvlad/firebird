@@ -81,7 +81,7 @@ namespace Jrd
 			children.add(m_root);
 		}
 
-		virtual void open(thread_db* tdbb) const = 0;
+		virtual void open(thread_db* tdbb) const;
 		virtual void close(thread_db* tdbb) const = 0;
 
 	protected:

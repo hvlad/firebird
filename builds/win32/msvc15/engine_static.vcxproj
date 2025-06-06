@@ -131,6 +131,7 @@
     <ClCompile Include="..\..\..\src\jrd\recsrc\LocalTableStream.cpp" />
     <ClCompile Include="..\..\..\src\jrd\recsrc\LockedStream.cpp" />
     <ClCompile Include="..\..\..\src\jrd\recsrc\MergeJoin.cpp" />
+    <ClCompile Include="..\..\..\src\jrd\recsrc\Mutating.cpp" />
     <ClCompile Include="..\..\..\src\jrd\recsrc\NestedLoopJoin.cpp" />
     <ClCompile Include="..\..\..\src\jrd\recsrc\ProcedureScan.cpp" />
     <ClCompile Include="..\..\..\src\jrd\recsrc\RecordSource.cpp" />
@@ -325,6 +326,7 @@
     <ClInclude Include="..\..\..\src\jrd\RecordNumber.h" />
     <ClInclude Include="..\..\..\src\jrd\RecordSourceNodes.h" />
     <ClInclude Include="..\..\..\src\jrd\recsrc\Cursor.h" />
+    <ClInclude Include="..\..\..\src\jrd\recsrc\Mutating.h" />
     <ClInclude Include="..\..\..\src\jrd\recsrc\RecordSource.h" />
     <ClInclude Include="..\..\..\src\jrd\Relation.h" />
     <ClInclude Include="..\..\..\src\jrd\relations.h" />
