@@ -5593,6 +5593,10 @@ static UndoDataRet get_undo_data(thread_db* tdbb, jrd_tra* transaction,
 	if (!transaction->tra_save_point)
 		return udNone;
 
+	const Database* dbb = tdbb->getDatabase();
+	if (!dbb->dbb_config->getEnableStableCursor())
+		return udNone;
+
 	VerbAction* const action = transaction->tra_save_point->getAction(rpb->rpb_relation);
 
 	if (action)
@@ -6610,7 +6614,8 @@ static void refresh_fk_fields(thread_db* tdbb, Record* old_rec, record_param* cu
  *
  **************************************/
 	const Database* dbb = tdbb->getDatabase();
-	const auto overwriteMode = dbb->dbb_config->getUpdateOverwriteMode();
+	const auto overwriteMode = dbb->dbb_config->getEnableStableCursor() ?
+		dbb->dbb_config->getUpdateOverwriteMode() : 0;
 
 	jrd_rel* relation = cur_rpb->rpb_relation;
 
@@ -6662,28 +6667,6 @@ static void refresh_fk_fields(thread_db* tdbb, Record* old_rec, record_param* cu
 		// Else compare field-by-field
 	}
 
-/**
-	DSC desc1, desc2;
-	for (FB_SIZE_T idx = 0; idx < fields.getCount(); idx++)
-	{
-		// Detect if user changed FK field by himself.
-		const int fld = fields[idx];
-		const bool flag_old = EVL_field(relation, old_rec, fld, &desc1);
-		const bool flag_new = EVL_field(relation, new_rpb->rpb_record, fld, &desc2);
-
-		// If field was not changed by user - pick up possible modification by
-		// system cascade trigger
-		if (flag_old == flag_new &&
-			(!flag_old || (flag_old && !MOV_compare(tdbb, &desc1, &desc2))))
-		{
-			const bool flag_tmp = EVL_field(relation, cur_rpb->rpb_record, fld, &desc1);
-			if (flag_tmp)
-				MOV_move(tdbb, &desc1, &desc2);
-			else
-				new_rpb->rpb_record->setNull(fld);
-		}
-	}
-**/
 	for (FB_SIZE_T fld = 0, frn = 0; fld < relation->rel_current_format->fmt_count; fld++)
 	{
 		dsc dsc_old;

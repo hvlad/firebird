@@ -195,6 +195,7 @@ enum ConfigKey
 	KEY_OUTER_JOIN_CONVERSION,
 	KEY_SUBQUERY_CONVERSION,
 	KEY_UPDATE_OVERWRITE_MODE,
+	KEY_ENABLE_STABLE_CURSOR,
 	MAX_CONFIG_KEY		// keep it last
 };
 
@@ -316,7 +317,8 @@ constexpr ConfigEntry entries[MAX_CONFIG_KEY] =
 	{TYPE_BOOLEAN,	"OptimizeForFirstRows",		false,	false},
 	{TYPE_BOOLEAN,	"OuterJoinConversion",		false,	true},
 	{TYPE_BOOLEAN,	"SubQueryConversion",		false,	false},
-	{TYPE_INTEGER,	"UpdateOverwriteMode",		false,	0}
+	{TYPE_INTEGER,	"UpdateOverwriteMode",		false,	0},
+	{TYPE_BOOLEAN,	"EnableStableCursor",		false,	true}
 };
 
 
@@ -656,6 +658,8 @@ public:
 	CONFIG_GET_PER_DB_BOOL(getSubQueryConversion, KEY_SUBQUERY_CONVERSION);
 
 	CONFIG_GET_PER_DB_INT(getUpdateOverwriteMode, KEY_UPDATE_OVERWRITE_MODE);
+
+	CONFIG_GET_PER_DB_BOOL(getEnableStableCursor, KEY_ENABLE_STABLE_CURSOR);
 };
 
 // Implementation of interface to access master configuration file
