@@ -1741,7 +1741,7 @@ void makePad(DataTypeUtilBase* dataTypeUtil, const SysFunction* function, dsc* r
 		else
 		{
 			result->dsc_length = static_cast<USHORT>(sizeof(USHORT)) +
-				dataTypeUtil->fixLength(result, MAX_STR_SIZE);
+				dataTypeUtil->fixLength(result, MAX_VARY_COLUMN_SIZE);
 		}
 	}
 
@@ -5847,7 +5847,7 @@ dsc* evlPad(thread_db* tdbb, const SysFunction* function, const NestValueArray& 
 	}
 	else
 	{
-		if (padLen * cs->maxBytesPerChar() > MAX_STR_SIZE)
+		if (padLen * cs->maxBytesPerChar() > MAX_VARY_COLUMN_SIZE)
 			status_exception::raise(Arg::Gds(isc_arith_except) << Arg::Gds(isc_imp_exc));
 
 		dsc desc;
