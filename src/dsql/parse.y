@@ -698,6 +698,8 @@ using namespace Firebird;
 %token <metaNamePtr> UNICODE_CHAR
 %token <metaNamePtr> UNICODE_VAL
 
+%token <metaNamePtr> SHOW_POOL
+
 // precedence declarations for expression evaluation
 
 %left	OR
@@ -8284,6 +8286,7 @@ system_function_std_syntax
 	| RPAD
 	| RSA_PRIVATE
 	| RSA_PUBLIC
+	| SHOW_POOL
 	| SIGN
 	| SIN
 	| SINH
@@ -9226,6 +9229,7 @@ non_reserved_word
 	| TIMEZONE_NAME
 	| UNICODE_CHAR
 	| UNICODE_VAL
+	| SHOW_POOL
 	;
 
 %%
