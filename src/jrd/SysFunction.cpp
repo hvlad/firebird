@@ -258,6 +258,7 @@ void makeLongResult(DataTypeUtilBase* dataTypeUtil, const SysFunction* function,
 ///void makeLongStringOrBlobResult(DataTypeUtilBase* dataTypeUtil, const SysFunction* function, dsc* result, int argsCount, const dsc** args);
 void makeShortResult(DataTypeUtilBase* dataTypeUtil, const SysFunction* function, dsc* result, int argsCount, const dsc** args);
 void makeBoolResult(DataTypeUtilBase* dataTypeUtil, const SysFunction* function, dsc* result, int argsCount, const dsc** args);
+void makeTextResult(DataTypeUtilBase* dataTypeUtil, const SysFunction* function, dsc* result, int argsCount, const dsc** args);
 
 // specific make functions
 void makeAbs(DataTypeUtilBase* dataTypeUtil, const SysFunction* function, dsc* result, int argsCount, const dsc** args);
@@ -347,6 +348,7 @@ dsc* evlRight(thread_db* tdbb, const SysFunction* function, const NestValueArray
 dsc* evlRoleInUse(thread_db* tdbb, const SysFunction* function, const NestValueArray& args, impure_value* impure);
 dsc* evlRound(thread_db* tdbb, const SysFunction* function, const NestValueArray& args, impure_value* impure);
 dsc* evlSign(thread_db* tdbb, const SysFunction* function, const NestValueArray& args, impure_value* impure);
+dsc* evlShowPool(thread_db* tdbb, const SysFunction* function, const NestValueArray& args, impure_value* impure);
 dsc* evlSqrt(thread_db* tdbb, const SysFunction* function, const NestValueArray& args, impure_value* impure);
 dsc* evlSystemPrivilege(thread_db* tdbb, const SysFunction* function, const NestValueArray& args, impure_value* impure);
 dsc* evlTrunc(thread_db* tdbb, const SysFunction* function, const NestValueArray& args, impure_value* impure);
@@ -1081,6 +1083,13 @@ void makeBoolResult(DataTypeUtilBase* dataTypeUtil, const SysFunction* function,
 	dsc* result, int argsCount, const dsc** args)
 {
 	result->makeBoolean();
+}
+
+
+void makeTextResult(DataTypeUtilBase* dataTypeUtil, const SysFunction* function,
+	dsc* result, int argsCount, const dsc** args)
+{
+	result->makeBlob(isc_blob_text, CS_ASCII);
 }
 
 
@@ -6546,6 +6555,61 @@ dsc* evlSign(thread_db* tdbb, const SysFunction*, const NestValueArray& args,
 }
 
 
+dsc* evlShowPool(thread_db* tdbb, const SysFunction* function, const NestValueArray& args, impure_value* impure)
+{
+	fb_assert(args.getCount() == 1);
+	if (args.getCount() < 1)
+		return nullptr;
+
+	Request* request = tdbb->getRequest();
+
+	const dsc* value = EVL_expr(tdbb, request, args[0]);
+	if (request->req_flags & req_null)	// return NULL if value is NULL
+		return NULL;
+
+	const auto stmtId = MOV_get_int64(tdbb, value, 0);
+
+	// find compiled statement
+	for (const auto statement : tdbb->getAttachment()->att_statements)
+	{
+		if (statement->getStatementId() == stmtId)
+		{
+			PathName tmp = TempFile::create("fb_pool_");
+			FILE* file = os_utils::fopen(tmp.c_str(), "w+b");
+
+			statement->pool->print_contents(file,
+				/*MemoryPool::PRINT_USED_ONLY | */MemoryPool::PRINT_RECURSIVE);
+
+			//EVL_make_value(tdbb, , impure);
+			//impure->vlu_desc.setBlobSubType(isc_blob_text);
+			//impure->vlu_desc.setTextType(CS_ASCII);
+			impure->vlu_desc.makeBlob(isc_blob_text, CS_ASCII, (ISC_QUAD*)&impure->vlu_misc.vlu_bid);
+
+			char buff[16384];
+
+			blb* blob = blb::create(tdbb, tdbb->getTransaction(), &impure->vlu_misc.vlu_bid);
+			blob->blb_flags |= BLB_stream;
+			blob->blb_charset = CS_ASCII;
+
+			fseek(file, 0, SEEK_SET);
+			while (!feof(file))
+			{
+				const auto len = fread_s(buff, sizeof(buff), 1, sizeof(buff), file);
+				blob->BLB_put_segment(tdbb, buff, len);
+			}
+			fclose(file);
+			unlink(tmp.c_str());
+
+			blob->BLB_close(tdbb);
+
+			return &impure->vlu_desc;
+		}
+	}
+
+	return NULL;
+}
+
+
 dsc* evlSqrt(thread_db* tdbb, const SysFunction* function, const NestValueArray& args,
 	impure_value* impure)
 {
@@ -6971,6 +7035,7 @@ const SysFunction SysFunction::functions[] =
 		{"RSA_PUBLIC", 1, 1, false, setParamsRsaPublic, makeRsaPublic, evlRsaPublic, NULL},
 		{"RSA_SIGN_HASH", RSA_SIGN_ARG_MAX, RSA_SIGN_ARG_MAX, true, setParamsRsaSign, makeRsaSign, evlRsaSign, NULL},
 		{"RSA_VERIFY_HASH", RSA_VERIFY_ARG_MAX, RSA_VERIFY_ARG_MAX, true, setParamsRsaVerify, makeBoolResult, evlRsaVerify, NULL},
+		{"SHOW_POOL", 1, 1, false, setParamsInt64, makeTextResult, evlShowPool, NULL},
 		{"SIGN", 1, 1, true, setParamsDblDec, makeShortResult, evlSign, NULL},
 		{"SIN", 1, 1, true, setParamsDouble, makeDoubleResult, evlStdMath, (void*) trfSin},
 		{"SINH", 1, 1, true, setParamsDouble, makeDoubleResult, evlStdMath, (void*) trfSinh},
