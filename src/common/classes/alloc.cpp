@@ -107,7 +107,7 @@ T absVal(T n) noexcept
 
 #undef DELAYED_FREE
 #if defined(USE_VALGRIND) || defined(MEM_DEBUG)
-#define DELAYED_FREE
+//#define DELAYED_FREE
 #endif
 
 #ifdef DELAYED_FREE
@@ -276,9 +276,9 @@ public:
 	static const size_t MEM_HUGE = 0x1;
 	static const size_t MEM_REDIRECT = 0x2;
 	static const size_t MEM_EXTENT = 0x4;
-#ifdef DELAYED_FREE
+//#ifdef DELAYED_FREE
 	static const size_t MEM_ACTIVE = 0x8;
-#endif
+//#endif
 	static const unsigned OFFSET_SHIFT = 16;
 
 	enum HugeBlock {HUGE_BLOCK};
@@ -294,8 +294,8 @@ private:
 
 public:
 #ifdef DEBUG_GDS_ALLOC
-	INT32		lineNumber;
-	const char	*fileName;
+	INT32		lineNumber = 0;
+	const char	*fileName = nullptr;
 #elif (SIZEOF_VOID_P == 4)
 	FB_UINT64 dummyAlign;
 #endif
@@ -377,7 +377,7 @@ public:
 		return hdrLength & MEM_EXTENT;
 	}
 
-#ifdef DELAYED_FREE
+//#ifdef DELAYED_FREE
 	void setActive()
 	{
 		fb_assert(!isActive());
@@ -394,7 +394,12 @@ public:
 	{
 		return hdrLength & MEM_ACTIVE;
 	}
-#endif
+//#else
+//	bool isActive() const
+//	{
+//		return true;
+//	}
+//#endif
 
 	void assertBig()
 	{
@@ -414,14 +419,14 @@ public:
 
 			if (!filter)
 			{
-				if (isActive() || redirected())
-				{
+				//if (isActive() || redirected())
+				//{
 					fprintf(file, "%s %p: size=%" SIZEFORMAT " allocated at %s:%d",
-						isExtent() ? "EXTN" : redirected() ? "RDIR" : "USED",
+						isExtent() ? "EXTN" : redirected() ? "RDIR" : isActive() ? "USED" : "FREE",
 						this, getSize(), fileName, lineNumber);
-				}
-				else
-					fprintf(file, "FREE %p: size=%" SIZEFORMAT, this, getSize());
+				//}
+				//else
+				//	fprintf(file, "FREE %p: size=%" SIZEFORMAT, this, getSize());
 
 				if (hdrLength & MEM_HUGE)
 					fprintf(file, " HUGE");
@@ -2048,6 +2053,8 @@ MemPool::~MemPool(void)
 			}
 			else
 				block->resetActive();
+#else
+			block->resetActive();
 #endif
 			parent->releaseBlock(block, false);
 		}
@@ -2228,9 +2235,9 @@ MemBlock* MemPool::allocateRange(size_t from, size_t& size
 	memset(&memory->body + size, GUARD_BYTE, memory->getSize() - offsetof(MemBlock,body) - size);
 #endif
 
-#ifdef DELAYED_FREE
+//#ifdef DELAYED_FREE
 	memory->setActive();
-#endif
+//#endif
 
 	fb_assert((U_IPTR)(&memory->body) % ALLOC_ALIGNMENT == 0);
 	return memory;
@@ -2306,13 +2313,15 @@ void MemPool::releaseMemory(void* object, bool flagExtent) noexcept
 		// Move queue pointer to next element and cycle if needed
 		if (++(pool->delayedFreePos) >= FB_NELEM(pool->delayedFree))
 			pool->delayedFreePos = 0;
+#else
+		block->resetActive();
 #endif
 
 		// Re-enable access to MemBlock
 		block->valgrindInternal();
 
 #ifdef DEBUG_GDS_ALLOC
-		block->fileName = NULL;
+		//block->fileName = NULL;
 #endif
 
 		// Finally delete it
