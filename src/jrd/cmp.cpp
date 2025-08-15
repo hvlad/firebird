@@ -453,9 +453,7 @@ USHORT NodeCopier::getFieldId(const FieldNode* field)
 // Copy items' information into appropriate node.
 ItemInfo* CMP_pass2_validation(thread_db* tdbb, CompilerScratch* csb, const Item& item)
 {
-	ItemInfo itemInfo;
-	return csb->csb_map_item_info.get(item, itemInfo) ?
-		FB_NEW_POOL(*tdbb->getDefaultPool()) ItemInfo(*tdbb->getDefaultPool(), itemInfo) : NULL;
+	return csb->csb_map_item_info.get(item);
 }
 
 
