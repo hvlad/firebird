@@ -28,6 +28,7 @@
 #include "../jrd/val.h"
 #include "../jrd/align.h"
 #include "../dsql/Nodes.h"
+#include "../dsql/ExprNodes.h"
 #include "../dsql/StmtNodes.h"
 #include "../jrd/Function.h"
 #include "../jrd/cmp_proto.h"
@@ -58,6 +59,34 @@ ULONG CompilerScratch::allocImpure(ULONG align, ULONG size)
 	return offset;
 }
 
+ParameterNode* CompilerScratch::getParameter(USHORT msgNumber, USHORT argNumber)
+{
+	ParameterNode* param = nullptr;
+	ParamIndex idx(msgNumber, argNumber);
+	FB_SIZE_T pos;
+	if (csb_parameters.find(idx, pos))
+		param = csb_parameters[pos];
+	else
+	{
+		param = FB_NEW_POOL(csb_pool) ParameterNode(csb_pool);
+		param->messageNumber = msgNumber;
+		param->argNumber = argNumber;
+		csb_parameters.insert(pos, param);
+	}
+
+	return param;
+}
+
+void CompilerScratch::replaceParameter(ParameterNode* param)
+{
+	ParamIndex idx(param);
+	FB_SIZE_T pos;
+	if (csb_parameters.find(idx, pos))
+		csb_parameters[pos] = param;
+	else
+		csb_parameters.insert(pos, param);
+}
+
 
 // Start to turn a parsed scratch into a statement. This is completed by makeStatement.
 Statement::Statement(thread_db* tdbb, MemoryPool* p, CompilerScratch* csb)
@@ -79,6 +108,8 @@ Statement::Statement(thread_db* tdbb, MemoryPool* p, CompilerScratch* csb)
 {
 	try
 	{
+		csb->csb_parameters.free();
+
 		makeSubRoutines(tdbb, this, csb, csb->subProcedures);
 		makeSubRoutines(tdbb, this, csb, csb->subFunctions);
 

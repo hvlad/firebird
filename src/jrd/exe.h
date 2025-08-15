@@ -82,6 +82,8 @@ class DeclareSubFuncNode;
 class DeclareSubProcNode;
 class DeclareVariableNode;
 class MessageNode;
+class ParameterNode;
+class ParamIndex;
 class PlanNode;
 class RecordSource;
 class Select;
@@ -432,6 +434,15 @@ typedef Firebird::GenericMap<Firebird::Pair<Firebird::Left<MetaNamePair, FieldIn
 	MapFieldInfo;
 typedef Firebird::GenericMap<Firebird::Pair<Firebird::Right<Item, ItemInfo> > > MapItemInfo;
 
+typedef Firebird::SortedArray<
+	ParameterNode*,
+	Firebird::EmptyStorage<ParameterNode*>,
+	ParamIndex,
+	ParamIndex,
+	ParamIndex
+> ParametersArray;
+
+
 // Compile scratch block
 
 class CompilerScratch : public pool_alloc<type_csb>
@@ -485,6 +496,7 @@ public:
 		csb_forCursorNames(p),
 		csb_computing_fields(p),
 		csb_inner_booleans(p),
+		csb_parameters(p),
 		csb_variables_used_in_subroutines(p),
 		csb_pool(p),
 		csb_map_field_info(p),
@@ -531,6 +543,9 @@ public:
 		dependencies.add(dependency);
 	}
 
+	ParameterNode* getParameter(USHORT msgNumber, USHORT argNumber);
+	void replaceParameter(ParameterNode* param);
+
 #ifdef CMP_DEBUG
 	void dump(const char* format, ...)
 	{
@@ -565,6 +580,7 @@ public:
 	Firebird::RightPooledMap<ForNode*, MetaName> csb_forCursorNames;
 	Firebird::SortedArray<jrd_fld*> csb_computing_fields;	// Computed fields being compiled
 	Firebird::Array<BoolExprNode*> csb_inner_booleans;	// Inner booleans at the current scope
+	ParametersArray csb_parameters;	// Array of parameters
 	Firebird::SortedArray<USHORT> csb_variables_used_in_subroutines;
 	StreamType		csb_n_stream;				// Next available stream
 	USHORT			csb_msg_number;				// Highest used message number

@@ -1650,6 +1650,40 @@ public:
 	bool outerDecl = false;
 };
 
+class ParamIndex
+{
+public:
+	ParamIndex() {}
+
+	ParamIndex(USHORT msgNumber, USHORT argNumber) :
+		m_msg(msgNumber),
+		m_arg(argNumber)
+	{
+	}
+
+	explicit ParamIndex(const ParameterNode* param) :
+		m_msg(param->messageNumber),
+		m_arg(param->argNumber)
+	{
+	}
+
+	static bool greaterThan(const ParamIndex& p1, const ParamIndex& p2)
+	{
+		return (p1.m_msg > p2.m_msg) ||
+			(p1.m_msg == p2.m_msg) && (p1.m_arg > p2.m_arg);
+	}
+
+	static const ParamIndex& generate(const ParameterNode* node)
+	{
+		return ParamIndex(node);
+	}
+
+private:
+	USHORT m_msg = 0;
+	USHORT m_arg = 0;
+};
+
+
 
 class RecordKeyNode final : public TypedNode<ValueExprNode, ExprNode::TYPE_RECORD_KEY>
 {
