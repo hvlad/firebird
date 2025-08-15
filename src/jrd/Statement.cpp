@@ -239,7 +239,7 @@ Statement::Statement(thread_db* tdbb, MemoryPool* p, CompilerScratch* csb)
 		csb->csb_computing_fields.free();
 		csb->csb_variables_used_in_subroutines.free();
 		csb->csb_dbg_info.reset();
-		csb->csb_map_item_info.clear();
+		//csb->csb_map_item_info.clear();  // info items is used by parameters and variables
 		csb->csb_message_pad.clear();
 		csb->subFunctions.clear();
 		csb->subProcedures.clear();
