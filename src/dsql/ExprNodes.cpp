@@ -9529,16 +9529,19 @@ ParameterNode::ParameterNode(MemoryPool& pool)
 
 DmlNode* ParameterNode::parse(thread_db* /*tdbb*/, MemoryPool& pool, CompilerScratch* csb, const UCHAR blrOp)
 {
-	const auto node = FB_NEW_POOL(pool) ParameterNode(pool);
+	const USHORT msg = csb->csb_blr_reader.getByte();
+	const USHORT arg = csb->csb_blr_reader.getWord();
 
-	node->messageNumber = csb->csb_blr_reader.getByte();
-	node->argNumber = csb->csb_blr_reader.getWord();
+	const auto node = csb->getParameter(msg, arg);
+	fb_assert(node);
 
 	if (blrOp != blr_parameter)
 	{
-		const auto flagNode = FB_NEW_POOL(pool) ParameterNode(pool);
-		flagNode->messageNumber = node->messageNumber;
-		flagNode->argNumber = csb->csb_blr_reader.getWord();
+		const USHORT flag = csb->csb_blr_reader.getWord();
+
+		const auto flagNode = csb->getParameter(msg, flag);
+		fb_assert(!node->argFlag || node->argFlag == flagNode);
+
 		node->argFlag = flagNode;
 	}
 
@@ -9778,6 +9781,8 @@ ParameterNode* ParameterNode::copy(thread_db* tdbb, NodeCopier& copier) const
 	node->messageNumber = messageNumber;
 	node->argFlag = copier.copy(tdbb, argFlag);
 	node->outerDecl = outerDecl;
+
+	copier.csb->replaceParameter(node);
 
 	return node;
 }
@@ -12301,7 +12306,7 @@ DmlNode* SysFuncCallNode::parse(thread_db* tdbb, MemoryPool& pool, CompilerScrat
 		// Special handling for system function MAKE_DBKEY:
 		// convert constant relation name into ID at the parsing time
 
-		auto literal = node->args->items.getCount() ? 
+		auto literal = node->args->items.getCount() ?
 			nodeAs<LiteralNode>(node->args->items[0]) : nullptr;
 
 		if (literal && literal->litDesc.isText())

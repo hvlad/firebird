@@ -1242,15 +1242,11 @@ void PAR_procedure_parms(thread_db* tdbb, CompilerScratch* csb, jrd_prc* procedu
 			else
 				*sourcePtr++ = PAR_parse_value(tdbb, csb);
 
-			ParameterNode* paramNode = FB_NEW_POOL(csb->csb_pool) ParameterNode(csb->csb_pool);
-			paramNode->messageNumber = message->messageNumber;
+			const auto paramNode = csb->getParameter(message->messageNumber, i++);
 			paramNode->message = message;
-			paramNode->argNumber = i++;
 
-			ParameterNode* paramFlagNode = FB_NEW_POOL(csb->csb_pool) ParameterNode(csb->csb_pool);
-			paramFlagNode->messageNumber = message->messageNumber;
+			const auto paramFlagNode = csb->getParameter(message->messageNumber, i++);
 			paramFlagNode->message = message;
-			paramFlagNode->argNumber = i++;
 
 			paramNode->argFlag = paramFlagNode;
 
