@@ -6594,7 +6594,7 @@ dsc* evlShowPool(thread_db* tdbb, const SysFunction* function, const NestValueAr
 			fseek(file, 0, SEEK_SET);
 			while (!feof(file))
 			{
-				const auto len = fread_s(buff, sizeof(buff), 1, sizeof(buff), file);
+				const auto len = fread(buff, 1, sizeof(buff), file);
 				blob->BLB_put_segment(tdbb, buff, len);
 			}
 			fclose(file);

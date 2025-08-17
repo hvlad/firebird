@@ -1673,7 +1673,7 @@ public:
 			(p1.m_msg == p2.m_msg) && (p1.m_arg > p2.m_arg);
 	}
 
-	static const ParamIndex& generate(const ParameterNode* node)
+	static const ParamIndex generate(const ParameterNode* node)
 	{
 		return ParamIndex(node);
 	}
