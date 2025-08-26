@@ -13655,9 +13655,8 @@ VariableNode::VariableNode(MemoryPool& pool)
 
 DmlNode* VariableNode::parse(thread_db* /*tdbb*/, MemoryPool& pool, CompilerScratch* csb, const UCHAR blrOp)
 {
-	VariableNode* node = FB_NEW_POOL(pool) VariableNode(pool);
-	node->varId = csb->csb_blr_reader.getWord();
-	return node;
+	const USHORT varId = csb->csb_blr_reader.getWord();
+	return csb->getVariable(varId);
 }
 
 string VariableNode::internalPrint(NodePrinter& printer) const
@@ -13806,8 +13805,7 @@ void VariableNode::getDesc(thread_db* /*tdbb*/, CompilerScratch* /*csb*/, dsc* d
 
 ValueExprNode* VariableNode::copy(thread_db* tdbb, NodeCopier& copier) const
 {
-	VariableNode* node = FB_NEW_POOL(*tdbb->getDefaultPool()) VariableNode(*tdbb->getDefaultPool());
-	node->varId = copier.csb->csb_remap_variable + varId;
+	VariableNode* node = copier.csb->getVariable(copier.csb->csb_remap_variable + varId);
 	node->outerDecl = outerDecl;
 	node->varDecl = varDecl;
 	node->varInfo = varInfo;

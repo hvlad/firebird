@@ -87,6 +87,18 @@ void CompilerScratch::replaceParameter(ParameterNode* param)
 		csb_parameters.insert(pos, param);
 }
 
+VariableNode* CompilerScratch::getVariable(USHORT varId)
+{
+	FB_SIZE_T pos;
+	if (csb_var_nodes.find(varId, pos))
+		return csb_var_nodes[pos];
+
+	VariableNode* var = FB_NEW_POOL(csb_pool) VariableNode(csb_pool);
+	var->varId = varId;
+	csb_var_nodes.insert(pos, var);
+	return var;
+}
+
 
 // Start to turn a parsed scratch into a statement. This is completed by makeStatement.
 Statement::Statement(thread_db* tdbb, MemoryPool* p, CompilerScratch* csb)
@@ -237,6 +249,7 @@ Statement::Statement(thread_db* tdbb, MemoryPool* p, CompilerScratch* csb)
 		csb->csb_current_nodes.free();
 		csb->csb_current_for_nodes.free();
 		csb->csb_computing_fields.free();
+		// csb_var_nodes - don't clear
 		csb->csb_variables_used_in_subroutines.free();
 		csb->csb_dbg_info.reset();
 		//csb->csb_map_item_info.clear();  // info items is used by parameters and variables
