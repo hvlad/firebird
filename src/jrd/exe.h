@@ -442,6 +442,11 @@ typedef Firebird::SortedArray<
 	ParamIndex
 > ParametersArray;
 
+typedef Firebird::SortedArray<
+	VariableNode*,
+	Firebird::EmptyStorage<VariableNode*>,
+	USHORT, VariableNode
+> VariablesArray;
 
 // Compile scratch block
 
@@ -497,6 +502,7 @@ public:
 		csb_computing_fields(p),
 		csb_inner_booleans(p),
 		csb_parameters(p),
+		csb_var_nodes(p),
 		csb_variables_used_in_subroutines(p),
 		csb_pool(p),
 		csb_map_field_info(p),
@@ -546,6 +552,8 @@ public:
 	ParameterNode* getParameter(USHORT msgNumber, USHORT argNumber);
 	void replaceParameter(ParameterNode* param);
 
+	VariableNode* getVariable(USHORT varId);
+
 #ifdef CMP_DEBUG
 	void dump(const char* format, ...)
 	{
@@ -580,7 +588,8 @@ public:
 	Firebird::RightPooledMap<ForNode*, MetaName> csb_forCursorNames;
 	Firebird::SortedArray<jrd_fld*> csb_computing_fields;	// Computed fields being compiled
 	Firebird::Array<BoolExprNode*> csb_inner_booleans;	// Inner booleans at the current scope
-	ParametersArray csb_parameters;	// Array of parameters
+	ParametersArray csb_parameters;				// Array of parameters
+	VariablesArray csb_var_nodes;				// All variable's nodes
 	Firebird::SortedArray<USHORT> csb_variables_used_in_subroutines;
 	StreamType		csb_n_stream;				// Next available stream
 	USHORT			csb_msg_number;				// Highest used message number

@@ -2313,6 +2313,11 @@ public:
 	virtual ValueExprNode* pass2(thread_db* tdbb, CompilerScratch* csb);
 	virtual dsc* execute(thread_db* tdbb, Request* request) const;
 
+	static const USHORT generate(const VariableNode* node)
+	{
+		return node->varId;
+	}
+
 public:
 	MetaName dsqlName;
 	NestConst<dsql_var> dsqlVar;
