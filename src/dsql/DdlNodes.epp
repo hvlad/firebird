@@ -7212,20 +7212,38 @@ void RelationNode::generateFieldsFromSubquery(thread_db* tdbb, DsqlCompilerScrat
 	if (clauses.isEmpty() || clauses[0]->type != Clause::TYPE_AS_SUBQUERY)
 		return;
 
-	AsSubqueryClause* subQry = static_cast<AsSubqueryClause*>(clauses[0].getObject());
+	dsqlScratch->getBlrData().clear();
+	dsqlScratch->getDebugData().clear();
+	dsqlScratch->appendVersion();
 
 	dsqlScratch->resetContextStack();
-	dsqlScratch->contextNumber = 2;
+
+	// Target relation's context
+	const UCHAR context = dsqlScratch->contextNumber++;
+
+	AsSubqueryClause* subQry = static_cast<AsSubqueryClause*>(clauses[0].getObject());
 	RseNode* rse = PASS1_rse(dsqlScratch, subQry->selectExpr);
+
+	dsqlScratch->appendUChar(blr_begin);
+	dsqlScratch->appendUChar(blr_for);
+	dsqlScratch->putBlrMarkers(StmtNode::MARK_FOR_UPDATE | StmtNode::MARK_BULK_INSERT);
+	GEN_rse(dsqlScratch, rse);
+
+	dsqlScratch->appendUChar(blr_store);			// blr_store_direct
+	dsqlScratch->appendUChar(blr_relation);
+	dsqlScratch->appendMetaString(name.c_str());
+	dsqlScratch->appendUChar(context);
+
+	// generate assignments
+	dsqlScratch->appendUChar(blr_begin);
 
 	ValueListNode* items = rse->dsqlSelectList;
 	NestConst<ValueExprNode>* itemsPtr = items->items.begin();
-	SSHORT position = 0;
 
 	MemoryPool& pool = dsqlScratch->getPool();
 
 	for (NestConst<ValueExprNode>* itemsEnd = items->items.end();
-		itemsPtr < itemsEnd; ++itemsPtr, ++position)
+		itemsPtr < itemsEnd; ++itemsPtr)
 	{
 		AddColumnClause* column = FB_NEW_POOL(pool)	AddColumnClause(pool);
 		column->field = FB_NEW_POOL(pool) dsql_fld(pool);
@@ -7283,6 +7301,8 @@ void RelationNode::generateFieldsFromSubquery(thread_db* tdbb, DsqlCompilerScrat
 				Arg::Gds(isc_specify_field_err));
 		}
 
+		dsqlScratch->appendUChar(blr_assignment);
+
 		// Check if this is a field or an expression.
 
 		DsqlAliasNode* aliasNode = nodeAs<DsqlAliasNode>(fieldNode);
@@ -7325,13 +7345,53 @@ void RelationNode::generateFieldsFromSubquery(thread_db* tdbb, DsqlCompilerScrat
 				field->subType = desc.dsc_sub_type;
 
 			field->setExactPrecision();
+
+			//fieldNode->genBlr(dsqlScratch);	// ??
 		}
 
 		column->field->fld_name = fieldStr;
 		clauses.add(column);
+
+		// source expression
+		fieldNode->genBlr(dsqlScratch);
+
+		// target field
+		dsqlScratch->appendUChar(blr_field);
+		dsqlScratch->appendUChar(context);
+		dsqlScratch->appendMetaString(fieldStr);
 	}
 
+	dsqlScratch->appendUChar(blr_end);	// of assignments
+	dsqlScratch->appendUChar(blr_end);	// of begin
+	dsqlScratch->appendUChar(blr_eoc);	// end of the blr
+
+#ifdef DSQL_DEBUG
+	if (DSQL_debug & 64)
+	{
+/*		dsql_trace("Resulting BLR code for DSQL:");
+		gds__trace_raw("Statement:\n");
+		gds__trace_raw(getSqlText()->c_str(), getSqlText()->length());
+*/
+		gds__trace_raw("\nBLR:\n");
+		fb_print_blr(dsqlScratch->getBlrData().begin(),
+			(ULONG) dsqlScratch->getBlrData().getCount(),
+			gds__trace_printer, 0, 0);
+	}
+#endif
+
 	dsqlScratch->resetContextStack();
+
+	if (subQry->withData)
+	{
+		jrd_tra* transaction = tdbb->getTransaction();
+		string blr(*transaction->tra_pool);
+
+		auto data = dsqlScratch->getBlrData();
+		blr.assign(data.begin(), data.getCount());
+
+		auto work = DFW_post_work(transaction, dfw_load_relation_data, string(name.c_str()), 0);
+		DFW_post_work_arg(transaction, work, blr, 0, dfw_load_relation_data);
+	}
 }
 
 // Common code factored out.

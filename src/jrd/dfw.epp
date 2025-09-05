@@ -457,6 +457,7 @@ static bool modify_index(thread_db*, SSHORT, DeferredWork*, jrd_tra*);
 static bool create_index(thread_db*, SSHORT, DeferredWork*, jrd_tra*);
 static bool delete_index(thread_db*, SSHORT, DeferredWork*, jrd_tra*);
 static bool create_relation(thread_db*, SSHORT, DeferredWork*, jrd_tra*);
+static bool load_relation_data(thread_db*, SSHORT, DeferredWork*, jrd_tra*);
 static bool delete_relation(thread_db*, SSHORT, DeferredWork*, jrd_tra*);
 static bool scan_relation(thread_db*, SSHORT, DeferredWork*, jrd_tra*);
 static bool create_trigger(thread_db*, SSHORT, DeferredWork*, jrd_tra*);
@@ -1281,6 +1282,7 @@ static const deferred_task task_table[] =
 	{ dfw_set_linger, set_linger },
 	{ dfw_clear_cache, clear_cache },
 	{ dfw_change_repl_state, change_repl_state },
+	{ dfw_load_relation_data, load_relation_data},
 	{ dfw_null, NULL }
 };
 
@@ -3887,6 +3889,36 @@ static bool create_relation(thread_db* tdbb, SSHORT phase, DeferredWork* work, j
 		}
 		END_FOR
 
+		break;
+	}
+
+	return false;
+}
+
+
+static bool load_relation_data(thread_db* tdbb, SSHORT phase, DeferredWork* work, jrd_tra* transaction)
+{
+	SET_TDBB(tdbb);
+
+	switch (phase)
+	{
+	case 1:
+	case 2:
+	case 3:
+	case 4:
+		return true;
+
+	case 5:
+		{
+			auto arg = work->findArg(dfw_load_relation_data);
+			string& strBlr = arg->dfw_name;
+
+			AutoRequest request;
+			request.compile(tdbb, (const UCHAR*) strBlr.begin(), strBlr.length());
+
+			EXE_start(tdbb, request, transaction);
+			const bool error = (request->req_operation == Request::req_unwind);
+		}
 		break;
 	}
 
