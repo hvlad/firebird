@@ -1311,7 +1311,8 @@ public:
 			TYPE_DROP_COLUMN,
 			TYPE_DROP_CONSTRAINT,
 			TYPE_ALTER_SQL_SECURITY,
-			TYPE_ALTER_PUBLICATION
+			TYPE_ALTER_PUBLICATION,
+			TYPE_AS_SUBQUERY
 		};
 
 		explicit Clause(MemoryPool& p, Type aType)
@@ -1499,6 +1500,17 @@ public:
 		MetaName name;
 	};
 
+	struct AsSubqueryClause : public Clause
+	{
+		explicit AsSubqueryClause(MemoryPool& p)
+			: Clause(p, TYPE_AS_SUBQUERY)
+		{
+		}
+
+		NestConst<SelectExprNode> selectExpr;
+		bool withData = false;
+	};
+
 	RelationNode(MemoryPool& p, RelationSourceNode* aDsqlNode);
 
 	static void deleteLocalField(thread_db* tdbb, jrd_tra* transaction,
@@ -1547,6 +1559,7 @@ protected:
 	void stuffMatchingBlr(Constraint& constraint, BlrDebugWriter& blrWriter);
 	void stuffTriggerFiringCondition(const Constraint& constraint, BlrDebugWriter& blrWriter);
 
+	void generateFieldsFromSubquery(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch);
 public:
 	NestConst<RelationSourceNode> dsqlNode;
 	MetaName name;

@@ -811,6 +811,7 @@ using namespace Firebird;
 	Jrd::RelationNode* relationNode;
 	Jrd::RelationNode::AddColumnClause* addColumnClause;
 	Jrd::RelationNode::RefActionClause* refActionClause;
+	Jrd::RelationNode::AsSubqueryClause* asSubqueryClause;
 	Jrd::RelationNode::IndexConstraintClause* indexConstraintClause;
 	Jrd::RelationNode::IdentityOptions* identityOptions;
 	IdentityType identityType;
@@ -2232,7 +2233,7 @@ table_clause
 			{
 				$<createRelationNode>$ = newNode<CreateRelationNode>($1, $2);
 			}
-		'(' table_elements($3) ')' table_attributes($3)
+		table_contents_source($3) table_attributes($3)
 			{
 				$$ = $3;
 			}
@@ -2277,7 +2278,7 @@ gtt_table_clause
 				$<createRelationNode>$ = newNode<CreateRelationNode>($1);
 				$<createRelationNode>$->relationType = Nullable<rel_t>::empty();
 			}
-		'(' table_elements($2) ')' gtt_ops($2)
+		table_contents_source($2) gtt_ops($2)
 			{
 				$$ = $2;
 				if (!$$->relationType.specified)
@@ -2309,6 +2310,12 @@ external_file
 	| EXTERNAL utf_string			{ $$ = $2; }
 	;
 
+%type table_contents_source(<createRelationNode>)
+table_contents_source($createRelationNode)
+	: '(' table_elements($createRelationNode) ')'
+	| as_subquery_clause($createRelationNode)
+	;
+
 %type table_elements(<createRelationNode>)
 table_elements($createRelationNode)
 	: table_element($createRelationNode)
@@ -2319,6 +2326,25 @@ table_elements($createRelationNode)
 table_element($createRelationNode)
 	: column_def($createRelationNode)
 	| table_constraint_definition($createRelationNode)
+	;
+
+%type as_subquery_clause(<relationNode>)
+as_subquery_clause($relationNode)
+	: AS '(' select_expr ')' with_data
+		{
+			RelationNode::AsSubqueryClause* clause = $<asSubqueryClause>$ =
+				newNode<RelationNode::AsSubqueryClause>();
+			clause->selectExpr = $3;
+			clause->withData = $5;
+			$relationNode->clauses.add(clause);
+		}
+	;
+
+%type <boolVal> with_data
+with_data
+	: /* nothing */		{ $$ = false; }
+	| WITH DATA			{ $$ = true; }
+	| WITH NO DATA		{ $$ = false; }
 	;
 
 // column definition

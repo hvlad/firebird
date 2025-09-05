@@ -7207,6 +7207,133 @@ void RelationNode::defineUpdateCascadeTrigger(DsqlCompilerScratch* dsqlScratch,
 	trigger.blrData = blrWriter.getBlrData();
 }
 
+void RelationNode::generateFieldsFromSubquery(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch)
+{
+	if (clauses.isEmpty() || clauses[0]->type != Clause::TYPE_AS_SUBQUERY)
+		return;
+
+	AsSubqueryClause* subQry = static_cast<AsSubqueryClause*>(clauses[0].getObject());
+
+	dsqlScratch->resetContextStack();
+	dsqlScratch->contextNumber = 2;
+	RseNode* rse = PASS1_rse(dsqlScratch, subQry->selectExpr);
+
+	ValueListNode* items = rse->dsqlSelectList;
+	NestConst<ValueExprNode>* itemsPtr = items->items.begin();
+	SSHORT position = 0;
+
+	MemoryPool& pool = dsqlScratch->getPool();
+
+	for (NestConst<ValueExprNode>* itemsEnd = items->items.end();
+		itemsPtr < itemsEnd; ++itemsPtr, ++position)
+	{
+		AddColumnClause* column = FB_NEW_POOL(pool)	AddColumnClause(pool);
+		column->field = FB_NEW_POOL(pool) dsql_fld(pool);
+
+		ValueExprNode* fieldNode = *itemsPtr;
+
+		// Determine the proper field name, replacing the default if necessary.
+
+		ValueExprNode* nameNode = fieldNode;
+		const char* aliasName = nullptr;
+
+		while (nodeIs<DsqlAliasNode>(nameNode) || nodeIs<DerivedFieldNode>(nameNode) || nodeIs<DsqlMapNode>(nameNode))
+		{
+			DsqlAliasNode* aliasNode;
+			DsqlMapNode* mapNode;
+			DerivedFieldNode* derivedField;
+
+			if ((aliasNode = nodeAs<DsqlAliasNode>(nameNode)))
+			{
+				if (!aliasName)
+					aliasName = aliasNode->name.c_str();
+				nameNode = aliasNode->value;
+			}
+			else if ((mapNode = nodeAs<DsqlMapNode>(nameNode)))
+				nameNode = mapNode->map->map_node;
+			else if ((derivedField = nodeAs<DerivedFieldNode>(nameNode)))
+			{
+				if (!aliasName)
+					aliasName = derivedField->name.c_str();
+				nameNode = derivedField->value;
+			}
+		}
+
+		const TEXT* fieldStr = nullptr;
+
+		if (aliasName)
+			fieldStr = aliasName;
+		else
+		{
+			const dsql_fld* nameField = nullptr;
+
+			if (const FieldNode* fieldNameNode = nodeAs<FieldNode>(nameNode))
+				nameField = fieldNameNode->dsqlField;
+
+			if (nameField)
+				fieldStr = nameField->fld_name.c_str();
+		}
+
+		if (!fieldStr)
+		{
+			// must specify field name for view select expression
+			status_exception::raise(
+				Arg::Gds(isc_sqlerr) << Arg::Num(-607) <<
+				Arg::Gds(isc_dsql_command_err) <<
+				Arg::Gds(isc_specify_field_err));
+		}
+
+		// Check if this is a field or an expression.
+
+		DsqlAliasNode* aliasNode = nodeAs<DsqlAliasNode>(fieldNode);
+
+		if (aliasNode)
+			fieldNode = aliasNode->value;
+
+		if (const auto fieldNameNode = nodeAs<FieldNode>(fieldNode))
+		{
+			dsql_fld* field = fieldNameNode->dsqlField;
+			field->resolve(dsqlScratch);
+			*(TypeClause*)column->field = *field;		// ??
+		}
+		else
+		{
+			dsc desc;
+			DsqlDescMaker::fromNode(dsqlScratch, &desc, fieldNode);
+
+			dsql_fld* field = column->field;
+			field->dtype = desc.dsc_dtype;
+			field->length = desc.dsc_length;
+			field->scale = desc.dsc_scale;
+
+			if (desc.isText() || (desc.isBlob() && desc.getBlobSubType() == isc_blob_text))
+			{
+				field->charSetId = desc.getCharSet();
+				field->collationId = desc.getCollation();
+			}
+
+			if (desc.isText())
+			{
+				const USHORT adjust =
+					(desc.dsc_dtype == dtype_varying) ? sizeof(USHORT) : 0;
+				const USHORT bpc =
+					METD_get_charset_bpc(dsqlScratch->getTransaction(), field->charSetId.value);
+
+				field->charLength = (field->length - adjust) / bpc;
+			}
+			else
+				field->subType = desc.dsc_sub_type;
+
+			field->setExactPrecision();
+		}
+
+		column->field->fld_name = fieldStr;
+		clauses.add(column);
+	}
+
+	dsqlScratch->resetContextStack();
+}
+
 // Common code factored out.
 void RelationNode::generateUnnamedTriggerBeginning(Constraint& constraint, bool onUpdate,
 	BlrDebugWriter& blrWriter)
@@ -7372,6 +7499,8 @@ void CreateRelationNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
 void CreateRelationNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch,
 	jrd_tra* transaction)
 {
+	generateFieldsFromSubquery(tdbb, dsqlScratch);
+
 	saveRelation(tdbb, dsqlScratch, name, false, true);
 
 	if (externalFile)
@@ -7473,6 +7602,9 @@ void CreateRelationNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScrat
 			case Clause::TYPE_ADD_CONSTRAINT:
 				makeConstraint(tdbb, dsqlScratch, transaction,
 					static_cast<AddConstraintClause*>(i->getObject()), constraints);
+				break;
+
+			case Clause::TYPE_AS_SUBQUERY:
 				break;
 
 			default:
