@@ -534,6 +534,9 @@
     <ClCompile Include="..\..\..\src\jrd\WorkerAttachment.cpp">
       <Filter>JRD files</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\jrd\DirectInsert.cpp">
+      <Filter>JRD files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\..\..\src\jrd\recsrc\RecordSource.h">
@@ -1092,6 +1095,9 @@
       <Filter>Header files</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\jrd\PageToBufferMap.h" />
+    <ClInclude Include="..\..\..\src\jrd\DirectInsert.h">
+      <Filter>Header files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="..\..\..\src\dsql\DdlNodes.epp">
