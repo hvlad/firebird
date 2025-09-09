@@ -1753,7 +1753,7 @@ DeferredWork* DFW_post_work(jrd_tra* transaction, enum dfw_t type, const string&
 }
 
 
-DeferredWork* DFW_post_work_arg( jrd_tra* transaction, DeferredWork* work, const dsc* desc,
+DeferredWork* DFW_post_work_arg(jrd_tra* transaction, DeferredWork* work, const dsc* desc,
 	USHORT id)
 {
 /**************************************
@@ -1770,8 +1770,15 @@ DeferredWork* DFW_post_work_arg( jrd_tra* transaction, DeferredWork* work, const
 }
 
 
-DeferredWork* DFW_post_work_arg( jrd_tra* transaction, DeferredWork* work, const dsc* desc,
+DeferredWork* DFW_post_work_arg(jrd_tra* transaction, DeferredWork* work, const dsc* desc,
 	USHORT id, Jrd::dfw_t type)
+{
+	const string name = get_string(desc);
+	return DFW_post_work_arg(transaction, work, name, id, type);
+}
+
+DeferredWork* DFW_post_work_arg(jrd_tra* transaction, DeferredWork* work, const string& name,
+	USHORT id, dfw_t type)
 {
 /**************************************
  *
@@ -1783,11 +1790,9 @@ DeferredWork* DFW_post_work_arg( jrd_tra* transaction, DeferredWork* work, const
  *	Post an argument for work to be deferred to commit time.
  *
  **************************************/
-	const Firebird::string name = get_string(desc);
-
 	DeferredWork* arg = work->findArg(type);
 
-	if (! arg)
+	if (!arg)
 	{
 		arg = FB_NEW_POOL(*transaction->tra_pool)
 			DeferredWork(*transaction->tra_pool, 0, type, id, 0, name, "");
