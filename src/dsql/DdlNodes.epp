@@ -7327,7 +7327,7 @@ void RelationNode::generateFieldsFromSubquery(thread_db* tdbb, DsqlCompilerScrat
 
 		// Check if this is a field, a cast or an expression.
 
-		dsql_fld* field;
+		dsql_fld* field = nullptr;
 
 		if (const auto fieldNameNode = nodeAs<FieldNode>(fieldNode))
 			field = fieldNameNode->dsqlField;
