@@ -2330,12 +2330,13 @@ table_element($createRelationNode)
 
 %type as_subquery_clause(<relationNode>)
 as_subquery_clause($relationNode)
-	: AS '(' select_expr ')' with_data
+	: column_parens_opt AS '(' select_expr ')' with_data
 		{
 			RelationNode::AsSubqueryClause* clause = $<asSubqueryClause>$ =
 				newNode<RelationNode::AsSubqueryClause>();
-			clause->selectExpr = $3;
-			clause->withData = $5;
+			clause->fieldsNames = $1;
+			clause->selectExpr = $4;
+			clause->withData = $6;
 			$relationNode->clauses.add(clause);
 		}
 	;

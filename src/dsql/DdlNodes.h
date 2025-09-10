@@ -1507,6 +1507,7 @@ public:
 		{
 		}
 
+		NestConst<ValueListNode> fieldsNames;
 		NestConst<SelectExprNode> selectExpr;
 		bool withData = false;
 	};

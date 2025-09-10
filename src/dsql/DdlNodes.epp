@@ -7238,7 +7238,19 @@ void RelationNode::generateFieldsFromSubquery(thread_db* tdbb, DsqlCompilerScrat
 	dsqlScratch->appendUChar(blr_begin);
 
 	ValueListNode* items = rse->dsqlSelectList;
+	ValueListNode* names = subQry->fieldsNames;
+
+	if (names && names->items.getCount() != items->items.getCount())
+	{
+		// number of fields does not match select list
+		status_exception::raise(
+			Arg::Gds(isc_sqlerr) << Arg::Num(-607) <<
+			Arg::Gds(isc_dsql_command_err) <<
+			Arg::Gds(isc_num_field_err));
+	}
+
 	NestConst<ValueExprNode>* itemsPtr = items->items.begin();
+	NestConst<ValueExprNode>* namesPtr = names ? names->items.begin() : nullptr;
 
 	MemoryPool& pool = dsqlScratch->getPool();
 
@@ -7252,44 +7264,51 @@ void RelationNode::generateFieldsFromSubquery(thread_db* tdbb, DsqlCompilerScrat
 
 		// Determine the proper field name, replacing the default if necessary.
 
-		ValueExprNode* nameNode = fieldNode;
-		const char* aliasName = nullptr;
-
-		while (nodeIs<DsqlAliasNode>(nameNode) || nodeIs<DerivedFieldNode>(nameNode) || nodeIs<DsqlMapNode>(nameNode))
+		const char* fieldStr = nullptr;
+		if (namesPtr)
 		{
-			DsqlAliasNode* aliasNode;
-			DsqlMapNode* mapNode;
-			DerivedFieldNode* derivedField;
-
-			if ((aliasNode = nodeAs<DsqlAliasNode>(nameNode)))
-			{
-				if (!aliasName)
-					aliasName = aliasNode->name.c_str();
-				nameNode = aliasNode->value;
-			}
-			else if ((mapNode = nodeAs<DsqlMapNode>(nameNode)))
-				nameNode = mapNode->map->map_node;
-			else if ((derivedField = nodeAs<DerivedFieldNode>(nameNode)))
-			{
-				if (!aliasName)
-					aliasName = derivedField->name.c_str();
-				nameNode = derivedField->value;
-			}
+			fieldStr = nodeAs<FieldNode>(*namesPtr)->dsqlName.c_str();
+			++namesPtr;
 		}
-
-		const TEXT* fieldStr = nullptr;
-
-		if (aliasName)
-			fieldStr = aliasName;
 		else
 		{
-			const dsql_fld* nameField = nullptr;
+			ValueExprNode* nameNode = fieldNode;
+			const char* aliasName = nullptr;
 
-			if (const FieldNode* fieldNameNode = nodeAs<FieldNode>(nameNode))
-				nameField = fieldNameNode->dsqlField;
+			while (nodeIs<DsqlAliasNode>(nameNode) || nodeIs<DerivedFieldNode>(nameNode) || nodeIs<DsqlMapNode>(nameNode))
+			{
+				DsqlAliasNode* aliasNode;
+				DsqlMapNode* mapNode;
+				DerivedFieldNode* derivedField;
 
-			if (nameField)
-				fieldStr = nameField->fld_name.c_str();
+				if ((aliasNode = nodeAs<DsqlAliasNode>(nameNode)))
+				{
+					if (!aliasName)
+						aliasName = aliasNode->name.c_str();
+					nameNode = aliasNode->value;
+				}
+				else if ((mapNode = nodeAs<DsqlMapNode>(nameNode)))
+					nameNode = mapNode->map->map_node;
+				else if ((derivedField = nodeAs<DerivedFieldNode>(nameNode)))
+				{
+					if (!aliasName)
+						aliasName = derivedField->name.c_str();
+					nameNode = derivedField->value;
+				}
+			}
+
+			if (aliasName)
+				fieldStr = aliasName;
+			else
+			{
+				const dsql_fld* nameField = nullptr;
+
+				if (const FieldNode* fieldNameNode = nodeAs<FieldNode>(nameNode))
+					nameField = fieldNameNode->dsqlField;
+
+				if (nameField)
+					fieldStr = nameField->fld_name.c_str();
+			}
 		}
 
 		if (!fieldStr)

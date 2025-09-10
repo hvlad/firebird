@@ -1,1 +1,1 @@
-70 shift/reduce conflicts, 21 reduce/reduce conflicts.
+72 shift/reduce conflicts, 21 reduce/reduce conflicts.
