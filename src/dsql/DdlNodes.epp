@@ -7303,25 +7303,35 @@ void RelationNode::generateFieldsFromSubquery(thread_db* tdbb, DsqlCompilerScrat
 
 		dsqlScratch->appendUChar(blr_assignment);
 
-		// Check if this is a field or an expression.
-
-		DsqlAliasNode* aliasNode = nodeAs<DsqlAliasNode>(fieldNode);
-
-		if (aliasNode)
+		if (const auto aliasNode = nodeAs<DsqlAliasNode>(fieldNode))
 			fieldNode = aliasNode->value;
 
+		// Check if this is a field, a cast or an expression.
+
+		dsql_fld* field;
+
 		if (const auto fieldNameNode = nodeAs<FieldNode>(fieldNode))
+			field = fieldNameNode->dsqlField;
+		else if (const auto castNode = nodeAs<CastNode>(fieldNode))
+			field = castNode->dsqlField;
+
+		if (field)
 		{
-			dsql_fld* field = fieldNameNode->dsqlField;
 			field->resolve(dsqlScratch);
 			*(TypeClause*)column->field = *field;		// ??
+
+			if (field->fieldSource.hasData() && !fb_utils::implicit_domain(field->fieldSource.c_str()))
+			{
+				column->field->typeOfName = column->field->fieldSource;
+				column->field->fieldSource = nullptr;
+			}
 		}
 		else
 		{
 			dsc desc;
 			DsqlDescMaker::fromNode(dsqlScratch, &desc, fieldNode);
 
-			dsql_fld* field = column->field;
+			field = column->field;
 			field->dtype = desc.dsc_dtype;
 			field->length = desc.dsc_length;
 			field->scale = desc.dsc_scale;
