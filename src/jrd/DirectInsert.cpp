@@ -28,6 +28,11 @@ DirectInsert::DirectInsert(MemoryPool& pool, jrd_rel* relation, ULONG pageSize) 
 
 void DirectInsert::putRecord(thread_db* tdbb, record_param* rpb, jrd_tra* transaction)
 {
+	rpb->rpb_b_page = 0;
+	rpb->rpb_b_line = 0;
+	rpb->rpb_flags = 0;
+	rpb->rpb_transaction_nr = transaction->tra_number;
+
 	Compressor dcc(m_pool, true, true, rpb->rpb_length, rpb->rpb_address);
 	const ULONG packed = dcc.getPackedLength();
 
@@ -73,11 +78,13 @@ UCHAR* DirectInsert::findSpace(thread_db* tdbb, record_param* rpb, USHORT size)
 	// record (with header) size, aligned up to ODS_ALIGNMENT
 	const ULONG aligned = ROUNDUP(size, ODS_ALIGNMENT);
 
-	// size to allocate
-	const ULONG alloc = (m_current->dpg_count ? 0 : sizeof(data_page::dpg_repeat)) +
-		aligned + RESERVE_SIZE;
+	// already used slots
+	const ULONG used = (m_current ? m_current->dpg_count : 0);
 
-	if (alloc > m_freeSpace)
+	// size to allocate
+	const ULONG alloc = (used ? 0 : sizeof(data_page::dpg_repeat)) + aligned + RESERVE_SIZE;
+
+	if (alloc + RESERVE_SIZE * used > m_freeSpace)
 	{
 		if (m_current)
 		{
@@ -87,7 +94,7 @@ UCHAR* DirectInsert::findSpace(thread_db* tdbb, record_param* rpb, USHORT size)
 			const ULONG pageno = m_window.win_page.getPageNum();
 			if (pageno < m_lastReserved)
 			{
-				CCH_RELEASE(tdbb, &m_window);
+				CCH_RELEASE_TAIL(tdbb, &m_window);
 
 				m_window.win_page = pageno + 1;
 				m_current = (data_page*) CCH_fake(tdbb, &m_window, 1);
@@ -118,6 +125,9 @@ UCHAR* DirectInsert::findSpace(thread_db* tdbb, record_param* rpb, USHORT size)
 
 	m_freeSpace -= alloc;
 
+	Database* dbb = tdbb->getDatabase();
+	rpb->rpb_number.setValue(dbb->dbb_max_records * m_current->dpg_sequence + m_current->dpg_count - 1);
+
 	return reinterpret_cast<UCHAR*>(m_current) + index->dpg_offset;
 }
 
@@ -126,7 +136,7 @@ data_page* DirectInsert::allocatePages(thread_db* tdbb)
 	Database* dbb = tdbb->getDatabase();
 	RelationPages* relPages = m_relation->getPages(tdbb);
 
-	m_window.win_page = (relPages->rel_pg_space_id, 0);
+	m_window.win_page.setPageSpaceID(relPages->rel_pg_space_id);
 	m_reserved = DPM_reserve_pages(tdbb, m_relation, &m_window);
 
 	auto dpage = reinterpret_cast<data_page*>(m_window.win_buffer);

@@ -1773,9 +1773,20 @@ DeferredWork* DFW_post_work_arg(jrd_tra* transaction, DeferredWork* work, const 
 DeferredWork* DFW_post_work_arg(jrd_tra* transaction, DeferredWork* work, const dsc* desc,
 	USHORT id, Jrd::dfw_t type)
 {
+/**************************************
+ *
+ *	D F W _ p o s t _ w o r k _ a r g
+ *
+ **************************************
+ *
+ * Functional description
+ *	Post an argument for work to be deferred to commit time.
+ *
+ **************************************/
 	const string name = get_string(desc);
 	return DFW_post_work_arg(transaction, work, name, id, type);
 }
+
 
 DeferredWork* DFW_post_work_arg(jrd_tra* transaction, DeferredWork* work, const string& name,
 	USHORT id, dfw_t type)

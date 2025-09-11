@@ -7226,10 +7226,11 @@ void RelationNode::generateFieldsFromSubquery(thread_db* tdbb, DsqlCompilerScrat
 
 	dsqlScratch->appendUChar(blr_begin);
 	dsqlScratch->appendUChar(blr_for);
-	dsqlScratch->putBlrMarkers(StmtNode::MARK_FOR_UPDATE | StmtNode::MARK_BULK_INSERT);
+	dsqlScratch->putBlrMarkers(StmtNode::MARK_FOR_UPDATE);
 	GEN_rse(dsqlScratch, rse);
 
 	dsqlScratch->appendUChar(blr_store);			// blr_store_direct
+	dsqlScratch->putBlrMarkers(StmtNode::MARK_BULK_INSERT);
 	dsqlScratch->appendUChar(blr_relation);
 	dsqlScratch->appendMetaString(name.c_str());
 	dsqlScratch->appendUChar(context);
