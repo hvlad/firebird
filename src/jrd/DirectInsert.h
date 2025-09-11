@@ -4,6 +4,7 @@
 #include "firebird.h"
 #include "../common/classes/alloc.h"
 #include "../common/classes/array.h"
+#include "../jrd/jrd.h"
 #include "../jrd/ods.h"
 
 namespace Jrd
@@ -24,21 +25,20 @@ public:
 	void flush(thread_db* tdbb);
 
 private:
-	// allocate count pages, init page headers in buffer, pointer by ptr
-	void allocatePages(thread_db* tdbb, unsigned count, UCHAR* ptr);
+	// allocate and reserve data pages
+	Ods::data_page* allocatePages(thread_db* tdbb);
 	UCHAR* findSpace(thread_db* tdbb, record_param* rpb, USHORT size);
 
 
 	Firebird::MemoryPool& m_pool;
-	jrd_rel* m_relation;
+	jrd_rel* const m_relation;
 	const ULONG m_pageSize;
-
-	Firebird::Array<UCHAR> m_primary;		// buffer for pages with primary records
-	Firebird::Array<UCHAR> m_fragments;		// buffer for pages with fragments
-	UCHAR* m_dp;							// pointer to the first primary DP
-	UCHAR* m_frgm;							// pointer to the first fragments DP
-	Ods::data_page* m_current;				// current DP to put records
-	ULONG m_freeSpace;						// free space on current DP
+	win m_window;								// current data page, locked for write
+	Ods::data_page* m_current = nullptr;		// current DP to put records
+	ULONG m_freeSpace = 0;						// free space on current DP
+	ULONG m_reserved = 0;						// count of reserved pages
+	ULONG m_lastReserved = 0;					// number of last reserved page
+	USHORT m_firstSlot = 0;						// slot number of the first	reserved page
 };
 
 };	// namespace Jrd

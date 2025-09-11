@@ -1,21 +1,19 @@
 #include "../jrd/DirectInsert.h"
 #include "../jrd/cch.h"
-#include "../jrd/jrd.h"
 #include "../jrd/pag.h"
 #include "../jrd/sqz.h"
 #include "../jrd/tra.h"
 #include "../jrd/cch_proto.h"
+#include "../jrd/dpm_proto.h"
 #include "../jrd/ods_proto.h"
 #include "../jrd/pag_proto.h"
+
 
 using namespace Firebird;
 using namespace Ods;
 
 namespace Jrd
 {
-
-constexpr unsigned PRIMARY_PAGES = 8;
-constexpr unsigned FRAGMENT_PAGES = 8;
 
 // How many bytes per record should be reserved, see SPACE_FUDGE in dpm.epp
 constexpr unsigned RESERVE_SIZE = (ROUNDUP(RHDF_SIZE, ODS_ALIGNMENT) + sizeof(data_page::dpg_repeat));
@@ -24,37 +22,9 @@ DirectInsert::DirectInsert(MemoryPool& pool, jrd_rel* relation, ULONG pageSize) 
 	m_pool(pool),
 	m_relation(relation),
 	m_pageSize(pageSize),
-	m_primary(pool),
-	m_fragments(pool)
+	m_window(0, 0)
 {
-	m_dp = m_primary.getAlignedBuffer(m_pageSize * PRIMARY_PAGES, m_pageSize);
-	m_frgm = nullptr;
-
-	m_current = nullptr;;
-	m_freeSpace = 0;
 }
-
-/*****
-
-store
-  if big
-    store tail
-	rec = head
-
-  find space
-    if !page || size > free
-	  if next
-		page = next
-	  else
-	    flush
-		page = begin()
-	free = maxfree
-	page->index[page->count].len = size
-	space = page->index[page->count].offset = prev_offset - aligned_size
-
-  put rec
-
-****/
 
 void DirectInsert::putRecord(thread_db* tdbb, record_param* rpb, jrd_tra* transaction)
 {
@@ -98,35 +68,6 @@ void DirectInsert::putRecord(thread_db* tdbb, record_param* rpb, jrd_tra* transa
 
 }
 
-void DirectInsert::allocatePages(thread_db* tdbb, unsigned count, UCHAR* ptr)
-{
-	RelationPages* relPages = m_relation->getPages(tdbb);
-
-	win window(relPages->rel_pg_space_id, 0);
-	PAG_allocate_pages(tdbb, &window, count, true);
-	CCH_RELEASE(tdbb, &window);
-
-	ULONG pageno = window.win_page.getPageNum();
-
-	// "count" pages starting from "pageno" is reserved now, nobody can use it as
-	// there is no path to it
-
-	for (int i = 0; i < count; i++)
-	{
-		data_page* page = reinterpret_cast<data_page*>(ptr);
-		page->dpg_header.pag_type = pag_data;
-		page->dpg_header.pag_flags = 0;
-		page->dpg_relation = m_relation->rel_id;
-		page->dpg_count = 0;
-		page->dpg_sequence = 0;
-
-		// save page number
-		page->dpg_header.pag_pageno = pageno++;
-
-		ptr += m_pageSize;
-	}
-}
-
 UCHAR* DirectInsert::findSpace(thread_db* tdbb, record_param* rpb, USHORT size)
 {
 	// record (with header) size, aligned up to ODS_ALIGNMENT
@@ -140,12 +81,18 @@ UCHAR* DirectInsert::findSpace(thread_db* tdbb, record_param* rpb, USHORT size)
 	{
 		if (m_current)
 		{
-			m_current->dpg_header.pag_flags |= dpg_full | dpg_swept;
+			m_current->dpg_header.pag_flags |= dpg_full;
 
-			// use next page in buffer
-			UCHAR* const ptr = reinterpret_cast<UCHAR*>(m_current) + m_pageSize;
-			if (ptr < m_primary.end())
-				m_current = reinterpret_cast<data_page*>(ptr);
+			// Get next reserved page, or reserve a new set of pages.
+			const ULONG pageno = m_window.win_page.getPageNum();
+			if (pageno < m_lastReserved)
+			{
+				CCH_RELEASE(tdbb, &m_window);
+
+				m_window.win_page = pageno + 1;
+				m_current = (data_page*) CCH_fake(tdbb, &m_window, 1);
+				m_current->dpg_header.pag_flags |= dpg_swept;
+			}
 			else
 			{
 				flush(tdbb);
@@ -154,10 +101,7 @@ UCHAR* DirectInsert::findSpace(thread_db* tdbb, record_param* rpb, USHORT size)
 		}
 
 		if (!m_current)
-		{
-			allocatePages(tdbb, PRIMARY_PAGES, m_dp);
-			m_current = reinterpret_cast<data_page*>(m_dp);
-		}
+			m_current = allocatePages(tdbb);
 
 		m_freeSpace = m_pageSize - sizeof(data_page);
 	}
@@ -177,14 +121,60 @@ UCHAR* DirectInsert::findSpace(thread_db* tdbb, record_param* rpb, USHORT size)
 	return reinterpret_cast<UCHAR*>(m_current) + index->dpg_offset;
 }
 
+data_page* DirectInsert::allocatePages(thread_db* tdbb)
+{
+	Database* dbb = tdbb->getDatabase();
+	RelationPages* relPages = m_relation->getPages(tdbb);
+
+	m_window.win_page = (relPages->rel_pg_space_id, 0);
+	m_reserved = DPM_reserve_pages(tdbb, m_relation, &m_window);
+
+	auto dpage = reinterpret_cast<data_page*>(m_window.win_buffer);
+
+	m_lastReserved = m_window.win_page.getPageNum() + m_reserved - 1;
+	m_firstSlot = dpage->dpg_sequence % dbb->dbb_dp_per_pp;
+
+	return dpage;
+}
+
 void DirectInsert::flush(thread_db* tdbb)
 {
-	// write fragment pages
-	// write non-empty data pages
-	// put DP numbers into PP
-	// write PP
+	Database* dbb = tdbb->getDatabase();
 
-	// make sure no written pages have its wrong copy in the cache!!!
+	const ULONG pp_sequence = m_current->dpg_sequence / dbb->dbb_dp_per_pp;
+	const USHORT currSlot = m_current->dpg_sequence % dbb->dbb_dp_per_pp;
+	const bool currFull = (m_current->dpg_header.pag_flags & dpg_full);
+	fb_assert(m_current->dpg_count > 0);
+
+ 	CCH_RELEASE(tdbb, &m_window);
+	m_current = nullptr;
+
+	RelationPages* relPages = m_relation->getPages(tdbb);
+
+	win ppWindow(relPages->rel_pg_space_id, (*relPages->rel_pages)[pp_sequence]);
+	pointer_page* ppage = (pointer_page*) CCH_FETCH(tdbb, &ppWindow, LCK_write, pag_pointer);
+
+	for (ULONG pageno = m_lastReserved - m_reserved + 1; pageno <= m_lastReserved; pageno++)
+		CCH_precedence(tdbb, &ppWindow, pageno);
+
+	CCH_MARK(tdbb, &ppWindow);
+
+	UCHAR* bits = (UCHAR*) (ppage->ppg_page + dbb->dbb_dp_per_pp);
+	for (USHORT slot = m_firstSlot; slot < m_firstSlot + m_reserved; slot++)
+	{
+		PPG_DP_BIT_CLEAR(bits, slot, ppg_dp_reserved);
+
+		if (slot <= currSlot)
+		{
+			PPG_DP_BIT_CLEAR(bits, slot, ppg_dp_empty);
+			PPG_DP_BIT_SET(bits, slot, ppg_dp_swept);
+
+			if (slot < currSlot || currFull)
+				PPG_DP_BIT_SET(bits, slot, ppg_dp_full);
+		}
+	}
+
+	CCH_RELEASE(tdbb, &ppWindow);
 }
 
 };	// namespace Jrd
