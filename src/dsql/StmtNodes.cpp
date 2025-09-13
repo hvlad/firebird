@@ -64,6 +64,7 @@
 #include "../dsql/make_proto.h"
 #include "../dsql/pass1_proto.h"
 #include "../dsql/DsqlStatementCache.h"
+#include "../jrd/DirectInsert.h"
 
 using namespace Firebird;
 using namespace Jrd;
@@ -5302,6 +5303,9 @@ const StmtNode* ForNode::execute(thread_db* tdbb, Request* request, ExeState* /*
 
 			cursor->close(tdbb);
 
+			if (auto store = nodeAs<StoreNode>(statement))
+				store->bulkDone(tdbb, request);
+
 			if (marks & MARK_MERGE)
 			{
 				delete merge->recUpdated;
@@ -8092,7 +8096,10 @@ StoreNode* StoreNode::pass2(thread_db* tdbb, CompilerScratch* csb)
 		ExprNode::doPass2(tdbb, csb, i->value.getAddress());
 	}
 
-	impureOffset = csb->allocImpure<impure_state>();
+	if (marks & MARK_BULK_INSERT)
+		impureOffset = csb->allocImpure<ImpureBulk>();
+	else
+		impureOffset = csb->allocImpure<impure_state>();
 
 	return this;
 }
@@ -8144,7 +8151,8 @@ const StmtNode* StoreNode::execute(thread_db* tdbb, Request* request, ExeState* 
 const StmtNode* StoreNode::store(thread_db* tdbb, Request* request, WhichTrigger whichTrig) const
 {
 	jrd_tra* transaction = request->req_transaction;
-	impure_state* impure = request->getImpure<impure_state>(impureOffset);
+	ImpureBulk* impureBulk = request->getImpure<ImpureBulk>(impureOffset);
+	impure_state* impure = impureBulk;
 
 	const StreamType stream = target->getStream();
 	record_param* rpb = &request->req_rpb[stream];
@@ -8173,6 +8181,12 @@ const StmtNode* StoreNode::store(thread_db* tdbb, Request* request, WhichTrigger
 			impure->sta_state = 0;
 			if (relation)
 				RLCK_reserve_relation(tdbb, transaction, relation, true);
+
+			if ((marks & MARK_BULK_INSERT) && !impureBulk->bulk)
+			{
+				MemoryPool* pool = tdbb->getDefaultPool();
+				impureBulk->bulk = FB_NEW_POOL(*pool) DirectInsert(*pool, tdbb->getDatabase(), relation);
+			}
 			break;
 
 		case Request::req_return:
@@ -8206,8 +8220,16 @@ const StmtNode* StoreNode::store(thread_db* tdbb, Request* request, WhichTrigger
 					VirtualTable::store(tdbb, rpb);
 				else if (!relation->rel_view_rse)
 				{
-					VIO_store(tdbb, rpb, transaction);
-					IDX_store(tdbb, rpb, transaction);
+					if (marks & MARK_BULK_INSERT)
+					{
+						fb_assert(impureBulk->bulk);
+						impureBulk->bulk->putRecord(tdbb, rpb, transaction);
+					}
+					else
+					{
+						VIO_store(tdbb, rpb, transaction);
+						IDX_store(tdbb, rpb, transaction);
+					}
 					REPL_store(tdbb, rpb, transaction);
 				}
 
@@ -8285,6 +8307,18 @@ const StmtNode* StoreNode::store(thread_db* tdbb, Request* request, WhichTrigger
 	return statement;
 }
 
+void StoreNode::bulkDone(thread_db* tdbb, Request* request) const
+{
+	ImpureBulk* impureBulk = request->getImpure<ImpureBulk>(impureOffset);
+
+	if ((marks & MARK_BULK_INSERT) && impureBulk->bulk)
+	{
+		impureBulk->bulk->flush(tdbb);
+
+		delete impureBulk->bulk;
+		impureBulk->bulk = nullptr;
+	}
+}
 
 //--------------------
 

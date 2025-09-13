@@ -3926,6 +3926,8 @@ static bool load_relation_data(thread_db* tdbb, SSHORT phase, DeferredWork* work
 
 	case 5:
 		{
+			AutoSetRestoreFlag<ULONG> tmpSpace(&tdbb->tdbb_flags, TDBB_use_db_page_space, false);
+
 			auto arg = work->findArg(dfw_load_relation_data);
 			string& strBlr = arg->dfw_name;
 

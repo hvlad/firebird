@@ -42,6 +42,7 @@ class RecordBuffer;
 class RelationSourceNode;
 class SelectNode;
 class GeneratorItem;
+class DirectInsert;
 
 
 class ExceptionItem : public Firebird::PermanentStorage, public Printable
@@ -1288,6 +1289,11 @@ public:
 	}
 
 public:
+	struct ImpureBulk : public impure_state
+	{
+		DirectInsert* bulk;
+	};
+
 	static DmlNode* parse(thread_db* tdbb, MemoryPool& pool, CompilerScratch* csb, const UCHAR blrOp);
 
 	virtual Firebird::string internalPrint(NodePrinter& printer) const;
@@ -1297,6 +1303,8 @@ public:
 	virtual StoreNode* pass1(thread_db* tdbb, CompilerScratch* csb);
 	virtual StoreNode* pass2(thread_db* tdbb, CompilerScratch* csb);
 	virtual const StmtNode* execute(thread_db* tdbb, Request* request, ExeState* exeState) const;
+
+	void bulkDone(thread_db* tdbb, Request* request) const;
 
 private:
 	static bool pass1Store(thread_db* tdbb, CompilerScratch* csb, StoreNode* node);
