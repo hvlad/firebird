@@ -7345,6 +7345,14 @@ void RelationNode::generateFieldsFromSubquery(thread_db* tdbb, DsqlCompilerScrat
 				column->field->typeOfName = column->field->fieldSource;
 				column->field->fieldSource = nullptr;
 			}
+
+			// Add NOT NULL if required
+			if (!(field->flags & FLD_nullable))
+			{
+				column->notNullSpecified = true;
+				auto& notNull = column->constraints.add();
+				notNull.constraintType = AddConstraintClause::CTYPE_NOT_NULL;
+			}
 		}
 		else
 		{
@@ -7589,8 +7597,6 @@ void CreateRelationNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
 void CreateRelationNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch,
 	jrd_tra* transaction)
 {
-	generateFieldsFromSubquery(tdbb, dsqlScratch);
-
 	saveRelation(tdbb, dsqlScratch, name, false, true);
 
 	if (externalFile)
@@ -7674,6 +7680,8 @@ void CreateRelationNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScrat
 	}
 
 	storePrivileges(tdbb, transaction, name, obj_relation, ALL_PRIVILEGES);
+
+	generateFieldsFromSubquery(tdbb, dsqlScratch);
 
 	ObjectsArray<CreateDropConstraint> constraints;
 	const ObjectsArray<MetaName>* pkCols = findPkColumns();
