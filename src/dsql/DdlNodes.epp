@@ -7207,11 +7207,9 @@ void RelationNode::defineUpdateCascadeTrigger(DsqlCompilerScratch* dsqlScratch,
 	trigger.blrData = blrWriter.getBlrData();
 }
 
-void RelationNode::generateFieldsFromSubquery(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch)
+void RelationNode::generateFieldsFromSubquery(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch,
+	AsSubqueryClause* subQry)
 {
-	if (clauses.isEmpty() || clauses[0]->type != Clause::TYPE_AS_SUBQUERY)
-		return;
-
 	dsqlScratch->getBlrData().clear();
 	dsqlScratch->getDebugData().clear();
 	dsqlScratch->appendVersion();
@@ -7221,7 +7219,6 @@ void RelationNode::generateFieldsFromSubquery(thread_db* tdbb, DsqlCompilerScrat
 	// Target relation's context
 	const UCHAR context = dsqlScratch->contextNumber++;
 
-	AsSubqueryClause* subQry = static_cast<AsSubqueryClause*>(clauses[0].getObject());
 	RseNode* rse = PASS1_rse(dsqlScratch, subQry->selectExpr);
 
 	dsqlScratch->appendUChar(blr_begin);
@@ -7419,17 +7416,18 @@ void RelationNode::generateFieldsFromSubquery(thread_db* tdbb, DsqlCompilerScrat
 
 	dsqlScratch->resetContextStack();
 
+	auto& data = dsqlScratch->getBlrData();
 	if (subQry->withData)
 	{
 		jrd_tra* transaction = tdbb->getTransaction();
 		string blr(*transaction->tra_pool);
 
-		auto data = dsqlScratch->getBlrData();
 		blr.assign(data.begin(), data.getCount());
 
 		auto work = DFW_post_work(transaction, dfw_load_relation_data, string(name.c_str()), 0);
 		DFW_post_work_arg(transaction, work, blr, 0, dfw_load_relation_data);
 	}
+	data.clear();
 }
 
 // Common code factored out.
@@ -7681,7 +7679,15 @@ void CreateRelationNode::execute(thread_db* tdbb, DsqlCompilerScratch* dsqlScrat
 
 	storePrivileges(tdbb, transaction, name, obj_relation, ALL_PRIVILEGES);
 
-	generateFieldsFromSubquery(tdbb, dsqlScratch);
+	if (!clauses.isEmpty() && (clauses[0]->type == Clause::TYPE_AS_SUBQUERY))
+	{
+		auto* subQry = static_cast<AsSubqueryClause*>(clauses[0].getObject());
+
+		if (relationType == rel_global_temp_delete)
+			subQry->withData = false;
+
+		generateFieldsFromSubquery(tdbb, dsqlScratch, subQry);
+	}
 
 	ObjectsArray<CreateDropConstraint> constraints;
 	const ObjectsArray<MetaName>* pkCols = findPkColumns();

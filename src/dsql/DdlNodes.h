@@ -1560,7 +1560,7 @@ protected:
 	void stuffMatchingBlr(Constraint& constraint, BlrDebugWriter& blrWriter);
 	void stuffTriggerFiringCondition(const Constraint& constraint, BlrDebugWriter& blrWriter);
 
-	void generateFieldsFromSubquery(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch);
+	void generateFieldsFromSubquery(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch, AsSubqueryClause* subQry);
 public:
 	NestConst<RelationSourceNode> dsqlNode;
 	MetaName name;

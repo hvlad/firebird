@@ -29,6 +29,8 @@ DirectInsert::DirectInsert(MemoryPool& pool, const Database* dbb, jrd_rel* relat
 
 void DirectInsert::putRecord(thread_db* tdbb, record_param* rpb, jrd_tra* transaction)
 {
+	transaction->tra_flags |= TRA_write;
+
 	rpb->rpb_b_page = 0;
 	rpb->rpb_b_line = 0;
 	rpb->rpb_flags = 0;
@@ -208,7 +210,6 @@ UCHAR* DirectInsert::findSpace(thread_db* tdbb, record_param* rpb, USHORT size)
 
 				m_window.win_page = pageno + 1;
 				m_current = (data_page*) CCH_FETCH(tdbb, &m_window, LCK_write, pag_data);
-				m_current->dpg_header.pag_flags |= dpg_swept;
 			}
 			else
 			{
@@ -220,10 +221,12 @@ UCHAR* DirectInsert::findSpace(thread_db* tdbb, record_param* rpb, USHORT size)
 		if (!m_current)
 		{
 			m_current = allocatePages(tdbb);
-			m_current->dpg_header.pag_flags |= dpg_swept;
 		}
 
+		m_current->dpg_header.pag_flags |= dpg_swept;
 		m_freeSpace = m_pageSize - sizeof(data_page);
+
+		CCH_precedence(tdbb, &m_window, PageNumber(TRANS_PAGE_SPACE, rpb->rpb_transaction_nr));
 	}
 
 	fb_assert(alloc <= m_freeSpace);
@@ -264,6 +267,9 @@ data_page* DirectInsert::allocatePages(thread_db* tdbb)
 
 void DirectInsert::flush(thread_db* tdbb)
 {
+	if (!m_current)
+		return;
+
 	Database* dbb = tdbb->getDatabase();
 
 	const ULONG pp_sequence = m_current->dpg_sequence / dbb->dbb_dp_per_pp;
@@ -271,7 +277,7 @@ void DirectInsert::flush(thread_db* tdbb)
 
 	const bool currFull = (m_current->dpg_header.pag_flags & dpg_full);
 	const auto count = m_current->dpg_count;
-	fb_assert( > 0);
+	fb_assert(count > 0);
 
 	CCH_MARK(tdbb, &m_window);
 	CCH_RELEASE(tdbb, &m_window);
