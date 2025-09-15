@@ -3066,7 +3066,7 @@ static void extend_relation(thread_db* tdbb, jrd_rel* relation, WIN* window, con
 		ppage->ppg_count = MAX(PAGES_IN_EXTENT, ppage->ppg_count);
 	}
 
-	if ((slot % PAGES_IN_EXTENT == 0) && (ppage->ppg_count >= PAGES_IN_EXTENT || pp_sequence))
+	if ((slot % PAGES_IN_EXTENT == 0) && (ppage->ppg_count >= PAGES_IN_EXTENT || pp_sequence || reserve))
 	{
 		cntAlloc = PAGES_IN_EXTENT;
 
@@ -3286,7 +3286,7 @@ static UCHAR* find_space(thread_db*	tdbb,
 	rpb->rpb_number.setValue(((SINT64) page->dpg_sequence) * dbb->dbb_max_records + slot);
 
 	if (record)
-		record->pushPrecedence(PageNumber(DB_PAGE_SPACE, rpb->rpb_page));
+		record->pushPrecedence(rpb->getWindow(tdbb).win_page);
 
 	if (page->dpg_count == 1)
 	{
