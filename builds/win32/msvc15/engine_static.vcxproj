@@ -60,6 +60,7 @@
     <ClCompile Include="..\..\..\src\jrd\blb.cpp" />
     <ClCompile Include="..\..\..\src\jrd\blob_filter.cpp" />
     <ClCompile Include="..\..\..\src\jrd\BlobUtil.cpp" />
+    <ClCompile Include="..\..\..\src\jrd\BulkInsert.cpp" />
     <ClCompile Include="..\..\..\src\jrd\btn.cpp" />
     <ClCompile Include="..\..\..\src\jrd\btr.cpp" />
     <ClCompile Include="..\..\..\src\jrd\builtin.cpp" />
@@ -75,7 +76,6 @@
     <ClCompile Include="..\..\..\src\jrd\DataTypeUtil.cpp" />
     <ClCompile Include="..\..\..\src\jrd\DbCreators.cpp" />
     <ClCompile Include="..\..\..\src\jrd\DebugInterface.cpp" />
-    <ClCompile Include="..\..\..\src\jrd\DirectInsert.cpp" />
     <ClCompile Include="..\..\..\src\jrd\err.cpp" />
     <ClCompile Include="..\..\..\src\jrd\event.cpp" />
     <ClCompile Include="..\..\..\src\jrd\evl.cpp" />
@@ -225,6 +225,7 @@
     <ClInclude Include="..\..\..\src\jrd\blf_proto.h" />
     <ClInclude Include="..\..\..\src\jrd\blob_filter.h" />
     <ClInclude Include="..\..\..\src\jrd\BlobUtil.h" />
+    <ClInclude Include="..\..\..\src\jrd\BulkInsert.h" />
     <ClInclude Include="..\..\..\src\jrd\blp.h" />
     <ClInclude Include="..\..\..\src\jrd\blr.h" />
     <ClInclude Include="..\..\..\src\jrd\btn.h" />
@@ -246,7 +247,6 @@
     <ClInclude Include="..\..\..\src\jrd\DebugInterface.h" />
     <ClInclude Include="..\..\..\src\jrd\dflt.h" />
     <ClInclude Include="..\..\..\src\jrd\dfw_proto.h" />
-    <ClInclude Include="..\..\..\src\jrd\DirectInsert.h" />
     <ClInclude Include="..\..\..\src\jrd\dpm_proto.h" />
     <ClInclude Include="..\..\..\src\jrd\drq.h" />
     <ClInclude Include="..\..\..\src\jrd\dyn.h" />

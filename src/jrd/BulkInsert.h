@@ -1,5 +1,5 @@
-#ifndef JRD_DIRECTINSERT
-#define JRD_DIRECTINSERT
+#ifndef JRD_BULKINSERT
+#define JRD_BULKINSERT
 
 #include "firebird.h"
 #include "../common/classes/alloc.h"
@@ -15,10 +15,10 @@ class jrd_rel;
 class jrd_tra;
 struct record_param;
 
-class DirectInsert
+class BulkInsert
 {
 public:
-	DirectInsert(Firebird::MemoryPool& pool, const Database* dbb, jrd_rel* relation);
+	BulkInsert(Firebird::MemoryPool& pool, const Database* dbb, jrd_rel* relation);
 
 	void putRecord(thread_db* tdbb, record_param* rpb, jrd_tra* transaction);
 
@@ -46,4 +46,4 @@ private:
 
 };	// namespace Jrd
 
-#endif // JRD_DIRECTINSERT
+#endif // JRD_BULKINSERT

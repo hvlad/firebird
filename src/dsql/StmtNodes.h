@@ -42,7 +42,7 @@ class RecordBuffer;
 class RelationSourceNode;
 class SelectNode;
 class GeneratorItem;
-class DirectInsert;
+class BulkInsert;
 
 
 class ExceptionItem : public Firebird::PermanentStorage, public Printable
@@ -1291,7 +1291,7 @@ public:
 public:
 	struct ImpureBulk : public impure_state
 	{
-		DirectInsert* bulk;
+		BulkInsert* bulk;
 	};
 
 	static DmlNode* parse(thread_db* tdbb, MemoryPool& pool, CompilerScratch* csb, const UCHAR blrOp);

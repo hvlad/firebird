@@ -64,7 +64,7 @@
 #include "../dsql/make_proto.h"
 #include "../dsql/pass1_proto.h"
 #include "../dsql/DsqlStatementCache.h"
-#include "../jrd/DirectInsert.h"
+#include "../jrd/BulkInsert.h"
 
 using namespace Firebird;
 using namespace Jrd;
@@ -8185,7 +8185,7 @@ const StmtNode* StoreNode::store(thread_db* tdbb, Request* request, WhichTrigger
 			if ((marks & MARK_BULK_INSERT) && !impureBulk->bulk)
 			{
 				MemoryPool* pool = tdbb->getDefaultPool();
-				impureBulk->bulk = FB_NEW_POOL(*pool) DirectInsert(*pool, tdbb->getDatabase(), relation);
+				impureBulk->bulk = FB_NEW_POOL(*pool) BulkInsert(*pool, tdbb->getDatabase(), relation);
 			}
 			break;
 

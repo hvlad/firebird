@@ -1,4 +1,4 @@
-#include "../jrd/DirectInsert.h"
+#include "../jrd/BulkInsert.h"
 #include "../jrd/cch.h"
 #include "../jrd/pag.h"
 #include "../jrd/sqz.h"
@@ -18,7 +18,7 @@ namespace Jrd
 // How many bytes per record should be reserved, see SPACE_FUDGE in dpm.epp
 constexpr unsigned RESERVE_SIZE = (ROUNDUP(RHDF_SIZE, ODS_ALIGNMENT) + sizeof(data_page::dpg_repeat));
 
-DirectInsert::DirectInsert(MemoryPool& pool, const Database* dbb, jrd_rel* relation) :
+BulkInsert::BulkInsert(MemoryPool& pool, const Database* dbb, jrd_rel* relation) :
 	m_pool(pool),
 	m_relation(relation),
 	m_pageSize(dbb->dbb_page_size),
@@ -27,7 +27,7 @@ DirectInsert::DirectInsert(MemoryPool& pool, const Database* dbb, jrd_rel* relat
 {
 }
 
-void DirectInsert::putRecord(thread_db* tdbb, record_param* rpb, jrd_tra* transaction)
+void BulkInsert::putRecord(thread_db* tdbb, record_param* rpb, jrd_tra* transaction)
 {
 	transaction->tra_flags |= TRA_write;
 
@@ -76,7 +76,7 @@ void DirectInsert::putRecord(thread_db* tdbb, record_param* rpb, jrd_tra* transa
 		memset(data + packed, 0, fill);
 }
 
-void DirectInsert::fragmentRecord(thread_db* tdbb, record_param* rpb, Compressor* dcc)
+void BulkInsert::fragmentRecord(thread_db* tdbb, record_param* rpb, Compressor* dcc)
 {
 	Database* dbb = tdbb->getDatabase();
 
@@ -179,7 +179,7 @@ void DirectInsert::fragmentRecord(thread_db* tdbb, record_param* rpb, Compressor
 	CCH_precedence(tdbb, &m_window, prior);
 }
 
-UCHAR* DirectInsert::findSpace(thread_db* tdbb, record_param* rpb, USHORT size)
+UCHAR* BulkInsert::findSpace(thread_db* tdbb, record_param* rpb, USHORT size)
 {
 	// record (with header) size, aligned up to ODS_ALIGNMENT
 	const ULONG aligned = ROUNDUP(size, ODS_ALIGNMENT);
@@ -246,7 +246,7 @@ UCHAR* DirectInsert::findSpace(thread_db* tdbb, record_param* rpb, USHORT size)
 	return reinterpret_cast<UCHAR*>(m_current) + index->dpg_offset;
 }
 
-data_page* DirectInsert::allocatePages(thread_db* tdbb)
+data_page* BulkInsert::allocatePages(thread_db* tdbb)
 {
 	Database* dbb = tdbb->getDatabase();
 	RelationPages* relPages = m_relation->getPages(tdbb);
@@ -265,7 +265,7 @@ data_page* DirectInsert::allocatePages(thread_db* tdbb)
 	return dpage;
 }
 
-void DirectInsert::flush(thread_db* tdbb)
+void BulkInsert::flush(thread_db* tdbb)
 {
 	if (!m_current)
 		return;
