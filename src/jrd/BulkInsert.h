@@ -14,15 +14,26 @@ class Compressor;
 class jrd_rel;
 class jrd_tra;
 struct record_param;
+class Request;
 
 class BulkInsert
 {
 public:
-	BulkInsert(Firebird::MemoryPool& pool, const Database* dbb, jrd_rel* relation);
+	BulkInsert(Firebird::MemoryPool& pool, thread_db* tdbb, jrd_rel* relation);
 
 	void putRecord(thread_db* tdbb, record_param* rpb, jrd_tra* transaction);
 
 	void flush(thread_db* tdbb);
+
+	Request* getRequest() const
+	{
+		return m_request;
+	}
+
+	jrd_rel* getRelation() const
+	{
+		return m_relation;
+	}
 
 private:
 	// allocate and reserve data pages
@@ -33,6 +44,7 @@ private:
 
 	Firebird::MemoryPool& m_pool;
 	jrd_rel* const m_relation;
+	Request* const m_request;
 	const ULONG m_pageSize;
 	const ULONG m_spaceReserve;
 	win m_window;								// current data page, locked for write

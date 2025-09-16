@@ -18,11 +18,12 @@ namespace Jrd
 // How many bytes per record should be reserved, see SPACE_FUDGE in dpm.epp
 constexpr unsigned RESERVE_SIZE = (ROUNDUP(RHDF_SIZE, ODS_ALIGNMENT) + sizeof(data_page::dpg_repeat));
 
-BulkInsert::BulkInsert(MemoryPool& pool, const Database* dbb, jrd_rel* relation) :
+BulkInsert::BulkInsert(MemoryPool& pool, thread_db* tdbb, jrd_rel* relation) :
 	m_pool(pool),
 	m_relation(relation),
-	m_pageSize(dbb->dbb_page_size),
-	m_spaceReserve((dbb->dbb_flags & DBB_no_reserve) ? 0 : RESERVE_SIZE),
+	m_request(tdbb->getRequest()),
+	m_pageSize(tdbb->getDatabase()->dbb_page_size),
+	m_spaceReserve((tdbb->getDatabase()->dbb_flags & DBB_no_reserve) ? 0 : RESERVE_SIZE),
 	m_window(0, 0)
 {
 }

@@ -5303,9 +5303,6 @@ const StmtNode* ForNode::execute(thread_db* tdbb, Request* request, ExeState* /*
 
 			cursor->close(tdbb);
 
-			if (auto store = nodeAs<StoreNode>(statement))
-				store->bulkDone(tdbb, request);
-
 			if (marks & MARK_MERGE)
 			{
 				delete merge->recUpdated;
@@ -8096,10 +8093,7 @@ StoreNode* StoreNode::pass2(thread_db* tdbb, CompilerScratch* csb)
 		ExprNode::doPass2(tdbb, csb, i->value.getAddress());
 	}
 
-	if (marks & MARK_BULK_INSERT)
-		impureOffset = csb->allocImpure<ImpureBulk>();
-	else
-		impureOffset = csb->allocImpure<impure_state>();
+	impureOffset = csb->allocImpure<impure_state>();
 
 	return this;
 }
@@ -8151,8 +8145,7 @@ const StmtNode* StoreNode::execute(thread_db* tdbb, Request* request, ExeState* 
 const StmtNode* StoreNode::store(thread_db* tdbb, Request* request, WhichTrigger whichTrig) const
 {
 	jrd_tra* transaction = request->req_transaction;
-	ImpureBulk* impureBulk = request->getImpure<ImpureBulk>(impureOffset);
-	impure_state* impure = impureBulk;
+	impure_state* impure = request->getImpure<impure_state>(impureOffset);
 
 	const StreamType stream = target->getStream();
 	record_param* rpb = &request->req_rpb[stream];
@@ -8182,11 +8175,6 @@ const StmtNode* StoreNode::store(thread_db* tdbb, Request* request, WhichTrigger
 			if (relation)
 				RLCK_reserve_relation(tdbb, transaction, relation, true);
 
-			if ((marks & MARK_BULK_INSERT) && !impureBulk->bulk)
-			{
-				MemoryPool* pool = tdbb->getDefaultPool();
-				impureBulk->bulk = FB_NEW_POOL(*pool) BulkInsert(*pool, tdbb->getDatabase(), relation);
-			}
 			break;
 
 		case Request::req_return:
@@ -8220,10 +8208,12 @@ const StmtNode* StoreNode::store(thread_db* tdbb, Request* request, WhichTrigger
 					VirtualTable::store(tdbb, rpb);
 				else if (!relation->rel_view_rse)
 				{
-					if (marks & MARK_BULK_INSERT)
+					BulkInsert* const bulkInsert = (marks & MARK_BULK_INSERT) ?
+						transaction->getBulkInsert(tdbb, relation) : nullptr;
+
+					if (bulkInsert)
 					{
-						fb_assert(impureBulk->bulk);
-						impureBulk->bulk->putRecord(tdbb, rpb, transaction);
+						bulkInsert->putRecord(tdbb, rpb, transaction);
 					}
 					else
 					{
@@ -8305,19 +8295,6 @@ const StmtNode* StoreNode::store(thread_db* tdbb, Request* request, WhichTrigger
 	record->nullify();
 
 	return statement;
-}
-
-void StoreNode::bulkDone(thread_db* tdbb, Request* request) const
-{
-	ImpureBulk* impureBulk = request->getImpure<ImpureBulk>(impureOffset);
-
-	if ((marks & MARK_BULK_INSERT) && impureBulk->bulk)
-	{
-		impureBulk->bulk->flush(tdbb);
-
-		delete impureBulk->bulk;
-		impureBulk->bulk = nullptr;
-	}
 }
 
 //--------------------

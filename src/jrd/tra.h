@@ -67,6 +67,7 @@ class UserManagement;
 class MappingList;
 class DbCreatorsList;
 class thread_db;
+class BulkInsert;
 
 class SecDbContext
 {
@@ -323,6 +324,7 @@ private:
 	MemoryPool* tra_autonomous_pool;
 	USHORT tra_autonomous_cnt;
 	static const USHORT TRA_AUTONOMOUS_PER_POOL = 64;
+	BulkInsert* tra_bulkInsert = nullptr;
 
 public:
 	MemoryPool* getAutonomousPool();
@@ -406,6 +408,16 @@ public:
 
 		return tra_gen_ids;
 	}
+
+	// Get existing or create new BulkInsert for the relation.
+	// Bind new BulkInsert to the current request.
+	BulkInsert* getBulkInsert(thread_db* tdbb, jrd_rel* relation);
+
+	// Finish and delete BulkInsert, if exists.
+	void finiBulkInsert(thread_db* tdbb, bool commit);
+
+	// Finish and delete BulkInsert that belongs to the request
+	void finiBulkInsert(thread_db* tdbb, Request* request);
 };
 
 // System transaction is always transaction 0.
