@@ -68,6 +68,7 @@
 #include "../jrd/mov_proto.h"
 #include "../jrd/pag_proto.h"
 #include "../jrd/scl_proto.h"
+#include "../jrd/BulkInsert.h"
 #include "../common/sdl_proto.h"
 #include "../common/dsc_proto.h"
 #include "../common/classes/array.h"
@@ -1260,10 +1261,18 @@ void blb::move(thread_db* tdbb, dsc* from_desc, dsc* to_desc,
 #ifdef CHECK_BLOB_FIELD_ACCESS_FOR_SELECT
 	blob->blb_fld_id = fieldId;
 #endif
+	BulkInsert* bulkInsert = nullptr;
 	if (bulk)
+	{
 		blob->blb_flags |= BLB_bulk;
+		bulkInsert = transaction->getBulkInsert(tdbb, relation);
+	}
 
-	destination->set_permanent(relation->rel_id, DPM_store_blob(tdbb, blob, record));
+	if (bulkInsert)
+		destination->set_permanent(relation->rel_id, bulkInsert->putBlob(tdbb, blob, record));
+	else
+		destination->set_permanent(relation->rel_id, DPM_store_blob(tdbb, blob, record));
+
 	// This is the only place in the engine where blobs are materialized
 	// If new places appear code below should transform to common sub-routine
 	if (materialized_blob)

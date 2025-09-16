@@ -6,6 +6,8 @@
 #include "../common/classes/array.h"
 #include "../jrd/jrd.h"
 #include "../jrd/ods.h"
+#include "../jrd/RecordNumber.h"
+
 
 namespace Jrd
 {
@@ -14,6 +16,7 @@ class Compressor;
 class jrd_rel;
 class jrd_tra;
 struct record_param;
+class Record;
 class Request;
 
 class BulkInsert
@@ -22,6 +25,7 @@ public:
 	BulkInsert(Firebird::MemoryPool& pool, thread_db* tdbb, jrd_rel* relation);
 
 	void putRecord(thread_db* tdbb, record_param* rpb, jrd_tra* transaction);
+	RecordNumber putBlob(thread_db* tdbb, blb* blob, Record* record);
 
 	void flush(thread_db* tdbb);
 
@@ -40,6 +44,7 @@ private:
 	Ods::data_page* allocatePages(thread_db* tdbb);
 	UCHAR* findSpace(thread_db* tdbb, record_param* rpb, USHORT size);
 	void fragmentRecord(thread_db* tdbb, record_param* rpb, Compressor* dcc);
+	void markLarge();
 
 
 	Firebird::MemoryPool& m_pool;

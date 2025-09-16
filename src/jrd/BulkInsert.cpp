@@ -56,6 +56,13 @@ void BulkInsert::putRecord(thread_db* tdbb, record_param* rpb, jrd_tra* transact
 
 	rhd* header = (rhd*) findSpace(tdbb, rpb, header_size + packed + fill);
 
+	if (auto* record = rpb->rpb_record)
+	{
+		auto& stack = record->getPrecedence();
+		while (stack.hasData())
+			CCH_precedence(tdbb, &m_window, stack.pop());
+	}
+
 	rpb->rpb_flags &= ~rpb_not_packed;
 
 	header->rhd_flags = rpb->rpb_flags;
@@ -75,6 +82,59 @@ void BulkInsert::putRecord(thread_db* tdbb, record_param* rpb, jrd_tra* transact
 
 	if (fill)
 		memset(data + packed, 0, fill);
+}
+
+RecordNumber BulkInsert::putBlob(thread_db* tdbb, blb* blob, Record* record)
+{
+	fb_assert(blob->blb_relation == m_relation);
+
+	Database* dbb = tdbb->getDatabase();
+
+	// Figure out length of blob on page.  Remember that blob can either
+	// be a clump of data or a vector of page pointers.
+	USHORT length;
+	const UCHAR* q;
+	PageStack stack;
+	Firebird::Array<UCHAR> buffer;
+
+	blob->storeToPage(&length, buffer, &q, &stack);
+
+	// Locate space to store blob
+
+	record_param rpb;
+	//rpb.getWindow(tdbb).win_flags = 0; redundant.
+
+	rpb.rpb_relation = blob->blb_relation;
+	rpb.rpb_transaction_nr = tdbb->getTransaction()->tra_number;
+	rpb.rpb_flags = rpb_blob;
+
+	if (blob->blb_flags & BLB_bulk)
+		rpb.rpb_stream_flags |= RPB_s_bulk;
+
+	blh* header = (blh*) findSpace(tdbb, &rpb, (BLH_SIZE + length));
+
+	while (stack.hasData())
+		CCH_precedence(tdbb, &m_window, stack.pop());
+
+	header->blh_flags = rhd_blob;
+
+	if (blob->blb_flags & BLB_stream)
+		header->blh_flags |= rhd_stream_blob;
+
+	if (blob->getLevel())
+		header->blh_flags |= rhd_large;
+
+	blob->toPageHeader(header);
+
+	if (length)
+		memcpy(header->blh_page, q, length);
+
+	markLarge();
+
+	if (record)
+		record->pushPrecedence(m_window.win_page);
+
+	return rpb.rpb_number;
 }
 
 void BulkInsert::fragmentRecord(thread_db* tdbb, record_param* rpb, Compressor* dcc)
@@ -167,6 +227,13 @@ void BulkInsert::fragmentRecord(thread_db* tdbb, record_param* rpb, Compressor* 
 
 	dcc->pack(rpb->rpb_address, header->rhdf_data);
 
+	markLarge();
+
+	CCH_precedence(tdbb, &m_window, prior);
+}
+
+void BulkInsert::markLarge()
+{
 	if (!(m_current->dpg_header.pag_flags & dpg_large))
 	{
 		const int bit = m_reserved - (m_lastReserved - m_window.win_page.getPageNum()) - 1;
@@ -176,8 +243,6 @@ void BulkInsert::fragmentRecord(thread_db* tdbb, record_param* rpb, Compressor* 
 		m_largeMask |= (1UL << bit);
 		m_current->dpg_header.pag_flags |= dpg_large;
 	}
-
-	CCH_precedence(tdbb, &m_window, prior);
 }
 
 UCHAR* BulkInsert::findSpace(thread_db* tdbb, record_param* rpb, USHORT size)
