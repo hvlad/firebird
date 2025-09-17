@@ -19,16 +19,47 @@ namespace Jrd
 constexpr unsigned RESERVE_SIZE = (ROUNDUP(RHDF_SIZE, ODS_ALIGNMENT) + sizeof(data_page::dpg_repeat));
 
 BulkInsert::BulkInsert(MemoryPool& pool, thread_db* tdbb, jrd_rel* relation) :
-	m_pool(pool),
+	PermanentStorage(pool),
+	m_request(tdbb->getRequest())
+{
+	Database* dbb = tdbb->getDatabase();
+
+	m_primary = FB_NEW_POOL(getPool())
+		Buffer(getPool(), dbb->dbb_page_size, (dbb->dbb_flags & DBB_no_reserve) ? 0 : RESERVE_SIZE, true, relation);
+}
+
+void BulkInsert::putRecord(thread_db* tdbb, record_param* rpb, jrd_tra* transaction)
+{
+	m_primary->putRecord(tdbb, rpb, transaction);
+}
+
+RecordNumber BulkInsert::putBlob(thread_db* tdbb, blb* blob, Record* record)
+{
+	if (!m_other)
+		m_other = FB_NEW_POOL(getPool()) Buffer(getPool(), m_primary->m_pageSize, 0, false, m_primary->m_relation);
+
+	return m_other->putBlob(tdbb, blob, record);
+}
+
+void BulkInsert::flush(thread_db* tdbb)
+{
+	if (m_other)
+		m_other->flush(tdbb);
+	m_primary->flush(tdbb);
+}
+
+
+BulkInsert::Buffer::Buffer(MemoryPool& pool, ULONG pageSize, ULONG spaceReserve, bool primary, jrd_rel* relation) :
+	PermanentStorage(pool),
+	m_pageSize(pageSize),
+	m_spaceReserve(spaceReserve),
+	m_isPrimary(primary),
 	m_relation(relation),
-	m_request(tdbb->getRequest()),
-	m_pageSize(tdbb->getDatabase()->dbb_page_size),
-	m_spaceReserve((tdbb->getDatabase()->dbb_flags & DBB_no_reserve) ? 0 : RESERVE_SIZE),
 	m_window(0, 0)
 {
 }
 
-void BulkInsert::putRecord(thread_db* tdbb, record_param* rpb, jrd_tra* transaction)
+void BulkInsert::Buffer::putRecord(thread_db* tdbb, record_param* rpb, jrd_tra* transaction)
 {
 	transaction->tra_flags |= TRA_write;
 
@@ -37,7 +68,7 @@ void BulkInsert::putRecord(thread_db* tdbb, record_param* rpb, jrd_tra* transact
 	rpb->rpb_flags = 0;
 	rpb->rpb_transaction_nr = transaction->tra_number;
 
-	Compressor dcc(m_pool, true, true, rpb->rpb_length, rpb->rpb_address);
+	Compressor dcc(getPool(), true, true, rpb->rpb_length, rpb->rpb_address);
 	const ULONG packed = dcc.getPackedLength();
 
 	const ULONG header_size = (transaction->tra_number > MAX_ULONG) ? RHDE_SIZE : RHD_SIZE;
@@ -84,7 +115,7 @@ void BulkInsert::putRecord(thread_db* tdbb, record_param* rpb, jrd_tra* transact
 		memset(data + packed, 0, fill);
 }
 
-RecordNumber BulkInsert::putBlob(thread_db* tdbb, blb* blob, Record* record)
+RecordNumber BulkInsert::Buffer::putBlob(thread_db* tdbb, blb* blob, Record* record)
 {
 	fb_assert(blob->blb_relation == m_relation);
 
@@ -137,7 +168,7 @@ RecordNumber BulkInsert::putBlob(thread_db* tdbb, blb* blob, Record* record)
 	return rpb.rpb_number;
 }
 
-void BulkInsert::fragmentRecord(thread_db* tdbb, record_param* rpb, Compressor* dcc)
+void BulkInsert::Buffer::fragmentRecord(thread_db* tdbb, record_param* rpb, Compressor* dcc)
 {
 	Database* dbb = tdbb->getDatabase();
 
@@ -232,7 +263,7 @@ void BulkInsert::fragmentRecord(thread_db* tdbb, record_param* rpb, Compressor* 
 	CCH_precedence(tdbb, &m_window, prior);
 }
 
-void BulkInsert::markLarge()
+void BulkInsert::Buffer::markLarge()
 {
 	if (!(m_current->dpg_header.pag_flags & dpg_large))
 	{
@@ -245,7 +276,7 @@ void BulkInsert::markLarge()
 	}
 }
 
-UCHAR* BulkInsert::findSpace(thread_db* tdbb, record_param* rpb, USHORT size)
+UCHAR* BulkInsert::Buffer::findSpace(thread_db* tdbb, record_param* rpb, USHORT size)
 {
 	// record (with header) size, aligned up to ODS_ALIGNMENT
 	const ULONG aligned = ROUNDUP(size, ODS_ALIGNMENT);
@@ -266,16 +297,20 @@ UCHAR* BulkInsert::findSpace(thread_db* tdbb, record_param* rpb, USHORT size)
 			const ULONG pageno = m_window.win_page.getPageNum();
 			if (pageno < m_lastReserved)
 			{
+				tdbb->registerBdb(m_window.win_bdb);
+
 				const auto dpSequence = m_current->dpg_sequence;
 				const auto count = m_current->dpg_count;
 
 				CCH_MARK(tdbb, &m_window);
 				CCH_RELEASE(tdbb, &m_window);
 
-				tdbb->bumpRelStats(RuntimeStatistics::RECORD_INSERTS, m_relation->rel_id, count);
+				if (m_isPrimary)
+					tdbb->bumpRelStats(RuntimeStatistics::RECORD_INSERTS, m_relation->rel_id, count);
 
 				m_window.win_page = pageno + 1;
 				m_current = (data_page*) CCH_FETCH(tdbb, &m_window, LCK_write, pag_data);
+				tdbb->clearBdb(m_window.win_bdb);
 			}
 			else
 			{
@@ -289,7 +324,7 @@ UCHAR* BulkInsert::findSpace(thread_db* tdbb, record_param* rpb, USHORT size)
 			m_current = allocatePages(tdbb);
 		}
 
-		m_current->dpg_header.pag_flags |= dpg_swept;
+		m_current->dpg_header.pag_flags |= (m_isPrimary ? dpg_swept : dpg_secondary);
 		m_freeSpace = m_pageSize - sizeof(data_page);
 
 		CCH_precedence(tdbb, &m_window, PageNumber(TRANS_PAGE_SPACE, rpb->rpb_transaction_nr));
@@ -312,13 +347,14 @@ UCHAR* BulkInsert::findSpace(thread_db* tdbb, record_param* rpb, USHORT size)
 	return reinterpret_cast<UCHAR*>(m_current) + index->dpg_offset;
 }
 
-data_page* BulkInsert::allocatePages(thread_db* tdbb)
+data_page* BulkInsert::Buffer::allocatePages(thread_db* tdbb)
 {
 	Database* dbb = tdbb->getDatabase();
 	RelationPages* relPages = m_relation->getPages(tdbb);
 
 	m_window.win_page.setPageSpaceID(relPages->rel_pg_space_id);
 	m_reserved = DPM_reserve_pages(tdbb, m_relation, &m_window);
+	tdbb->clearBdb(m_window.win_bdb);
 
 	fb_assert(m_reserved <= sizeof(m_largeMask) * 8);
 
@@ -331,7 +367,7 @@ data_page* BulkInsert::allocatePages(thread_db* tdbb)
 	return dpage;
 }
 
-void BulkInsert::flush(thread_db* tdbb)
+void BulkInsert::Buffer::flush(thread_db* tdbb)
 {
 	if (!m_current)
 		return;
@@ -345,11 +381,15 @@ void BulkInsert::flush(thread_db* tdbb)
 	const auto count = m_current->dpg_count;
 	fb_assert(count > 0);
 
+	tdbb->registerBdb(m_window.win_bdb);
+
 	CCH_MARK(tdbb, &m_window);
 	CCH_RELEASE(tdbb, &m_window);
-	m_current = nullptr;
 
-	tdbb->bumpRelStats(RuntimeStatistics::RECORD_INSERTS, m_relation->rel_id, count);
+	if (m_isPrimary)
+		tdbb->bumpRelStats(RuntimeStatistics::RECORD_INSERTS, m_relation->rel_id, count);
+
+	m_current = nullptr;
 
 
 	RelationPages* relPages = m_relation->getPages(tdbb);
@@ -371,7 +411,7 @@ void BulkInsert::flush(thread_db* tdbb)
 		if (slot <= currSlot)
 		{
 			PPG_DP_BIT_CLEAR(bits, slot, ppg_dp_empty);
-			PPG_DP_BIT_SET(bits, slot, ppg_dp_swept);
+			PPG_DP_BIT_SET(bits, slot, m_isPrimary ? ppg_dp_swept : ppg_dp_secondary);
 
 			if (slot < currSlot || currFull)
 				PPG_DP_BIT_SET(bits, slot, ppg_dp_full);
