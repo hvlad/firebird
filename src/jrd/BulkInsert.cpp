@@ -411,7 +411,17 @@ void BulkInsert::Buffer::flush(thread_db* tdbb)
 		if (slot <= currSlot)
 		{
 			PPG_DP_BIT_CLEAR(bits, slot, ppg_dp_empty);
-			PPG_DP_BIT_SET(bits, slot, m_isPrimary ? ppg_dp_swept : ppg_dp_secondary);
+
+			if (m_isPrimary)
+			{
+				PPG_DP_BIT_SET(bits, slot, ppg_dp_swept);
+				PPG_DP_BIT_CLEAR(bits, slot, ppg_dp_secondary);
+			}
+			else
+			{
+				PPG_DP_BIT_CLEAR(bits, slot, ppg_dp_swept);
+				PPG_DP_BIT_SET(bits, slot, ppg_dp_secondary);
+			}
 
 			if (slot < currSlot || currFull)
 				PPG_DP_BIT_SET(bits, slot, ppg_dp_full);
