@@ -58,13 +58,14 @@ private:
 		const ULONG m_spaceReserve;
 		const bool m_isPrimary;
 		jrd_rel* const m_relation;
-		win m_window;								// current data page, locked for write
+
+		Firebird::Array<UCHAR> m_buffer;			// buffer for data pages
+		Ods::data_page* m_pages = nullptr;			// first DP in buffer
 		Ods::data_page* m_current = nullptr;		// current DP to put records
+		PageStack m_highPages;						// high precedence pages	   (todo: per page)
 		ULONG m_freeSpace = 0;						// free space on current DP
-		ULONG m_reserved = 0;						// count of reserved pages
-		ULONG m_lastReserved = 0;					// number of last reserved page
+		USHORT m_reserved = 0;						// count of reserved pages
 		USHORT m_firstSlot = 0;						// slot number of the first	reserved page
-		ULONG m_largeMask = 0;						// bitmask of reserved pages with large objects
 	};
 
 	Request* const m_request;

@@ -12,6 +12,13 @@
 using namespace Firebird;
 using namespace Ods;
 
+static inline data_page* nextPage(data_page* ptr, ULONG pageSize)
+{
+	UCHAR* p = reinterpret_cast<UCHAR*>(ptr);
+	p += pageSize;
+	return reinterpret_cast<data_page*>(p);
+};
+
 namespace Jrd
 {
 
@@ -55,7 +62,8 @@ BulkInsert::Buffer::Buffer(MemoryPool& pool, ULONG pageSize, ULONG spaceReserve,
 	m_spaceReserve(spaceReserve),
 	m_isPrimary(primary),
 	m_relation(relation),
-	m_window(0, 0)
+	m_buffer(pool),
+	m_highPages(getPool())
 {
 }
 
@@ -91,7 +99,7 @@ void BulkInsert::Buffer::putRecord(thread_db* tdbb, record_param* rpb, jrd_tra* 
 	{
 		auto& stack = record->getPrecedence();
 		while (stack.hasData())
-			CCH_precedence(tdbb, &m_window, stack.pop());
+			m_highPages.push(stack.pop());
 	}
 
 	rpb->rpb_flags &= ~rpb_not_packed;
@@ -145,7 +153,7 @@ RecordNumber BulkInsert::Buffer::putBlob(thread_db* tdbb, blb* blob, Record* rec
 	blh* header = (blh*) findSpace(tdbb, &rpb, (BLH_SIZE + length));
 
 	while (stack.hasData())
-		CCH_precedence(tdbb, &m_window, stack.pop());
+		m_highPages.push(stack.pop());
 
 	header->blh_flags = rhd_blob;
 
@@ -163,7 +171,10 @@ RecordNumber BulkInsert::Buffer::putBlob(thread_db* tdbb, blb* blob, Record* rec
 	markLarge();
 
 	if (record)
-		record->pushPrecedence(m_window.win_page);
+	{
+		RelationPages* relPages = rpb.rpb_relation->getPages(tdbb);
+		record->pushPrecedence(PageNumber(relPages->rel_pg_space_id, m_current->dpg_header.pag_pageno));
+	}
 
 	return rpb.rpb_number;
 }
@@ -260,20 +271,12 @@ void BulkInsert::Buffer::fragmentRecord(thread_db* tdbb, record_param* rpb, Comp
 
 	markLarge();
 
-	CCH_precedence(tdbb, &m_window, prior);
+	m_highPages.push(prior);
 }
 
 void BulkInsert::Buffer::markLarge()
 {
-	if (!(m_current->dpg_header.pag_flags & dpg_large))
-	{
-		const int bit = m_reserved - (m_lastReserved - m_window.win_page.getPageNum()) - 1;
-		fb_assert(bit >= 0);
-		fb_assert(bit < m_reserved);
-
-		m_largeMask |= (1UL << bit);
-		m_current->dpg_header.pag_flags |= dpg_large;
-	}
+	m_current->dpg_header.pag_flags |= dpg_large;
 }
 
 UCHAR* BulkInsert::Buffer::findSpace(thread_db* tdbb, record_param* rpb, USHORT size)
@@ -294,23 +297,11 @@ UCHAR* BulkInsert::Buffer::findSpace(thread_db* tdbb, record_param* rpb, USHORT 
 			m_current->dpg_header.pag_flags |= dpg_full;
 
 			// Get next reserved page, or reserve a new set of pages.
-			const ULONG pageno = m_window.win_page.getPageNum();
-			if (pageno < m_lastReserved)
+
+			UCHAR* const ptr = reinterpret_cast<UCHAR*>(nextPage(m_current, m_pageSize));
+			if (ptr + m_pageSize < m_buffer.end())
 			{
-				tdbb->registerBdb(m_window.win_bdb);
-
-				const auto dpSequence = m_current->dpg_sequence;
-				const auto count = m_current->dpg_count;
-
-				CCH_MARK(tdbb, &m_window);
-				CCH_RELEASE(tdbb, &m_window);
-
-				if (m_isPrimary)
-					tdbb->bumpRelStats(RuntimeStatistics::RECORD_INSERTS, m_relation->rel_id, count);
-
-				m_window.win_page = pageno + 1;
-				m_current = (data_page*) CCH_FETCH(tdbb, &m_window, LCK_write, pag_data);
-				tdbb->clearBdb(m_window.win_bdb);
+				m_current = reinterpret_cast<data_page*>(ptr);
 			}
 			else
 			{
@@ -327,7 +318,7 @@ UCHAR* BulkInsert::Buffer::findSpace(thread_db* tdbb, record_param* rpb, USHORT 
 		m_current->dpg_header.pag_flags |= (m_isPrimary ? dpg_swept : dpg_secondary);
 		m_freeSpace = m_pageSize - sizeof(data_page);
 
-		CCH_precedence(tdbb, &m_window, PageNumber(TRANS_PAGE_SPACE, rpb->rpb_transaction_nr));
+		m_highPages.push(PageNumber(TRANS_PAGE_SPACE, rpb->rpb_transaction_nr));
 	}
 
 	fb_assert(alloc <= m_freeSpace);
@@ -352,19 +343,38 @@ data_page* BulkInsert::Buffer::allocatePages(thread_db* tdbb)
 	Database* dbb = tdbb->getDatabase();
 	RelationPages* relPages = m_relation->getPages(tdbb);
 
-	m_window.win_page.setPageSpaceID(relPages->rel_pg_space_id);
-	m_reserved = DPM_reserve_pages(tdbb, m_relation, &m_window);
-	tdbb->clearBdb(m_window.win_bdb);
+	WIN window(relPages->rel_pg_space_id, 0);
 
-	fb_assert(m_reserved <= sizeof(m_largeMask) * 8);
+	const auto reserved = DPM_reserve_pages(tdbb, m_relation, &window);
 
-	auto dpage = reinterpret_cast<data_page*>(m_window.win_buffer);
+	if (!m_pages)
+	{
+		m_pages = reinterpret_cast<data_page*> (m_buffer.getAlignedBuffer(m_pageSize * reserved, ODS_ALIGNMENT));
+		m_reserved = reserved;
+	}
 
-	m_lastReserved = m_window.win_page.getPageNum() + m_reserved - 1;
+	fb_assert(m_reserved == reserved);
+
+	auto dpage = reinterpret_cast<data_page*>(window.win_buffer);
+
 	m_firstSlot = dpage->dpg_sequence % dbb->dbb_dp_per_pp;
-	m_largeMask = 0;
 
-	return dpage;
+	// format data pages in the buffer
+	auto ptr = m_pages;
+	for (auto i = 0; i < m_reserved; i++)
+	{
+		*ptr = *dpage;
+
+		ptr->dpg_header.pag_pageno += i;
+		ptr->dpg_sequence += i;
+
+		ptr = nextPage(ptr, m_pageSize);
+	}
+
+	CCH_RELEASE(tdbb, &window);
+
+	m_current = m_pages;
+	return m_current;
 }
 
 void BulkInsert::Buffer::flush(thread_db* tdbb)
@@ -373,42 +383,57 @@ void BulkInsert::Buffer::flush(thread_db* tdbb)
 		return;
 
 	Database* dbb = tdbb->getDatabase();
+	RelationPages* relPages = m_relation->getPages(tdbb);
 
 	const ULONG pp_sequence = m_current->dpg_sequence / dbb->dbb_dp_per_pp;
-	const USHORT currSlot = m_current->dpg_sequence % dbb->dbb_dp_per_pp;
 
-	const bool currFull = (m_current->dpg_header.pag_flags & dpg_full);
-	const auto count = m_current->dpg_count;
-	fb_assert(count > 0);
+	// copy buffered data into buffers in page cache
+	m_current = m_pages;
+	for (auto i = 0; i < m_reserved; i++)
+	{
+		if (m_current->dpg_count == 0)
+			break;
 
-	tdbb->registerBdb(m_window.win_bdb);
+		win dpWindow(relPages->rel_pg_space_id, m_current->dpg_header.pag_pageno);
 
-	CCH_MARK(tdbb, &m_window);
-	CCH_RELEASE(tdbb, &m_window);
+		auto dpage = CCH_FETCH(tdbb, &dpWindow, LCK_write, pag_data);
 
-	if (m_isPrimary)
-		tdbb->bumpRelStats(RuntimeStatistics::RECORD_INSERTS, m_relation->rel_id, count);
+		while (m_highPages.hasData())
+			CCH_precedence(tdbb, &dpWindow, m_highPages.pop());
 
-	m_current = nullptr;
+		CCH_MARK(tdbb, &dpWindow);
+		memcpy(dpage, m_current, m_pageSize);
+		CCH_RELEASE(tdbb, &dpWindow);
 
+		if (m_isPrimary)
+			tdbb->bumpRelStats(RuntimeStatistics::RECORD_INSERTS, m_relation->rel_id, m_current->dpg_count);
 
-	RelationPages* relPages = m_relation->getPages(tdbb);
+		m_current = nextPage(m_current, m_pageSize);
+	}
 
 	win ppWindow(relPages->rel_pg_space_id, (*relPages->rel_pages)[pp_sequence]);
 	pointer_page* ppage = (pointer_page*) CCH_FETCH(tdbb, &ppWindow, LCK_write, pag_pointer);
 
-	for (ULONG pageno = m_lastReserved - m_reserved + 1; pageno <= m_lastReserved; pageno++)
-		CCH_precedence(tdbb, &ppWindow, pageno);
+	m_current = m_pages;
+	for (auto i = 0; i < m_reserved; i++)
+	{
+		if (m_current->dpg_count == 0)
+			break;
+
+		CCH_precedence(tdbb, &ppWindow, m_current->dpg_header.pag_pageno + i);
+		m_current = nextPage(m_current, m_pageSize);
+	}
+
+	m_current = m_pages;
 
 	CCH_MARK(tdbb, &ppWindow);
 
 	UCHAR* bits = (UCHAR*) (ppage->ppg_page + dbb->dbb_dp_per_pp);
-	ULONG largeMask = 1;
 	for (USHORT slot = m_firstSlot; slot < m_firstSlot + m_reserved; slot++)
 	{
 		PPG_DP_BIT_CLEAR(bits, slot, ppg_dp_reserved);
 
-		if (slot <= currSlot)
+		if (m_current->dpg_count > 0)
 		{
 			PPG_DP_BIT_CLEAR(bits, slot, ppg_dp_empty);
 
@@ -423,14 +448,14 @@ void BulkInsert::Buffer::flush(thread_db* tdbb)
 				PPG_DP_BIT_SET(bits, slot, ppg_dp_secondary);
 			}
 
-			if (slot < currSlot || currFull)
+			if (m_current->dpg_header.pag_flags & dpg_full)
 				PPG_DP_BIT_SET(bits, slot, ppg_dp_full);
 
-			if (m_largeMask & largeMask)
+			if (m_current->dpg_header.pag_flags & dpg_large)
 				PPG_DP_BIT_SET(bits, slot, ppg_dp_large);
 		}
 
-		largeMask <<= 1;
+		m_current = nextPage(m_current, m_pageSize);
 	}
 
 	CCH_RELEASE(tdbb, &ppWindow);
