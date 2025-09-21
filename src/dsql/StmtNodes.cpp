@@ -778,6 +778,170 @@ bool BlockNode::testAndFixupError(thread_db* tdbb, Request* request, const Excep
 //--------------------
 
 
+static RegisterNode<BulkInsertNode> regBulkInsertNode({blr_bulk_insert});
+
+DmlNode* BulkInsertNode::parse(thread_db* tdbb, MemoryPool& pool, CompilerScratch* csb, const UCHAR blrOp)
+{
+	auto node = FB_NEW_POOL(pool) BulkInsertNode(pool);
+
+	if (csb->csb_blr_reader.peekByte() == blr_marks)
+		/*node->marks |= */PAR_marks(csb);
+
+	// Should be enough to for cursor stability
+	AutoSetRestore<StmtNode*> autoCurrentDMLNode(&csb->csb_currentDMLNode, node);
+
+	//AutoSetRestore<ForNode*> autoCurrentForNode(&csb->csb_currentForNode, node);
+
+	if (csb->csb_blr_reader.peekByte() == (UCHAR) blr_rse ||
+		csb->csb_blr_reader.peekByte() == (UCHAR) blr_lateral_rse ||
+		csb->csb_blr_reader.peekByte() == (UCHAR) blr_singular ||
+		csb->csb_blr_reader.peekByte() == (UCHAR) blr_scrollable)
+	{
+		node->rse = PAR_rse(tdbb, csb);
+	}
+	else
+		node->rse = PAR_rse(tdbb, csb, blrOp);
+
+
+	const UCHAR* blrPos = csb->csb_blr_reader.getPos();
+
+	node->target = PAR_parseRecordSource(tdbb, csb);
+
+	if (!nodeIs<RelationSourceNode>(node->target) &&
+		!nodeIs<LocalTableSourceNode>(node->target))
+	{
+		csb->csb_blr_reader.setPos(blrPos);
+		PAR_syntax_error(csb, "relation source");
+	}
+
+	node->statement = PAR_parse_stmt(tdbb, csb);
+
+	return node;
+}
+
+string BulkInsertNode::internalPrint(NodePrinter& printer) const
+{
+	StmtNode::internalPrint(printer);
+
+	NODE_PRINT(printer, rse);
+	NODE_PRINT(printer, target);
+	NODE_PRINT(printer, statement);
+	NODE_PRINT(printer, cursor);
+
+	return "BulkInsertNode";
+}
+
+BulkInsertNode* BulkInsertNode::dsqlPass(DsqlCompilerScratch* dsqlScratch)
+{
+	fb_assert(false); // not implemented
+	return nullptr;
+}
+
+void BulkInsertNode::genBlr(DsqlCompilerScratch* dsqlScratch)
+{
+	fb_assert(false); // not implemented
+}
+
+BulkInsertNode* BulkInsertNode::pass1(thread_db* tdbb, CompilerScratch* csb)
+{
+	{ // scope
+		AutoSetRestore<bool> autoImplicitCursor(&csb->csb_implicit_cursor, true);
+		doPass1(tdbb, csb, rse.getAddress());
+	}
+
+	preprocessAssignments(tdbb, csb, target->getStream(), nodeAs<CompoundStmtNode>(statement), nullptr);
+	doPass1(tdbb, csb, statement.getAddress());
+
+	return this;
+}
+
+BulkInsertNode* BulkInsertNode::pass2(thread_db* tdbb, CompilerScratch* csb)
+{
+	AutoSetCurrentCursorId autoSetCurrentCursorId(csb);
+
+	rse->pass2Rse(tdbb, csb);
+
+	RecordSource* const rsb = CMP_post_rse(tdbb, csb, rse.getObject());
+
+	cursor = FB_NEW_POOL(*tdbb->getDefaultPool())
+		Cursor(csb, rsb, rse, true, line, column, "");
+
+	csb->csb_fors.add(cursor);
+
+	StreamList streams;
+	streams.add(target->getStream());
+
+	StreamStateHolder stateHolder(csb, streams);
+	stateHolder.activate();
+
+	doPass2(tdbb, csb, statement.getAddress(), this);
+
+	impureOffset = csb->allocImpure<impure_state>();
+
+	return this;
+}
+
+const StmtNode* BulkInsertNode::execute(thread_db* tdbb, Request* request, ExeState* exeState) const
+{
+	if (request->req_operation == Request::req_evaluate)
+	{
+		insertFromCursor(tdbb, request);
+		request->req_operation = Request::req_return;
+	}
+
+	return parentStmt;
+}
+
+void BulkInsertNode::insertFromCursor(thread_db* tdbb, Request* request) const
+{
+	jrd_tra* transaction = request->req_transaction;
+	impure_state* impure = request->getImpure<impure_state>(impureOffset);
+
+	const StreamType stream = target->getStream();
+	record_param* rpb = &request->req_rpb[stream];
+	jrd_rel* relation = rpb->rpb_relation;
+	RLCK_reserve_relation(tdbb, transaction, relation, true);
+
+	auto bulk = transaction->getBulkInsert(tdbb, relation);
+
+	const Format* format = MET_current(tdbb, relation);
+	auto record = VIO_record(tdbb, rpb, format, tdbb->getDefaultPool());
+
+	rpb->rpb_address = record->getData();
+	rpb->rpb_length = format->fmt_length;
+	rpb->rpb_format_number = format->fmt_version;
+
+
+	cursor->open(tdbb);
+	while (cursor->fetchNext(tdbb))
+	{
+		rpb->rpb_number.setValue(BOF_NUMBER);
+		record->nullify();
+		record->setTransactionNumber(transaction->tra_number);
+
+		// assignments
+		auto compound = nodeAs<CompoundStmtNode>(statement);
+		for (auto stmt : compound->statements)
+		{
+			auto assign = nodeAs<AssignmentNode>(stmt);
+			EXE_assignment(tdbb, assign);
+		}
+
+		cleanupRpb(tdbb, rpb);
+
+		bulk->putRecord(tdbb, rpb, transaction);
+
+		JRD_reschedule(tdbb);
+	}
+	cursor->close(tdbb);
+	transaction->finiBulkInsert(tdbb, true);
+}
+
+
+
+//--------------------
+
+
 static RegisterNode<CompoundStmtNode> regCompoundStmtNode({blr_begin});
 
 DmlNode* CompoundStmtNode::parse(thread_db* tdbb, MemoryPool& pool, CompilerScratch* csb, const UCHAR /*blrOp*/)
@@ -8293,6 +8457,7 @@ const StmtNode* StoreNode::store(thread_db* tdbb, Request* request, WhichTrigger
 	// a stored procedure.
 
 	record->nullify();
+	record->setTransactionNumber(transaction->tra_number);
 
 	return statement;
 }

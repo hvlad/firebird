@@ -183,6 +183,36 @@ public:
 };
 
 
+class BulkInsertNode : public TypedNode<StmtNode, StmtNode::TYPE_BULK_INSERT>
+{
+public:
+	explicit BulkInsertNode(MemoryPool& pool)
+		: TypedNode<StmtNode, StmtNode::TYPE_BULK_INSERT>(pool)
+	{
+	}
+
+public:
+	static DmlNode* parse(thread_db* tdbb, MemoryPool& pool, CompilerScratch* csb, const UCHAR blrOp);
+
+	Firebird::string internalPrint(NodePrinter& printer) const override;
+	BulkInsertNode* dsqlPass(DsqlCompilerScratch* dsqlScratch) override;
+	void genBlr(DsqlCompilerScratch* dsqlScratch) override;
+	BulkInsertNode* pass1(thread_db* tdbb, CompilerScratch* csb) override;
+	BulkInsertNode* pass2(thread_db* tdbb, CompilerScratch* csb) override;
+	const StmtNode* execute(thread_db* tdbb, Request* request, ExeState* exeState) const override;
+
+public:
+	NestConst<RseNode> rse = nullptr;					// source RSE
+//	NestConst<StmtNode> stall = nullptr;
+	NestConst<RecordSourceNode> target = nullptr;		// target relation
+	NestConst<StmtNode> statement = nullptr;			// assignments: field = value [, ...]
+	NestConst<Cursor> cursor = nullptr;					// source cursor
+
+private:
+	void insertFromCursor(thread_db* tdbb, Request* request) const;
+};
+
+
 class CompoundStmtNode : public TypedNode<StmtNode, StmtNode::TYPE_COMPOUND_STMT>	// blr_begin
 {
 public:
