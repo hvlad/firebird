@@ -911,6 +911,26 @@ void BulkInsertNode::insertFromCursor(thread_db* tdbb, Request* request) const
 	rpb->rpb_length = format->fmt_length;
 	rpb->rpb_format_number = format->fmt_version;
 
+	// prepare target descriptors for faster assigning
+
+	auto compound = nodeAs<CompoundStmtNode>(statement);
+
+	HalfStaticArray<dsc, 16> toDescs(*tdbb->getDefaultPool(), compound->statements.getCount());
+	dsc* to_desc = toDescs.begin();
+
+	for (auto stmt : compound->statements)
+	{
+		auto assign = nodeAs<AssignmentNode>(stmt);
+
+		fb_assert(!assign->missing);
+		fb_assert(!assign->missing2);
+
+		// Get descriptor of target field
+		const FieldNode* toField = nodeAs<FieldNode>(assign->asgnTo);
+		*to_desc = *EVL_assign_to(tdbb, toField);
+		to_desc++;
+	}
+
 
 	cursor->open(tdbb);
 	while (cursor->fetchNext(tdbb))
@@ -920,11 +940,59 @@ void BulkInsertNode::insertFromCursor(thread_db* tdbb, Request* request) const
 		record->setTransactionNumber(transaction->tra_number);
 
 		// assignments
-		auto compound = nodeAs<CompoundStmtNode>(statement);
+		to_desc = toDescs.begin();
 		for (auto stmt : compound->statements)
 		{
 			auto assign = nodeAs<AssignmentNode>(stmt);
-			EXE_assignment(tdbb, assign);
+			//EXE_assignment(tdbb, assign);
+
+			const FieldNode* toField = nodeAs<FieldNode>(assign->asgnTo);
+
+			fb_assert(record == request->req_rpb[toField->fieldStream].rpb_record);
+
+			request->req_flags &= ~req_null;
+			dsc* from_desc = EVL_expr(tdbb, request, assign->asgnFrom);
+
+			if (request->req_flags & req_null)
+			{
+				record->setNull(toField->fieldId);
+				to_desc->dsc_flags |= DSC_null;
+			}
+			else
+			{
+				record->clearNull(toField->fieldId);
+
+				if (DTYPE_IS_BLOB_OR_QUAD(from_desc->dsc_dtype) || DTYPE_IS_BLOB_OR_QUAD(to_desc->dsc_dtype))
+				{
+					// ASF: Don't let MOV_move call blb::move because MOV
+					// will not pass the destination field to blb::move.
+
+					blb::move(tdbb, from_desc, to_desc, relation, record, toField->fieldId, bulk);
+				}
+				else if (!DSC_EQUIV(from_desc, to_desc, false))
+				{
+					MOV_move(tdbb, from_desc, to_desc);
+				}
+				else if (from_desc->dsc_dtype == dtype_short)
+				{
+					*((SSHORT*) to_desc->dsc_address) = *((SSHORT*) from_desc->dsc_address);
+				}
+				else if (from_desc->dsc_dtype == dtype_long)
+				{
+					*((SLONG*) to_desc->dsc_address) = *((SLONG*) from_desc->dsc_address);
+				}
+				else if (from_desc->dsc_dtype == dtype_int64)
+				{
+					*((SINT64*) to_desc->dsc_address) = *((SINT64*) from_desc->dsc_address);
+				}
+				else
+				{
+					memcpy(to_desc->dsc_address, from_desc->dsc_address, from_desc->dsc_length);
+				}
+
+				to_desc->dsc_flags &= ~DSC_null;
+			}
+			to_desc++;
 		}
 
 		cleanupRpb(tdbb, rpb);
