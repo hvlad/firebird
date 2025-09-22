@@ -7216,18 +7216,16 @@ void RelationNode::generateFieldsFromSubquery(thread_db* tdbb, DsqlCompilerScrat
 
 	dsqlScratch->resetContextStack();
 
+	dsqlScratch->appendUChar(blr_bulk_insert);
+
 	// Target relation's context
 	const UCHAR context = dsqlScratch->contextNumber++;
 
+	// Source RSE
 	RseNode* rse = PASS1_rse(dsqlScratch, subQry->selectExpr);
-
-	dsqlScratch->appendUChar(blr_begin);
-	dsqlScratch->appendUChar(blr_for);
-	dsqlScratch->putBlrMarkers(StmtNode::MARK_FOR_UPDATE);
 	GEN_rse(dsqlScratch, rse);
 
-	dsqlScratch->appendUChar(blr_store);			// blr_store_direct
-	dsqlScratch->putBlrMarkers(StmtNode::MARK_BULK_INSERT);
+	// Target relation
 	dsqlScratch->appendUChar(blr_relation);
 	dsqlScratch->appendMetaString(name.c_str());
 	dsqlScratch->appendUChar(context);
@@ -7397,7 +7395,6 @@ void RelationNode::generateFieldsFromSubquery(thread_db* tdbb, DsqlCompilerScrat
 	}
 
 	dsqlScratch->appendUChar(blr_end);	// of assignments
-	dsqlScratch->appendUChar(blr_end);	// of begin
 	dsqlScratch->appendUChar(blr_eoc);	// end of the blr
 
 #ifdef DSQL_DEBUG
