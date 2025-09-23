@@ -402,7 +402,11 @@ void BulkInsert::Buffer::flush(thread_db* tdbb)
 			CCH_precedence(tdbb, &dpWindow, m_highPages.pop());
 
 		CCH_MARK(tdbb, &dpWindow);
+
+		// don't overwrite pag_scn
+		m_current->dpg_header.pag_scn = dpage->pag_scn;
 		memcpy(dpage, m_current, m_pageSize);
+
 		CCH_RELEASE(tdbb, &dpWindow);
 
 		if (m_isPrimary)
