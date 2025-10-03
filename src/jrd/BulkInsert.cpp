@@ -161,14 +161,15 @@ RecordNumber BulkInsert::Buffer::putBlob(thread_db* tdbb, blb* blob, Record* rec
 		header->blh_flags |= rhd_stream_blob;
 
 	if (blob->getLevel())
+	{
 		header->blh_flags |= rhd_large;
+		markLarge();
+	}
 
 	blob->toPageHeader(header);
 
 	if (length)
 		memcpy(header->blh_page, q, length);
-
-	markLarge();
 
 	if (record)
 	{

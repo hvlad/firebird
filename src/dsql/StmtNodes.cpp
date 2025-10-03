@@ -946,6 +946,12 @@ void BulkInsertNode::insertFromCursor(thread_db* tdbb, Request* request) const
 			auto assign = nodeAs<AssignmentNode>(stmt);
 			//EXE_assignment(tdbb, assign);
 
+			if (assign->hasLineColumn)
+			{
+				request->req_src_line = assign->line;
+				request->req_src_column = assign->column;
+			}
+
 			const FieldNode* toField = nodeAs<FieldNode>(assign->asgnTo);
 
 			fb_assert(record == request->req_rpb[toField->fieldStream].rpb_record);
@@ -967,7 +973,7 @@ void BulkInsertNode::insertFromCursor(thread_db* tdbb, Request* request) const
 					// ASF: Don't let MOV_move call blb::move because MOV
 					// will not pass the destination field to blb::move.
 
-					blb::move(tdbb, from_desc, to_desc, relation, record, toField->fieldId, bulk);
+					blb::move(tdbb, from_desc, to_desc, relation, record, toField->fieldId, true);
 				}
 				else if (!DSC_EQUIV(from_desc, to_desc, false))
 				{
