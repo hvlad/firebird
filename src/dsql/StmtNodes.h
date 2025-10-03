@@ -203,14 +203,25 @@ public:
 
 public:
 	NestConst<RseNode> rse = nullptr;					// source RSE
-//	NestConst<StmtNode> stall = nullptr;
 	NestConst<RecordSourceNode> target = nullptr;		// target relation
 	NestConst<StmtNode> statement = nullptr;			// assignments: field = value [, ...]
 	NestConst<Cursor> cursor = nullptr;					// source cursor
 
 private:
+	// Impure flags
+	static constexpr int INIT_DONE = 0x01;
+	static constexpr int HAVE_SRC_DSC = 0x02;
+
+	struct Impure
+	{
+		Firebird::Array<dsc> descs;
+		int flags;
+	};
+
 	void insertFromCursor(thread_db* tdbb, Request* request) const;
 	const StmtNode* insertSingle(thread_db* tdbb, Request* request) const;
+
+	void prepareDescs(thread_db* tdbb, Request* request, Record* record) const;
 };
 
 

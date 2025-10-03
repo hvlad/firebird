@@ -889,7 +889,7 @@ BulkInsertNode* BulkInsertNode::pass2(thread_db* tdbb, CompilerScratch* csb)
 
 	doPass2(tdbb, csb, statement.getAddress(), this);
 
-	impureOffset = csb->allocImpure<impure_state>();
+	impureOffset = csb->allocImpure<Impure>();
 
 	return this;
 }
@@ -1028,11 +1028,13 @@ void BulkInsertNode::insertFromCursor(thread_db* tdbb, Request* request) const
 
 const StmtNode* BulkInsertNode::insertSingle(thread_db* tdbb, Request* request) const
 {
+	Impure* impure = request->getImpure<Impure>(impureOffset);
 	jrd_tra* transaction = request->req_transaction;
-	impure_state* impure = request->getImpure<impure_state>(impureOffset);
 
 	const StreamType stream = target->getStream();
 	record_param* rpb = &request->req_rpb[stream];
+	rpb->rpb_stream_flags |= RPB_s_bulk;
+
 	jrd_rel* relation = rpb->rpb_relation;
 
 	if (request->req_operation == Request::req_evaluate)
@@ -1067,6 +1069,60 @@ const StmtNode* BulkInsertNode::insertSingle(thread_db* tdbb, Request* request) 
 	}
 
 	return parentStmt;
+}
+
+void BulkInsertNode::prepareDescs(thread_db* tdbb, Request* request, Record* record) const
+{
+	Impure* impure = request->getImpure<Impure>(impureOffset);
+
+	if (impure->flags & INIT_DONE)
+		return;
+
+	impure->flags = INIT_DONE;
+
+	auto compound = nodeAs<CompoundStmtNode>(statement);
+	fb_assert(compound->onlyAssignments);
+
+	// check if all from nodes is Parameters
+	impure->flags |= HAVE_SRC_DSC;
+	for (auto stmt : compound->statements)
+	{
+		auto assign = nodeAs<AssignmentNode>(stmt);
+		if (!assign || !nodeIs<ParameterNode>(assign->asgnFrom))
+		{
+			impure->flags &= ~HAVE_SRC_DSC;
+			break;
+		}
+	}
+
+	dsc* fromDesc = nullptr;
+	dsc* fromNull = nullptr;
+	dsc* toDesc = nullptr;
+
+	const FB_SIZE_T count = compound->statements.getCount();
+	if (impure->flags & HAVE_SRC_DSC)
+	{
+		fromDesc = impure->descs.getBuffer(count * 3);
+		fromNull = fromDesc + count;
+		toDesc = fromNull + count;
+	}
+	else
+	{
+		toDesc = impure->descs.getBuffer(count);
+	}
+
+	for (auto stmt : compound->statements)
+	{
+		auto assign = nodeAs<AssignmentNode>(stmt);
+
+		const auto* param = nodeAs<ParameterNode>(assign->asgnFrom);
+		fb_assert(!param->outerDecl);
+
+		// Get descriptor of target field
+		const auto* toField = nodeAs<FieldNode>(assign->asgnTo);
+		*toDesc = *EVL_assign_to(tdbb, toField);
+		toDesc++;
+	}
 }
 
 
