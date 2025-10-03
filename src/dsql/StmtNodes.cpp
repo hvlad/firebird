@@ -792,16 +792,25 @@ DmlNode* BulkInsertNode::parse(thread_db* tdbb, MemoryPool& pool, CompilerScratc
 
 	//AutoSetRestore<ForNode*> autoCurrentForNode(&csb->csb_currentForNode, node);
 
-	if (csb->csb_blr_reader.peekByte() == (UCHAR) blr_rse ||
-		csb->csb_blr_reader.peekByte() == (UCHAR) blr_lateral_rse ||
-		csb->csb_blr_reader.peekByte() == (UCHAR) blr_singular ||
-		csb->csb_blr_reader.peekByte() == (UCHAR) blr_scrollable)
-	{
-		node->rse = PAR_rse(tdbb, csb);
-	}
-	else
-		node->rse = PAR_rse(tdbb, csb, blrOp);
+	const auto rseBlr = csb->csb_blr_reader.peekByte();
 
+	switch (rseBlr)
+	{
+	case blr_null:
+		csb->csb_blr_reader.getByte();
+		break;		// no RSE
+
+	case blr_rse:
+	case blr_lateral_rse:
+	case blr_singular:
+	case blr_scrollable:
+		node->rse = PAR_rse(tdbb, csb);
+		break;
+
+	default:
+		node->rse = PAR_rse(tdbb, csb, blrOp);
+		break;
+	}
 
 	const UCHAR* blrPos = csb->csb_blr_reader.getPos();
 
@@ -844,7 +853,8 @@ void BulkInsertNode::genBlr(DsqlCompilerScratch* dsqlScratch)
 
 BulkInsertNode* BulkInsertNode::pass1(thread_db* tdbb, CompilerScratch* csb)
 {
-	{ // scope
+	if (rse)
+	{
 		AutoSetRestore<bool> autoImplicitCursor(&csb->csb_implicit_cursor, true);
 		doPass1(tdbb, csb, rse.getAddress());
 	}
@@ -859,14 +869,17 @@ BulkInsertNode* BulkInsertNode::pass2(thread_db* tdbb, CompilerScratch* csb)
 {
 	AutoSetCurrentCursorId autoSetCurrentCursorId(csb);
 
-	rse->pass2Rse(tdbb, csb);
+	if (rse)
+	{
+		rse->pass2Rse(tdbb, csb);
 
-	RecordSource* const rsb = CMP_post_rse(tdbb, csb, rse.getObject());
+		RecordSource* const rsb = CMP_post_rse(tdbb, csb, rse.getObject());
 
-	cursor = FB_NEW_POOL(*tdbb->getDefaultPool())
-		Cursor(csb, rsb, rse, true, line, column, "");
+		cursor = FB_NEW_POOL(*tdbb->getDefaultPool())
+			Cursor(csb, rsb, rse, true, line, column, "");
 
-	csb->csb_fors.add(cursor);
+		csb->csb_fors.add(cursor);
+	}
 
 	StreamList streams;
 	streams.add(target->getStream());
@@ -883,13 +896,15 @@ BulkInsertNode* BulkInsertNode::pass2(thread_db* tdbb, CompilerScratch* csb)
 
 const StmtNode* BulkInsertNode::execute(thread_db* tdbb, Request* request, ExeState* exeState) const
 {
-	if (request->req_operation == Request::req_evaluate)
+	if (request->req_operation == Request::req_evaluate && cursor)
 	{
 		insertFromCursor(tdbb, request);
+
 		request->req_operation = Request::req_return;
+		return parentStmt;
 	}
 
-	return parentStmt;
+	return insertSingle(tdbb, request);
 }
 
 void BulkInsertNode::insertFromCursor(thread_db* tdbb, Request* request) const
@@ -1009,6 +1024,49 @@ void BulkInsertNode::insertFromCursor(thread_db* tdbb, Request* request) const
 	}
 	cursor->close(tdbb);
 	transaction->finiBulkInsert(tdbb, true);
+}
+
+const StmtNode* BulkInsertNode::insertSingle(thread_db* tdbb, Request* request) const
+{
+	jrd_tra* transaction = request->req_transaction;
+	impure_state* impure = request->getImpure<impure_state>(impureOffset);
+
+	const StreamType stream = target->getStream();
+	record_param* rpb = &request->req_rpb[stream];
+	jrd_rel* relation = rpb->rpb_relation;
+
+	if (request->req_operation == Request::req_evaluate)
+	{
+		RLCK_reserve_relation(tdbb, transaction, relation, true);
+
+		auto bulk = transaction->getBulkInsert(tdbb, relation);
+
+		const Format* format = MET_current(tdbb, relation);
+		auto record = VIO_record(tdbb, rpb, format, tdbb->getDefaultPool());
+
+		rpb->rpb_address = record->getData();
+		rpb->rpb_length = format->fmt_length;
+		rpb->rpb_format_number = format->fmt_version;
+		rpb->rpb_number.setValue(BOF_NUMBER);
+
+		record->nullify();
+		record->setTransactionNumber(transaction->tra_number);
+
+		return statement;
+	}
+	else if (request->req_operation == Request::req_return)
+	{
+		cleanupRpb(tdbb, rpb);
+
+		auto bulk = transaction->getBulkInsert(tdbb, relation);
+		bulk->putRecord(tdbb, rpb, transaction);
+	}
+	else if (request->req_operation == Request::req_unwind)
+	{
+		transaction->finiBulkInsert(tdbb, request);
+	}
+
+	return parentStmt;
 }
 
 

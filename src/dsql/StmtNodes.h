@@ -210,6 +210,7 @@ public:
 
 private:
 	void insertFromCursor(thread_db* tdbb, Request* request) const;
+	const StmtNode* insertSingle(thread_db* tdbb, Request* request) const;
 };
 
 

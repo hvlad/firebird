@@ -12125,6 +12125,7 @@ void WriteRelationMeta::prepareRequest(BurpGlobals* tdgbl)
 	add_byte(blr, blr_loop);
 	add_byte(blr, blr_receive);
 	add_byte(blr, 0);
+/***
 	if (identity_type == IDENT_TYPE_ALWAYS)
 	{
 		add_byte(blr, blr_store3);
@@ -12137,6 +12138,10 @@ void WriteRelationMeta::prepareRequest(BurpGlobals* tdgbl)
 	add_byte(blr, blr_marks);
 	add_byte(blr, 1);
 	add_byte(blr, 0x10);	// must be Jrd::StatementNode::MARK_BULK_INSERT
+***/
+
+	add_byte(blr, blr_bulk_insert);
+	add_byte(blr, blr_null);		// no RSE
 
 	add_byte(blr, blr_relation);
 	add_string(blr, m_relation->rel_name);
@@ -12167,8 +12172,8 @@ void WriteRelationMeta::prepareRequest(BurpGlobals* tdgbl)
 	}
 
 	add_byte(blr, blr_end);
-	if (identity_type == IDENT_TYPE_ALWAYS)
-		add_byte(blr, blr_null);
+//	if (identity_type == IDENT_TYPE_ALWAYS)
+//		add_byte(blr, blr_null);
 	add_byte(blr, blr_end);
 	add_byte(blr, blr_eoc);
 
