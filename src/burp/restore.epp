@@ -12272,7 +12272,7 @@ void WriteRelationReq::send(BurpGlobals* tdgbl, ITransaction* tran, bool lastRec
 		// memory when there are blobs and arrays fields - CORE-3802.
 
 		FbLocalStatus status;
-		if (m_resync || m_recs % 1000 == 1)
+		if (m_resync /*|| m_recs % 1000 == 1*/)
 			m_request->startAndSend(&status, tran, 0, 0, m_inMsg.getCount(), m_inMsg.begin());
 		else
 			m_request->send(&status, 0, 0, m_inMsg.getCount(), m_inMsg.begin());
