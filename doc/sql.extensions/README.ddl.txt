@@ -604,3 +604,37 @@ ALTER TABLE <name> ... [ {ENABLE | DISABLE} PUBLICATION ]
 
 Defines whether replication is enabled for the specified table.
 If not specified in the CREATE TABLE statement, the database-level default behaviour is applied.
+
+
+24) CREATE TABLE ... AS (SELECT ...)
+(Vladyslav Khorsun)
+
+  Allows to create table with structure derived from SELECT query and, optionally,
+fill it with data of that query.
+
+Syntax:
+
+  CREATE [GLOBAL TEMPORARY] TABLE <table_name>
+    [(column_name [, ...])]
+	AS (<select>)
+	[WITH [NO] DATA]
+	[ON COMMIT PRESERVE | DELETE ROWS]
+
+  Columns for new table are derived from <select> query in the same way as for
+CREATE VIEW statement. Column names could be set explicitly using list of names.
+The number of item in names list and in <select> list should be the same.
+Only data type and NOT NULL attribute is inherited by new columns. Any kind of
+expression, calculated field, etc, in <select> list will be represented as a
+single persistent field. Identity attribute also ignored.
+
+  Optional WITH [NO] DATA clause specify if new table should be populated with
+data rows of <select> query. Default is WITH NO DATA. Data load happens at the
+very end stage of transaction commit, after all metadata-related work was done.
+For GLOBAL TEMPORARY TABLE ... ON COMMIT DELETE ROWS data is not loaded despite
+of WITH DATA clause. <select> query is not executed if no data should be loaded.
+
+Examples:
+
+1. Creates copy of table employee and fill it with data:
+
+CREATE TABLE emp2 AS (SELECT * FROM employee) WITH DATA;
