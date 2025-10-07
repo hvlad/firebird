@@ -210,18 +210,18 @@ public:
 private:
 	// Impure flags
 	static constexpr int INIT_DONE = 0x01;
-	static constexpr int HAVE_SRC_DSC = 0x02;
 
 	struct Impure
 	{
-		Firebird::Array<dsc> descs;
+		Firebird::Array<dsc>* descs;
 		int flags;
 	};
 
-	void insertFromCursor(thread_db* tdbb, Request* request) const;
-	const StmtNode* insertSingle(thread_db* tdbb, Request* request) const;
+	void fromCursor(thread_db* tdbb, Request* request) const;
+	void fromMessage(thread_db* tdbb, Request* request) const;
 
-	void prepareDescs(thread_db* tdbb, Request* request, Record* record) const;
+	void prepareTarget(thread_db* tdbb, Request* request, dsc* descs) const;
+	void assignValues(thread_db* tdbb, Request* request, jrd_rel* relation, Record* record, dsc* to_desc) const;
 };
 
 

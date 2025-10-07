@@ -896,28 +896,27 @@ BulkInsertNode* BulkInsertNode::pass2(thread_db* tdbb, CompilerScratch* csb)
 
 const StmtNode* BulkInsertNode::execute(thread_db* tdbb, Request* request, ExeState* exeState) const
 {
-	if (request->req_operation == Request::req_evaluate && cursor)
+	if (request->req_operation == Request::req_evaluate)
 	{
-		insertFromCursor(tdbb, request);
+		if (cursor)
+			fromCursor(tdbb, request);
+		else
+			fromMessage(tdbb, request);
 
 		request->req_operation = Request::req_return;
-		return parentStmt;
 	}
 
-	return insertSingle(tdbb, request);
+	return parentStmt;
 }
 
-void BulkInsertNode::insertFromCursor(thread_db* tdbb, Request* request) const
+void BulkInsertNode::fromCursor(thread_db* tdbb, Request* request) const
 {
 	jrd_tra* transaction = request->req_transaction;
-	impure_state* impure = request->getImpure<impure_state>(impureOffset);
 
 	const StreamType stream = target->getStream();
 	record_param* rpb = &request->req_rpb[stream];
 	jrd_rel* relation = rpb->rpb_relation;
 	RLCK_reserve_relation(tdbb, transaction, relation, true);
-
-	auto bulk = transaction->getBulkInsert(tdbb, relation);
 
 	const Format* format = MET_current(tdbb, relation);
 	auto record = VIO_record(tdbb, rpb, format, tdbb->getDefaultPool());
@@ -926,107 +925,36 @@ void BulkInsertNode::insertFromCursor(thread_db* tdbb, Request* request) const
 	rpb->rpb_length = format->fmt_length;
 	rpb->rpb_format_number = format->fmt_version;
 
-	// prepare target descriptors for faster assigning
-
 	auto compound = nodeAs<CompoundStmtNode>(statement);
 
 	HalfStaticArray<dsc, 16> toDescs(*tdbb->getDefaultPool(), compound->statements.getCount());
-	dsc* to_desc = toDescs.begin();
-
-	for (auto stmt : compound->statements)
-	{
-		auto assign = nodeAs<AssignmentNode>(stmt);
-
-		fb_assert(!assign->missing);
-		fb_assert(!assign->missing2);
-
-		// Get descriptor of target field
-		const FieldNode* toField = nodeAs<FieldNode>(assign->asgnTo);
-		*to_desc = *EVL_assign_to(tdbb, toField);
-		to_desc++;
-	}
-
+	prepareTarget(tdbb, request, toDescs.begin());
 
 	cursor->open(tdbb);
+	auto bulk = transaction->getBulkInsert(tdbb, relation);
+	fb_assert(bulk);
+
+	Cleanup clean([&] {
+		cursor->close(tdbb);
+		transaction->finiBulkInsert(tdbb, true);
+	});
+
 	while (cursor->fetchNext(tdbb))
 	{
 		rpb->rpb_number.setValue(BOF_NUMBER);
 		record->nullify();
 		record->setTransactionNumber(transaction->tra_number);
 
-		// assignments
-		to_desc = toDescs.begin();
-		for (auto stmt : compound->statements)
-		{
-			auto assign = nodeAs<AssignmentNode>(stmt);
-			//EXE_assignment(tdbb, assign);
-
-			if (assign->hasLineColumn)
-			{
-				request->req_src_line = assign->line;
-				request->req_src_column = assign->column;
-			}
-
-			const FieldNode* toField = nodeAs<FieldNode>(assign->asgnTo);
-
-			fb_assert(record == request->req_rpb[toField->fieldStream].rpb_record);
-
-			request->req_flags &= ~req_null;
-			dsc* from_desc = EVL_expr(tdbb, request, assign->asgnFrom);
-
-			if (request->req_flags & req_null)
-			{
-				record->setNull(toField->fieldId);
-				to_desc->dsc_flags |= DSC_null;
-			}
-			else
-			{
-				record->clearNull(toField->fieldId);
-
-				if (DTYPE_IS_BLOB_OR_QUAD(from_desc->dsc_dtype) || DTYPE_IS_BLOB_OR_QUAD(to_desc->dsc_dtype))
-				{
-					// ASF: Don't let MOV_move call blb::move because MOV
-					// will not pass the destination field to blb::move.
-
-					blb::move(tdbb, from_desc, to_desc, relation, record, toField->fieldId, true);
-				}
-				else if (!DSC_EQUIV(from_desc, to_desc, false))
-				{
-					MOV_move(tdbb, from_desc, to_desc);
-				}
-				else if (from_desc->dsc_dtype == dtype_short)
-				{
-					*((SSHORT*) to_desc->dsc_address) = *((SSHORT*) from_desc->dsc_address);
-				}
-				else if (from_desc->dsc_dtype == dtype_long)
-				{
-					*((SLONG*) to_desc->dsc_address) = *((SLONG*) from_desc->dsc_address);
-				}
-				else if (from_desc->dsc_dtype == dtype_int64)
-				{
-					*((SINT64*) to_desc->dsc_address) = *((SINT64*) from_desc->dsc_address);
-				}
-				else
-				{
-					memcpy(to_desc->dsc_address, from_desc->dsc_address, from_desc->dsc_length);
-				}
-
-				to_desc->dsc_flags &= ~DSC_null;
-			}
-			to_desc++;
-		}
-
+		assignValues(tdbb, request, relation, record, toDescs.begin());
 		cleanupRpb(tdbb, rpb);
 
 		bulk->putRecord(tdbb, rpb, transaction);
 
 		JRD_reschedule(tdbb);
 	}
-	cursor->close(tdbb);
-	transaction->finiBulkInsert(tdbb, true);
 }
 
-const StmtNode* BulkInsertNode::insertSingle(thread_db* tdbb, Request* request) const
+void BulkInsertNode::fromMessage(thread_db* tdbb, Request* request) const
 {
 	Impure* impure = request->getImpure<Impure>(impureOffset);
 	jrd_tra* transaction = request->req_transaction;
@@ -1037,80 +965,42 @@ const StmtNode* BulkInsertNode::insertSingle(thread_db* tdbb, Request* request) 
 
 	jrd_rel* relation = rpb->rpb_relation;
 
-	if (request->req_operation == Request::req_evaluate)
+	const Format* format = MET_current(tdbb, relation);
+	auto record = VIO_record(tdbb, rpb, format, tdbb->getDefaultPool());
+
+	rpb->rpb_address = record->getData();
+	rpb->rpb_length = format->fmt_length;
+	rpb->rpb_format_number = format->fmt_version;
+	rpb->rpb_number.setValue(BOF_NUMBER);
+
+	record->nullify();
+	record->setTransactionNumber(transaction->tra_number);
+
+	if (!(impure->flags & INIT_DONE))
 	{
 		RLCK_reserve_relation(tdbb, transaction, relation, true);
 
-		auto bulk = transaction->getBulkInsert(tdbb, relation);
+		auto compound = nodeAs<CompoundStmtNode>(statement);
+		const auto count = compound->statements.getCount();
 
-		const Format* format = MET_current(tdbb, relation);
-		auto record = VIO_record(tdbb, rpb, format, tdbb->getDefaultPool());
+		impure->flags = INIT_DONE;
+		impure->descs = FB_NEW_POOL(*request->req_pool) Array<dsc>(*request->req_pool, count);
 
-		rpb->rpb_address = record->getData();
-		rpb->rpb_length = format->fmt_length;
-		rpb->rpb_format_number = format->fmt_version;
-		rpb->rpb_number.setValue(BOF_NUMBER);
-
-		record->nullify();
-		record->setTransactionNumber(transaction->tra_number);
-
-		return statement;
+		prepareTarget(tdbb, request, impure->descs->getBuffer(count));
 	}
-	else if (request->req_operation == Request::req_return)
-	{
-		cleanupRpb(tdbb, rpb);
+	assignValues(tdbb, request, relation, record, impure->descs->begin());
+	cleanupRpb(tdbb, rpb);
 
-		auto bulk = transaction->getBulkInsert(tdbb, relation);
-		bulk->putRecord(tdbb, rpb, transaction);
-	}
-	else if (request->req_operation == Request::req_unwind)
-	{
-		transaction->finiBulkInsert(tdbb, request);
-	}
-
-	return parentStmt;
+	auto bulk = transaction->getBulkInsert(tdbb, relation);
+	bulk->putRecord(tdbb, rpb, transaction);
 }
 
-void BulkInsertNode::prepareDescs(thread_db* tdbb, Request* request, Record* record) const
+void BulkInsertNode::prepareTarget(thread_db* tdbb, Request* request, dsc* descs) const
 {
-	Impure* impure = request->getImpure<Impure>(impureOffset);
-
-	if (impure->flags & INIT_DONE)
-		return;
-
-	impure->flags = INIT_DONE;
-
 	auto compound = nodeAs<CompoundStmtNode>(statement);
 	fb_assert(compound->onlyAssignments);
 
-	// check if all from nodes is Parameters
-	impure->flags |= HAVE_SRC_DSC;
-	for (auto stmt : compound->statements)
-	{
-		auto assign = nodeAs<AssignmentNode>(stmt);
-		if (!assign || !nodeIs<ParameterNode>(assign->asgnFrom))
-		{
-			impure->flags &= ~HAVE_SRC_DSC;
-			break;
-		}
-	}
-
-	dsc* fromDesc = nullptr;
-	dsc* fromNull = nullptr;
-	dsc* toDesc = nullptr;
-
-	const FB_SIZE_T count = compound->statements.getCount();
-	if (impure->flags & HAVE_SRC_DSC)
-	{
-		fromDesc = impure->descs.getBuffer(count * 3);
-		fromNull = fromDesc + count;
-		toDesc = fromNull + count;
-	}
-	else
-	{
-		toDesc = impure->descs.getBuffer(count);
-	}
-
+	dsc* toDesc = descs;
 	for (auto stmt : compound->statements)
 	{
 		auto assign = nodeAs<AssignmentNode>(stmt);
@@ -1125,6 +1015,71 @@ void BulkInsertNode::prepareDescs(thread_db* tdbb, Request* request, Record* rec
 	}
 }
 
+void BulkInsertNode::assignValues(thread_db* tdbb, Request* request, jrd_rel* relation, Record* record, dsc* to_desc) const
+{
+	auto compound = nodeAs<CompoundStmtNode>(statement);
+
+	// assignments
+	for (auto stmt : compound->statements)
+	{
+		auto assign = nodeAs<AssignmentNode>(stmt);
+		//EXE_assignment(tdbb, assign);
+
+		if (assign->hasLineColumn)
+		{
+			request->req_src_line = assign->line;
+			request->req_src_column = assign->column;
+		}
+
+		const FieldNode* toField = nodeAs<FieldNode>(assign->asgnTo);
+
+		fb_assert(record == request->req_rpb[toField->fieldStream].rpb_record);
+
+		request->req_flags &= ~req_null;
+		dsc* from_desc = EVL_expr(tdbb, request, assign->asgnFrom);
+
+		if (request->req_flags & req_null)
+		{
+			record->setNull(toField->fieldId);
+			to_desc->dsc_flags |= DSC_null;
+		}
+		else
+		{
+			record->clearNull(toField->fieldId);
+
+			if (DTYPE_IS_BLOB_OR_QUAD(from_desc->dsc_dtype) || DTYPE_IS_BLOB_OR_QUAD(to_desc->dsc_dtype))
+			{
+				// ASF: Don't let MOV_move call blb::move because MOV
+				// will not pass the destination field to blb::move.
+
+				blb::move(tdbb, from_desc, to_desc, relation, record, toField->fieldId, true);
+			}
+			else if (!DSC_EQUIV(from_desc, to_desc, false))
+			{
+				MOV_move(tdbb, from_desc, to_desc);
+			}
+			else if (from_desc->dsc_dtype == dtype_short)
+			{
+				*((SSHORT*) to_desc->dsc_address) = *((SSHORT*) from_desc->dsc_address);
+			}
+			else if (from_desc->dsc_dtype == dtype_long)
+			{
+				*((SLONG*) to_desc->dsc_address) = *((SLONG*) from_desc->dsc_address);
+			}
+			else if (from_desc->dsc_dtype == dtype_int64)
+			{
+				*((SINT64*) to_desc->dsc_address) = *((SINT64*) from_desc->dsc_address);
+			}
+			else
+			{
+				memcpy(to_desc->dsc_address, from_desc->dsc_address, from_desc->dsc_length);
+			}
+
+			to_desc->dsc_flags &= ~DSC_null;
+		}
+		to_desc++;
+	}
+}
 
 
 //--------------------
@@ -8526,7 +8481,6 @@ const StmtNode* StoreNode::store(thread_db* tdbb, Request* request, WhichTrigger
 			impure->sta_state = 0;
 			if (relation)
 				RLCK_reserve_relation(tdbb, transaction, relation, true);
-
 			break;
 
 		case Request::req_return:
@@ -8560,18 +8514,8 @@ const StmtNode* StoreNode::store(thread_db* tdbb, Request* request, WhichTrigger
 					VirtualTable::store(tdbb, rpb);
 				else if (!relation->rel_view_rse)
 				{
-					BulkInsert* const bulkInsert = (marks & MARK_BULK_INSERT) ?
-						transaction->getBulkInsert(tdbb, relation) : nullptr;
-
-					if (bulkInsert)
-					{
-						bulkInsert->putRecord(tdbb, rpb, transaction);
-					}
-					else
-					{
-						VIO_store(tdbb, rpb, transaction);
-						IDX_store(tdbb, rpb, transaction);
-					}
+					VIO_store(tdbb, rpb, transaction);
+					IDX_store(tdbb, rpb, transaction);
 					REPL_store(tdbb, rpb, transaction);
 				}
 
@@ -8649,6 +8593,7 @@ const StmtNode* StoreNode::store(thread_db* tdbb, Request* request, WhichTrigger
 
 	return statement;
 }
+
 
 //--------------------
 
