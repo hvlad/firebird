@@ -949,6 +949,7 @@ void BulkInsertNode::fromCursor(thread_db* tdbb, Request* request) const
 		cleanupRpb(tdbb, rpb);
 
 		bulk->putRecord(tdbb, rpb, transaction);
+		REPL_store(tdbb, rpb, transaction);
 
 		JRD_reschedule(tdbb);
 	}
@@ -993,6 +994,7 @@ void BulkInsertNode::fromMessage(thread_db* tdbb, Request* request) const
 
 	auto bulk = transaction->getBulkInsert(tdbb, relation);
 	bulk->putRecord(tdbb, rpb, transaction);
+	REPL_store(tdbb, rpb, transaction);
 }
 
 void BulkInsertNode::prepareTarget(thread_db* tdbb, Request* request, dsc* descs) const
@@ -1004,9 +1006,6 @@ void BulkInsertNode::prepareTarget(thread_db* tdbb, Request* request, dsc* descs
 	for (auto stmt : compound->statements)
 	{
 		auto assign = nodeAs<AssignmentNode>(stmt);
-
-		const auto* param = nodeAs<ParameterNode>(assign->asgnFrom);
-		fb_assert(!param->outerDecl);
 
 		// Get descriptor of target field
 		const auto* toField = nodeAs<FieldNode>(assign->asgnTo);
