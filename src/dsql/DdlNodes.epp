@@ -6446,7 +6446,7 @@ void RelationNode::defineField(thread_db* tdbb, DsqlCompilerScratch* dsqlScratch
 
 		fieldDefinition.defaultValue = defaultValue;
 
-		if (clause->collate.hasData())
+		if (clause->collate.hasData() || field->collationId)
 			fieldDefinition.collationId = field->collationId;
 
 		fieldDefinition.store(tdbb, transaction);
@@ -7324,6 +7324,7 @@ void RelationNode::generateFieldsFromSubquery(thread_db* tdbb, DsqlCompilerScrat
 		// Check if this is a field, a cast or an expression.
 
 		dsql_fld* field = nullptr;
+		dsql_fld* toField = column->field;
 
 		if (const auto fieldNameNode = nodeAs<FieldNode>(fieldNode))
 			field = fieldNameNode->dsqlField;
@@ -7333,12 +7334,22 @@ void RelationNode::generateFieldsFromSubquery(thread_db* tdbb, DsqlCompilerScrat
 		if (field)
 		{
 			field->resolve(dsqlScratch);
-			*(TypeClause*)column->field = *field;		// ??
 
-			if (field->fieldSource.hasData() && !fb_utils::implicit_domain(field->fieldSource.c_str()))
+			*(TypeClause*) toField = *field;	// copy datatype only
+
+			if (field->fieldSource.hasData() /** && !fb_utils::implicit_domain(field->fieldSource.c_str()) **/)
 			{
-				column->field->typeOfName = column->field->fieldSource;
-				column->field->fieldSource = nullptr;
+				toField->typeOfName = field->fieldSource;
+				toField->fieldSource = nullptr;
+			}
+
+			if (DTYPE_IS_TEXT(toField->dtype))
+			{
+				const USHORT adjust = (toField->dtype == dtype_varying) ? sizeof(USHORT) : 0;
+				const USHORT bpc =
+					METD_get_charset_bpc(dsqlScratch->getTransaction(), toField->charSetId.value);
+
+				toField->charLength = (toField->length - adjust) / bpc;
 			}
 
 			// Add NOT NULL if required
@@ -7354,35 +7365,31 @@ void RelationNode::generateFieldsFromSubquery(thread_db* tdbb, DsqlCompilerScrat
 			dsc desc;
 			DsqlDescMaker::fromNode(dsqlScratch, &desc, fieldNode);
 
-			field = column->field;
-			field->dtype = desc.dsc_dtype;
-			field->length = desc.dsc_length;
-			field->scale = desc.dsc_scale;
+			toField->dtype = desc.dsc_dtype;
+			toField->length = desc.dsc_length;
+			toField->scale = desc.dsc_scale;
 
 			if (desc.isText() || (desc.isBlob() && desc.getBlobSubType() == isc_blob_text))
 			{
-				field->charSetId = desc.getCharSet();
-				field->collationId = desc.getCollation();
+				toField->charSetId = desc.getCharSet();
+				toField->collationId = desc.getCollation();
 			}
 
 			if (desc.isText())
 			{
-				const USHORT adjust =
-					(desc.dsc_dtype == dtype_varying) ? sizeof(USHORT) : 0;
+				const USHORT adjust = (desc.dsc_dtype == dtype_varying) ? sizeof(USHORT) : 0;
 				const USHORT bpc =
-					METD_get_charset_bpc(dsqlScratch->getTransaction(), field->charSetId.value);
+					METD_get_charset_bpc(dsqlScratch->getTransaction(), toField->charSetId.value);
 
-				field->charLength = (field->length - adjust) / bpc;
+				toField->charLength = (toField->length - adjust) / bpc;
 			}
 			else
-				field->subType = desc.dsc_sub_type;
+				toField->subType = desc.dsc_sub_type;
 
-			field->setExactPrecision();
-
-			//fieldNode->genBlr(dsqlScratch);	// ??
+			toField->setExactPrecision();
 		}
 
-		column->field->fld_name = fieldStr;
+		toField->fld_name = fieldStr;
 		clauses.add(column);
 
 		// source expression
