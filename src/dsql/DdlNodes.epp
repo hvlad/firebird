@@ -7335,7 +7335,8 @@ void RelationNode::generateFieldsFromSubquery(thread_db* tdbb, DsqlCompilerScrat
 
 			*(TypeClause*) toField = *field;	// copy datatype only
 
-			if (field->fieldSource.hasData() /** && !fb_utils::implicit_domain(field->fieldSource.c_str()) **/)
+			if (field->fieldSource.hasData() && !(field->flags & FLD_computed) /** &&
+				!fb_utils::implicit_domain(field->fieldSource.c_str()) **/)
 			{
 				toField->typeOfName = field->fieldSource;
 				toField->fieldSource = nullptr;
