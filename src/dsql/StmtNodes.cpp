@@ -1039,6 +1039,23 @@ void BulkInsertNode::assignValues(thread_db* tdbb, Request* request, jrd_rel* re
 
 		if (request->req_flags & req_null)
 		{
+			const auto relField = (*relation->rel_fields)[toField->fieldId];
+			if (relField->fld_not_null)
+			{
+				string name;
+
+				if (!relation->rel_name.isEmpty())
+					name.printf("\"%s\".\"%s\"", relation->rel_name.c_str(), relField->fld_name.c_str());
+				else
+					name.printf("\"%s\"", relField->fld_name.c_str());
+
+				if (name.isEmpty())
+					name = UNKNOWN_STRING_MARK;
+
+				// validation error for column @1, value \"@2\"
+				ERR_post(Arg::Gds(isc_not_valid) << Arg::Str(name) << Arg::Str(NULL_STRING_MARK));
+			}
+
 			record->setNull(toField->fieldId);
 			to_desc->dsc_flags |= DSC_null;
 		}
