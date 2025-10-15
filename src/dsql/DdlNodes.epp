@@ -7316,8 +7316,6 @@ void RelationNode::generateFieldsFromSubquery(thread_db* tdbb, DsqlCompilerScrat
 				Arg::Gds(isc_specify_field_err));
 		}
 
-		dsqlScratch->appendUChar(blr_assignment);
-
 		if (const auto aliasNode = nodeAs<DsqlAliasNode>(fieldNode))
 			fieldNode = aliasNode->value;
 
@@ -7341,6 +7339,7 @@ void RelationNode::generateFieldsFromSubquery(thread_db* tdbb, DsqlCompilerScrat
 			{
 				toField->typeOfName = field->fieldSource;
 				toField->fieldSource = nullptr;
+				toField->fullDomain = true;
 			}
 
 			if (DTYPE_IS_TEXT(toField->dtype))
@@ -7350,10 +7349,36 @@ void RelationNode::generateFieldsFromSubquery(thread_db* tdbb, DsqlCompilerScrat
 					METD_get_charset_bpc(dsqlScratch->getTransaction(), toField->charSetId.value);
 
 				toField->charLength = (toField->length - adjust) / bpc;
+				toField->subType = 0;
 			}
 
-			// Add NOT NULL if required
-			if (!(field->flags & FLD_nullable))
+			// Add NOT NULL if required:
+			// when both field and its descriptor is not nullable, and
+			// field is not based on domain, or
+			// field is casted with TYPE OF, or
+			// field is based on domain and domain doesn't have NOT NULL by itself
+
+			bool domainNotNull = false;
+			const bool descNullable = fieldNode->getDsqlDesc().isNullable();
+			if (toField->typeOfName.hasData())
+			{
+				if (toField->fullDomain)  // Source field or full CAST
+				{
+					dsql_fld domain(dsqlScratch->getPool());
+					if (METD_get_domain(dsqlScratch->getTransaction(), &domain, toField->typeOfName))
+						domainNotNull = !(domain.flags & FLD_nullable);
+				}
+
+				// CAST with TYPE OF or field can be NULL while domain can't
+				if (!toField->fullDomain || domainNotNull && descNullable)
+				{
+					toField->typeOfName = nullptr;
+					field->flags |= FLD_nullable;
+					domainNotNull = false;
+				}
+			}
+
+			if (!domainNotNull && !(field->flags & FLD_nullable) && !descNullable)
 			{
 				column->notNullSpecified = true;
 				auto& notNull = column->constraints.add();
@@ -7391,6 +7416,8 @@ void RelationNode::generateFieldsFromSubquery(thread_db* tdbb, DsqlCompilerScrat
 
 		toField->fld_name = fieldStr;
 		clauses.add(column);
+
+		dsqlScratch->appendUChar(blr_assignment);
 
 		// source expression
 		fieldNode->genBlr(dsqlScratch);
