@@ -7329,57 +7329,75 @@ void RelationNode::generateFieldsFromSubquery(thread_db* tdbb, DsqlCompilerScrat
 		else if (const auto castNode = nodeAs<CastNode>(fieldNode))
 			field = castNode->dsqlField;
 
-		if (field)
+		if (field)	// FieldNode or CastNode, both could be domain-based
 		{
 			field->resolve(dsqlScratch);
 
 			*(TypeClause*) toField = *field;	// copy datatype only
 
-			if (field->fieldSource.hasData() && !(field->flags & FLD_computed) /** &&
-				!fb_utils::implicit_domain(field->fieldSource.c_str()) **/)
-			{
-				toField->typeOfName = field->fieldSource;
-				toField->fieldSource = nullptr;
-				toField->fullDomain = true;
-			}
-
 			if (DTYPE_IS_TEXT(toField->dtype))
 			{
 				const USHORT adjust = (toField->dtype == dtype_varying) ? sizeof(USHORT) : 0;
-				const USHORT bpc =
-					METD_get_charset_bpc(dsqlScratch->getTransaction(), toField->charSetId.value);
+				const auto csId = toField->charSetId.value;
+				const USHORT bpc = METD_get_charset_bpc(dsqlScratch->getTransaction(), csId);
 
 				toField->charLength = (toField->length - adjust) / bpc;
-				toField->subType = 0;
+				if (csId != CS_BINARY)
+					toField->subType = 0;
 			}
 
-			// Add NOT NULL if required:
-			// when both field and its descriptor is not nullable, and
-			// field is not based on domain, or
-			// field is casted with TYPE OF, or
-			// field is based on domain and domain doesn't have NOT NULL by itself
+		/****
+			Values of interesting members of dsql_fld when fieldNode represent
+			FieldNode or different kinds of CastNode:
 
-			bool domainNotNull = false;
+						FieldNode	CastNode
+									type of	column	type of		domain	datatype
+
+			fullDomain		false		false		false		true	false
+			fieldSource		domain		domain		null		null	null
+			typeOfTable		null		table		null		null	null
+			typeOfName		null		column		domain		domain	null
+
+			Note, RelationNode::defineField takes into account typeOfName only
+			and ignored	fullDomain, fieldSource	and typeOfTable.
+		****/
+
+			// Check if new field can re-use domain of source field (or cast type).
+
+			bool useDomain = !(toField->flags & (FLD_computed | FLD_has_validations)) &&
+				(toField->fieldSource.hasData() && !toField->typeOfTable.hasData() ||
+				 toField->typeOfName.hasData() && toField->fullDomain);
+
+			if (useDomain && !toField->typeOfName.hasData())
+				toField->typeOfName = toField->fieldSource;
+/*
+			if (!fb_utils::implicit_domain(toField->typeOfName.c_str()))
+				useDomain = false;
+*/
 			const bool descNullable = fieldNode->getDsqlDesc().isNullable();
-			if (toField->typeOfName.hasData())
-			{
-				if (toField->fullDomain)  // Source field or full CAST
-				{
-					dsql_fld domain(dsqlScratch->getPool());
-					if (METD_get_domain(dsqlScratch->getTransaction(), &domain, toField->typeOfName))
-						domainNotNull = !(domain.flags & FLD_nullable);
-				}
 
-				// CAST with TYPE OF or field can be NULL while domain can't
-				if (!toField->fullDomain || domainNotNull && descNullable)
+			if (useDomain)
+			{
+				dsql_fld domain(dsqlScratch->getPool());
+				const bool exists = METD_get_domain(dsqlScratch->getTransaction(), &domain, toField->typeOfName);
+
+				if (!exists ||
+					domain.flags & (FLD_computed | FLD_has_validations) ||
+					descNullable && !(domain.flags & FLD_nullable))
 				{
-					toField->typeOfName = nullptr;
-					field->flags |= FLD_nullable;
-					domainNotNull = false;
+					useDomain = false;
 				}
 			}
 
-			if (!domainNotNull && !(field->flags & FLD_nullable) && !descNullable)
+			if (!useDomain)
+				toField->typeOfName = nullptr;
+
+			// Add NOT NULL if source field is explicit NOT NULL and its descriptor is not nullable.
+
+			if (descNullable || (toField->flags & FLD_nullable))
+				toField->flags &= ~FLD_explicit_notnull;
+
+			if (toField->flags & FLD_explicit_notnull)
 			{
 				column->notNullSpecified = true;
 				auto& notNull = column->constraints.add();
