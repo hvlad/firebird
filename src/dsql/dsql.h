@@ -306,7 +306,9 @@ enum fld_flags_vals {
 	FLD_legacy		= 0x100,
 	FLD_native		= 0x200,
 	FLD_extended	= 0x400,
-	FLD_has_prec	= 0x800
+	FLD_has_prec	= 0x800,
+	FLD_has_validations		= 0x1000,
+	FLD_explicit_notnull	= 0x2000	// relation field is NOT NULL
 };
 
 //! Stored Procedure block

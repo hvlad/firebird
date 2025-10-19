@@ -574,6 +574,9 @@ bool METD_get_domain(jrd_tra* transaction, TypeClause* field, const MetaName& na
 		if (!FLX.RDB$COMPUTED_BLR.NULL)
 			field->flags |= FLD_computed;
 
+		if (!FLX.RDB$VALIDATION_BLR.NULL)
+			field->flags |= FLD_has_validations;
+
 		if (FLX.RDB$NULL_FLAG.NULL || !FLX.RDB$NULL_FLAG)
 			field->flags |= FLD_nullable;
 
@@ -1336,6 +1339,9 @@ dsql_rel* METD_get_relation(jrd_tra* transaction, DsqlCompilerScratch* dsqlScrat
 			if (!FLX.RDB$COMPUTED_BLR.NULL)
 				field->flags |= FLD_computed;
 
+			if (!FLX.RDB$VALIDATION_BLR.NULL)
+				field->flags |= FLD_has_validations;
+
 			convert_dtype(field, FLX.RDB$FIELD_TYPE);
 
 			if (FLX.RDB$FIELD_TYPE == blr_blob) {
@@ -1358,6 +1364,9 @@ dsql_rel* METD_get_relation(jrd_tra* transaction, DsqlCompilerScratch* dsqlScrat
 				field->collationId = RFR.RDB$COLLATION_ID;
 			else if (!FLX.RDB$COLLATION_ID.NULL)
 				field->collationId = FLX.RDB$COLLATION_ID;
+
+			if (!RFR.RDB$NULL_FLAG.NULL && RFR.RDB$NULL_FLAG)
+				field->flags |= FLD_explicit_notnull;
 
 			if (!(RFR.RDB$NULL_FLAG || FLX.RDB$NULL_FLAG) || (relation->rel_flags & REL_view))
 			{
