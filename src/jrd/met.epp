@@ -115,7 +115,6 @@ static int blocking_ast_relation(void*);
 static int partners_ast_relation(void*);
 static int rescan_ast_relation(void*);
 static ULONG get_rel_flags_from_FLAGS(USHORT);
-static USHORT get_sysrel_ods(jrd_rel*);
 static void get_trigger(thread_db*, jrd_rel*, bid*, bid*, TrigVector**, const TEXT*, FB_UINT64, SSHORT,
 	USHORT, const MetaName&, const string&, const bid*, Nullable<bool> ssDefiner);
 static bool get_type(thread_db*, USHORT*, const UCHAR*, const TEXT*);
@@ -4378,13 +4377,10 @@ static void scan_relation(thread_db* tdbb, jrd_rel* relation)
 
 	if (!found && !(relation->rel_flags & REL_scanned))
 	{
-		// Relation was not found in RDB$RELATIONS. It could be system relation
-		// defined in INI for latest supported ODS while database is in older ODS.
+		// Relation was not found in RDB$RELATIONS. It could be system virtual relation
+		// defined in INI.
 
-		const USHORT dbbOds = ENCODE_ODS(dbb->dbb_ods_version, dbb->dbb_minor_version);
-
-		if (relation->isSystem() && dbbOds < ODS_CURRENT_VERSION &&
-			dbbOds < get_sysrel_ods(relation))
+		if (relation->isSystem() && relation->isVirtual())
 		{
 			relation->rel_flags |= REL_scanned;
 		}
@@ -4802,37 +4798,6 @@ ULONG MET_get_rel_flags_from_TYPE(USHORT type)
 	}
 
 	return ret;
-}
-
-
-// Search system-defined list for given relation and return its ODS.
-// Return zero, if not found.
-static USHORT get_sysrel_ods(jrd_rel* relation)
-{
-	if (relation->rel_id >= rel_MAX)
-		return 0;
-
-#define RELATION(name, id, ods, type) id, ods,
-#define FIELD(symbol, name, id, update, ods)
-#define END_RELATION
-
-	static const int rels[] =
-	{
-	#include "../jrd/relations.h"
-		0, 0
-	};
-
-#undef RELATION
-#undef FIELD
-#undef END_RELATION
-
-	for (int n = 0; n < FB_NELEM(rels); n += 2)
-	{
-		if (relation->rel_id == rels[n])
-			return rels[n + 1];
-	}
-
-	return 0;
 }
 
 
