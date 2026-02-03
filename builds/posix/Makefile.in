@@ -523,7 +523,9 @@ yachts.lnk:		metadata.fdb
 
 metadata.fdb:	$(RUN_ISQL)
 	-$(RM) $@
-	echo create database \'metadata.fdb\'\; | $(RUN_ISQL) -sqldialect 1
+#	echo create database \'metadata.fdb\'\; | $(RUN_ISQL) -sqldialect 1
+	echo create database \'metadata.fdb\'\; > $(FIREBIRD)/metadata.sql
+	gdb -batch -ex "run" -ex "bt full" --args $(RUN_ISQL) -sqldialect 1 -i $(FIREBIRD)/metadata.sql
 	$(RUN_GFIX) -mode read_only $@
 	$(CHMOD) 0444 $@
 
