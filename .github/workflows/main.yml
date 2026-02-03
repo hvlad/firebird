@@ -19,7 +19,7 @@ jobs:
 
       - name: Prepare
         run: |
-          sudo apt-get install libtool-bin libtomcrypt1 libtomcrypt-dev libtommath1 libtommath-dev libicu-dev zlib1g-dev cmake
+          sudo apt-get install libtool-bin libtomcrypt1 libtomcrypt-dev libtommath1 libtommath-dev libicu-dev zlib1g-dev cmake gdb
 
       - name: Build
         run: |
@@ -49,7 +49,7 @@ jobs:
           fetch-depth: 10
 
       - name: Prepare
-        run: apk update && apk --no-cache --update add build-base libtool git autoconf automake cmake zlib-dev icu-dev ncurses-dev libedit-dev linux-headers tar sed
+        run: apk update && apk --no-cache --update add build-base libtool git autoconf automake cmake zlib-dev icu-dev ncurses-dev libedit-dev linux-headers tar sed gdb 
 
       - name: Adjust snapshot build number
         uses: ./.github/actions/adjust-snapshot-buildno
@@ -57,7 +57,7 @@ jobs:
       - name: Build
         run: |
           ./autogen.sh --enable-binreloc-threads --with-builtin-tommath --with-builtin-tomcrypt --prefix=/opt/firebird
-          make 
+          make -j4
           make tests -j4
           make run_tests
           make dist
