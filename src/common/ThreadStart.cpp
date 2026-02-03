@@ -196,6 +196,7 @@ void Thread::waitForCompletion()
 		int state = pthread_join(m_handle, NULL);
 		if (state)
 			Firebird::system_call_failed::raise("pthread_join", state);
+		m_handle = INVALID_HANDLE;
 	}
 }
 
