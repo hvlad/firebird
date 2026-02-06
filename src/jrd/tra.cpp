@@ -1714,7 +1714,7 @@ jrd_tra* TRA_start(thread_db* tdbb, ULONG flags, SSHORT lock_timeout, Jrd::jrd_t
 	// are running purge_attachment() because it's needed for
 	// ON DISCONNECT triggers
 	if (dbb->dbb_ast_flags & DBB_shut_tran &&
-		attachment->att_purge_tid != Thread::getId())
+		attachment->att_purge_tid != Thread::getCurrentThreadId())
 	{
 		ERR_post(Arg::Gds(isc_shutinprog) << Arg::Str(attachment->att_filename));
 	}
@@ -1771,7 +1771,7 @@ jrd_tra* TRA_start(thread_db* tdbb, int tpb_length, const UCHAR* tpb, Jrd::jrd_t
 	// are running purge_attachment() because it's needed for
 	// ON DISCONNECT triggers
 	if (dbb->dbb_ast_flags & DBB_shut_tran &&
-		attachment->att_purge_tid != Thread::getId())
+		attachment->att_purge_tid != Thread::getCurrentThreadId())
 	{
 		ERR_post(Arg::Gds(isc_shutinprog) << Arg::Str(attachment->att_filename));
 	}
