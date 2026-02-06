@@ -362,7 +362,7 @@ Name: fr; MessagesFile: compiler:Languages\French.isl; InfoBeforeFile: {#GenDir}
 ;Name: pt; MessagesFile: compiler:Languages\Portuguese.isl; InfoBeforeFile: {#GenDir}\pt\instalacao_leia-me.txt; InfoAfterFile: {#GenDir}\pt\leia-me.txt
 Name: ru; MessagesFile: compiler:Languages\Russian.isl; InfoBeforeFile: {#GenDir}\ru\installation_readme.txt; InfoAfterFile: {#GenDir}\ru\readme.txt;
 ;Name: si; MessagesFile: compiler:Languages\Slovenian.isl; InfoBeforeFile: {#GenDir}\si\instalacija_precitajMe.txt; InfoAfterFile: {#GenDir}\readme.txt;
-Name: ja; MessagesFile: compiler:Languages\Japanse.isl; InfoBeforeFile: {#GenDir}\ja\installation_readme.txt; InfoAfterFile: {#GenDir}\ja\readme.txt;
+Name: ja; MessagesFile: compiler:Languages\Japanese.isl; InfoBeforeFile: {#GenDir}\ja\installation_readme.txt; InfoAfterFile: {#GenDir}\ja\readme.txt;
 #endif
 
 [CustomMessages]
