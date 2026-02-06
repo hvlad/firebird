@@ -1947,7 +1947,8 @@ UCHAR* SharedMemoryBase::mapObject(CheckStatusWrapper* statusVector, ULONG objec
 	// Compute the start and end page-aligned offsets which contain the object being mapped.
 
 	const ULONG start = (object_offset / page_size) * page_size;
-	const ULONG end = FB_ALIGN(object_offset + object_length, page_size);
+//	const ULONG end = FB_ALIGN(object_offset + object_length, page_size);
+	const ULONG end = object_offset + object_length;
 	const ULONG length = end - start;
 
 	UCHAR* address = (UCHAR*) os_utils::mmap(0, length,
@@ -2043,7 +2044,8 @@ UCHAR* SharedMemoryBase::mapObject(CheckStatusWrapper* statusVector,
 	// contain the object being mapped.
 
 	const ULONG start = (object_offset / page_size) * page_size;
-	const ULONG end = FB_ALIGN(object_offset + object_length, page_size);
+//	const ULONG end = FB_ALIGN(object_offset + object_length, page_size);
+	const ULONG end = object_offset + object_length;
 	const ULONG length = end - start;
 	const HANDLE handle = sh_mem_object;
 
