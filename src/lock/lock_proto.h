@@ -497,7 +497,8 @@ private:
 
 	// configurations parameters - cached values
 	const ULONG m_acquireSpins;
-	const ULONG m_memorySize;
+	ULONG m_memorySize;
+	USHORT m_hashSlots;
 	const bool m_useBlockingThread;
 
 #ifdef USE_SHMEM_EXT
