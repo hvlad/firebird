@@ -371,7 +371,7 @@ jobs:
 
   build-android-initial:
     name: build-android-${{ matrix.arch }}-initial
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     env:
       NDK: /home/runner/Android/Ndk
       ARCH: ${{ matrix.arch }}
@@ -523,7 +523,7 @@ jobs:
 
   build-android-aar:
     needs: build-android-final
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
 
     steps:
       - name: Checkout
