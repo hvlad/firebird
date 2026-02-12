@@ -30,6 +30,8 @@
 #ifndef JRD_THREADSTART_H
 #define JRD_THREADSTART_H
 
+#include <utility>
+
 #include "../common/ThreadData.h"
 #include "../common/classes/semaphore.h"
 
