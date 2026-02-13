@@ -4636,6 +4636,11 @@ void JProvider::shutdown(CheckStatusWrapper* status, unsigned int timeout, const
 				engineShutdown = true;
 			}
 
+			shutThreadCollect->fill();
+			shutThreadCollect->houseKeeping();
+			printf("ThreadCollect houseKeeping() passed");
+			shutThreadCollect->fill();
+
 			ThreadContextHolder tdbb;
 			WorkerAttachment::shutdown();
 			EDS::Manager::shutdown();
@@ -4684,6 +4689,7 @@ void JProvider::shutdown(CheckStatusWrapper* status, unsigned int timeout, const
 
 		// Wait for completion of all attacment shutdown threads
 		shutThreadCollect->join();
+		printf(", join() passed\n");
 	}
 	catch (const Exception& ex)
 	{

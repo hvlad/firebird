@@ -110,7 +110,7 @@ namespace Jrd {
 			AllThreads finished(threads.get_allocator());
 			{ // mutex scope
 				Firebird::MutexLockGuard g(threadsMutex, FB_FUNCTION);
-
+/*
 				for (auto n = threads.begin(); n != threads.end(); )
 				{
 					if (n->ending)
@@ -121,9 +121,27 @@ namespace Jrd {
 					else
 						++n;
 				}
+*/
+				for (int n = threads.size() - 1; n >= 0; n--)
+				{
+					if (threads[n].ending)
+					{
+						finished.push_back(std::move(threads[n]));
+						threads.erase(threads.begin() + n);
+					}
+				}
 			}
 
 			waitFor(finished);
+		}
+
+		/// testing
+		__declspec(noinline)
+		void fill()
+		{
+			Thread dummy;
+			for (int i = 0; i < 1000000; i++)
+				threads.push_back(Thrd(std::move(dummy), true));
 		}
 
 	private:
