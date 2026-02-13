@@ -27,31 +27,19 @@ namespace detail
 
 // glibc has two incompatible strerror_r definitions
 
-inline char const * strerror_r_helper( char const * r, char const * ) noexcept
+inline char const * strerror_r_helper( char const * r, char const * ) BOOST_NOEXCEPT
 {
     return r;
 }
 
-inline char const * strerror_r_helper( int r, char const * buffer ) noexcept
+inline char const * strerror_r_helper( int r, char const * buffer ) BOOST_NOEXCEPT
 {
     return r == 0? buffer: "Unknown error";
 }
 
-inline char const * generic_error_category_message( int ev, char * buffer, std::size_t len ) noexcept
+inline char const * generic_error_category_message( int ev, char * buffer, std::size_t len ) BOOST_NOEXCEPT
 {
-    if( buffer != nullptr )
-    {
-        return strerror_r_helper( strerror_r( ev, buffer, len ), buffer );
-    }
-    else
-    {
-        // strerror_r requires non-null buffer pointer
-
-        char tmp[ 1 ] = {};
-        char const* r = strerror_r_helper( strerror_r( ev, tmp, 0 ), buffer );
-
-        return r == tmp? nullptr: r;
-    }
+    return strerror_r_helper( strerror_r( ev, buffer, len ), buffer );
 }
 
 inline std::string generic_error_category_message( int ev )
@@ -80,7 +68,7 @@ inline std::string generic_error_category_message( int ev )
     return m? m: "Unknown error";
 }
 
-inline char const * generic_error_category_message( int ev, char * buffer, std::size_t len ) noexcept
+inline char const * generic_error_category_message( int ev, char * buffer, std::size_t len ) BOOST_NOEXCEPT
 {
     if( len == 0 )
     {

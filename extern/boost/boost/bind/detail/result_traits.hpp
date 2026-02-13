@@ -22,7 +22,6 @@
 //
 
 #include <boost/config.hpp>
-#include <boost/core/ref.hpp>
 
 #if BOOST_CXX_VERSION >= 201700L
 #include <functional>

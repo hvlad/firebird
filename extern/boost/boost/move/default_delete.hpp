@@ -23,6 +23,7 @@
 #include <boost/move/detail/workaround.hpp>
 #include <boost/move/detail/unique_ptr_meta_utils.hpp>
 #include <boost/move/utility_core.hpp>
+#include <boost/static_assert.hpp>
 
 #include <cstddef>   //For std::size_t,std::nullptr_t
 
@@ -189,7 +190,7 @@ struct default_delete
    {
       //If T is not an array type, U derives from T
       //and T has no virtual destructor, then you have a problem
-      BOOST_MOVE_STATIC_ASSERT(( !bmupd::missing_virtual_destructor<default_delete, U>::value ));
+      BOOST_STATIC_ASSERT(( !bmupd::missing_virtual_destructor<default_delete, U>::value ));
    }
 
    //! <b>Effects</b>: Constructs a default_delete object from another <tt>default_delete<U></tt> object.
@@ -204,7 +205,7 @@ struct default_delete
    {
       //If T is not an array type, U derives from T
       //and T has no virtual destructor, then you have a problem
-      BOOST_MOVE_STATIC_ASSERT(( !bmupd::missing_virtual_destructor<default_delete, U>::value ));
+      BOOST_STATIC_ASSERT(( !bmupd::missing_virtual_destructor<default_delete, U>::value ));
       return *this;
    }
 
@@ -221,10 +222,10 @@ struct default_delete
       operator()(U* ptr) const BOOST_NOEXCEPT
    {
       //U must be a complete type
-      BOOST_MOVE_STATIC_ASSERT(sizeof(U) > 0);
+      BOOST_STATIC_ASSERT(sizeof(U) > 0);
       //If T is not an array type, U derives from T
       //and T has no virtual destructor, then you have a problem
-      BOOST_MOVE_STATIC_ASSERT(( !bmupd::missing_virtual_destructor<default_delete, U>::value ));
+      BOOST_STATIC_ASSERT(( !bmupd::missing_virtual_destructor<default_delete, U>::value ));
       element_type * const p = static_cast<element_type*>(ptr);
       move_upd::call_delete(p, move_upd::is_array_del<bmupmu::is_array<T>::value>());
    }
@@ -232,7 +233,7 @@ struct default_delete
    //! <b>Effects</b>: Same as <tt>(*this)(static_cast<element_type*>(nullptr))</tt>.
    //!
    void operator()(BOOST_MOVE_DOC0PTR(bmupd::nullptr_type)) const BOOST_NOEXCEPT
-   {  BOOST_MOVE_STATIC_ASSERT(sizeof(element_type) > 0);  }
+   {  BOOST_STATIC_ASSERT(sizeof(element_type) > 0);  }
 };
 
 }  //namespace movelib {

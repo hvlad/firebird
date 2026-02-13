@@ -33,6 +33,8 @@
 #endif
 #include <boost/move/utility_core.hpp>
 
+#include <boost/core/no_exceptions_support.hpp>
+
 namespace boost { namespace container {
 
 namespace dtl {
@@ -62,7 +64,7 @@ namespace dtl {
       template<class X>
       static no_type test(...);
 
-      BOOST_STATIC_CONSTEXPR bool value = sizeof(test<T>(0)) == sizeof(yes_type);
+      static const bool value = sizeof(test<T>(0)) == sizeof(yes_type);
    };
 
    template <class T, class InnerAlloc, class ...Args>
@@ -110,7 +112,7 @@ template < typename ConstructAlloc
          , typename T
          , class ...Args
          >
-inline typename dtl::enable_if_and
+BOOST_CONTAINER_FORCEINLINE typename dtl::enable_if_and
    < void
    , dtl::is_not_pair<T>
    , dtl::not_< uses_allocator<T, typename remove_cvref<ArgAlloc>::type > >
@@ -127,7 +129,7 @@ template < typename ConstructAlloc
          , typename T
          , class ...Args
          >
-inline typename dtl::enable_if_and
+BOOST_CONTAINER_FORCEINLINE typename dtl::enable_if_and
    < void
    , dtl::is_not_pair<T>
    , uses_allocator<T, typename remove_cvref<ArgAlloc>::type>
@@ -146,7 +148,7 @@ template < typename ConstructAlloc
          , typename T
          , class ...Args
          >
-inline typename dtl::enable_if_and
+BOOST_CONTAINER_FORCEINLINE typename dtl::enable_if_and
    < void
    , dtl::is_not_pair<T>
    , uses_allocator<T, typename remove_cvref<ArgAlloc>::type>
@@ -162,7 +164,7 @@ inline typename dtl::enable_if_and
 
 #define BOOST_CONTAINER_SCOPED_ALLOCATOR_DISPATCH_USES_ALLOCATOR_CODE(N) \
    template <typename ConstructAlloc, typename ArgAlloc, typename T BOOST_MOVE_I##N BOOST_MOVE_CLASS##N >\
-   inline typename dtl::enable_if_and\
+   BOOST_CONTAINER_FORCEINLINE typename dtl::enable_if_and\
       < void\
       , dtl::is_not_pair<T>\
       , dtl::not_<uses_allocator<T, typename remove_cvref<ArgAlloc>::type> >\
@@ -179,7 +181,7 @@ BOOST_MOVE_ITERATE_0TO9(BOOST_CONTAINER_SCOPED_ALLOCATOR_DISPATCH_USES_ALLOCATOR
 
 #define BOOST_CONTAINER_SCOPED_ALLOCATOR_DISPATCH_USES_ALLOCATOR_CODE(N) \
    template < typename ConstructAlloc, typename ArgAlloc, typename T BOOST_MOVE_I##N BOOST_MOVE_CLASS##N >\
-   inline typename dtl::enable_if_and\
+   BOOST_CONTAINER_FORCEINLINE typename dtl::enable_if_and\
       < void\
       , dtl::is_not_pair<T>\
       , uses_allocator<T, typename remove_cvref<ArgAlloc>::type>\
@@ -197,7 +199,7 @@ BOOST_MOVE_ITERATE_0TO9(BOOST_CONTAINER_SCOPED_ALLOCATOR_DISPATCH_USES_ALLOCATOR
 
 #define BOOST_CONTAINER_SCOPED_ALLOCATOR_DISPATCH_USES_ALLOCATOR_CODE(N) \
    template < typename ConstructAlloc, typename ArgAlloc, typename T BOOST_MOVE_I##N BOOST_MOVE_CLASS##N >\
-   inline typename dtl::enable_if_and\
+   BOOST_CONTAINER_FORCEINLINE typename dtl::enable_if_and\
       < void\
       , dtl::is_not_pair<T>\
       , uses_allocator<T, typename remove_cvref<ArgAlloc>::type>\
@@ -226,14 +228,14 @@ BOOST_CONTAINER_DOC1ST(void, typename dtl::enable_if<dtl::is_pair<Pair> BOOST_MO
    , Pair* p)
 {
    dispatch_uses_allocator(construct_alloc, arg_alloc, dtl::addressof(p->first));
-   BOOST_CONTAINER_TRY{
+   BOOST_TRY{
       dispatch_uses_allocator(construct_alloc, arg_alloc, dtl::addressof(p->second));
    }
-   BOOST_CONTAINER_CATCH(...) {
+   BOOST_CATCH(...) {
       allocator_traits<ConstructAlloc>::destroy(construct_alloc, dtl::addressof(p->first));
-      BOOST_CONTAINER_RETHROW
+      BOOST_RETHROW
    }
-   BOOST_CONTAINER_CATCH_END
+   BOOST_CATCH_END
 }
 
 
@@ -247,14 +249,14 @@ BOOST_CONTAINER_DOC1ST(void, typename dtl::enable_if<dtl::is_pair<Pair> BOOST_MO
    , Pair* p, BOOST_FWD_REF(U) x, BOOST_FWD_REF(V) y)
 {
    dispatch_uses_allocator(construct_alloc, arg_alloc, dtl::addressof(p->first), ::boost::forward<U>(x));
-   BOOST_CONTAINER_TRY{
+   BOOST_TRY{
       dispatch_uses_allocator(construct_alloc, arg_alloc, dtl::addressof(p->second), ::boost::forward<V>(y));
    }
-   BOOST_CONTAINER_CATCH(...){
+   BOOST_CATCH(...){
       allocator_traits<ConstructAlloc>::destroy(construct_alloc, dtl::addressof(p->first));
-      BOOST_CONTAINER_RETHROW
+      BOOST_RETHROW
    }
-   BOOST_CONTAINER_CATCH_END
+   BOOST_CATCH_END
 }
 
 template < typename ConstructAlloc
@@ -294,15 +296,15 @@ typename dtl::enable_if< dtl::is_pair<Pair> BOOST_MOVE_I void>::type\
    (void)p; (void)q;\
    dispatch_uses_allocator\
       (construct_alloc, arg_alloc, dtl::addressof(pair->first) BOOST_MOVE_I_IF(N) BOOST_MOVE_TMPL_GET##N);\
-   BOOST_CONTAINER_TRY{\
+   BOOST_TRY{\
       dispatch_uses_allocator\
          (construct_alloc, arg_alloc, dtl::addressof(pair->second) BOOST_MOVE_I_IF(M) BOOST_MOVE_TMPL_GETQ##M);\
    }\
-   BOOST_CONTAINER_CATCH(...) {\
+   BOOST_CATCH(...) {\
       allocator_traits<ConstructAlloc>::destroy(construct_alloc, dtl::addressof(pair->first));\
-      BOOST_CONTAINER_RETHROW\
+      BOOST_RETHROW\
    }\
-   BOOST_CONTAINER_CATCH_END\
+   BOOST_CATCH_END\
 }\
 //
 BOOST_MOVE_ITER2D_0TOMAX(9, BOOST_DISPATCH_USES_ALLOCATOR_PIECEWISE_CONSTRUCT_BOOST_TUPLE_CODE)
@@ -318,14 +320,14 @@ BOOST_MOVE_ITER2D_0TOMAX(9, BOOST_DISPATCH_USES_ALLOCATOR_PIECEWISE_CONSTRUCT_BO
    {
       (void)t1; (void)t2;
       dispatch_uses_allocator(construct_alloc, arg_alloc, dtl::addressof(pair->first), ::boost::forward<Args1>(get<Indexes1>(t1))...);
-      BOOST_CONTAINER_TRY{
+      BOOST_TRY{
          dispatch_uses_allocator(construct_alloc, arg_alloc, dtl::addressof(pair->second), ::boost::forward<Args2>(get<Indexes2>(t2))...);
       }
-      BOOST_CONTAINER_CATCH(...){
+      BOOST_CATCH(...){
          allocator_traits<ConstructAlloc>::destroy(construct_alloc, dtl::addressof(pair->first));
-         BOOST_CONTAINER_RETHROW
+         BOOST_RETHROW
       }
-      BOOST_CONTAINER_CATCH_END
+      BOOST_CATCH_END
    }
 
    template< typename ConstructAlloc, typename ArgAlloc, class Pair
@@ -354,15 +356,15 @@ BOOST_MOVE_ITER2D_0TOMAX(9, BOOST_DISPATCH_USES_ALLOCATOR_PIECEWISE_CONSTRUCT_BO
       (void)p; (void)q;\
       dispatch_uses_allocator\
          (construct_alloc, arg_alloc, dtl::addressof(pair->first) BOOST_MOVE_I_IF(N) BOOST_MOVE_GET_IDX##N);\
-      BOOST_CONTAINER_TRY{\
+      BOOST_TRY{\
          dispatch_uses_allocator\
             (construct_alloc, arg_alloc, dtl::addressof(pair->second) BOOST_MOVE_I_IF(M) BOOST_MOVE_GET_IDXQ##M);\
       }\
-      BOOST_CONTAINER_CATCH(...) {\
+      BOOST_CATCH(...) {\
          allocator_traits<ConstructAlloc>::destroy(construct_alloc, dtl::addressof(pair->first));\
-         BOOST_CONTAINER_RETHROW\
+         BOOST_RETHROW\
       }\
-      BOOST_CONTAINER_CATCH_END\
+      BOOST_CATCH_END\
    }\
    //
    BOOST_MOVE_ITER2D_0TOMAX(9, BOOST_DISPATCH_USES_ALLOCATOR_PIECEWISE_CONSTRUCT_MSVC2010_TUPLE_CODE)
@@ -389,15 +391,15 @@ BOOST_MOVE_ITER2D_0TOMAX(9, BOOST_DISPATCH_USES_ALLOCATOR_PIECEWISE_CONSTRUCT_BO
       (void)p; (void)q;\
       dispatch_uses_allocator\
          (construct_alloc, arg_alloc, dtl::addressof(pair->first) BOOST_MOVE_I_IF(N) BOOST_MOVE_GET_IDX##N);\
-      BOOST_CONTAINER_TRY{\
+      BOOST_TRY{\
          dispatch_uses_allocator\
             (construct_alloc, arg_alloc, dtl::addressof(pair->second) BOOST_MOVE_I_IF(M) BOOST_MOVE_GET_IDXQ##M);\
       }\
-      BOOST_CONTAINER_CATCH(...) {\
+      BOOST_CATCH(...) {\
          allocator_traits<ConstructAlloc>::destroy(construct_alloc, dtl::addressof(pair->first));\
-         BOOST_CONTAINER_RETHROW\
+         BOOST_RETHROW\
       }\
-      BOOST_CONTAINER_CATCH_END\
+      BOOST_CATCH_END\
    }\
    //
    BOOST_MOVE_ITER2D_0TOMAX(BOOST_DISPATCH_USES_ALLOCATOR_PIECEWISE_CONSTRUCT_MSVC2012_TUPLE_MAX_IT, BOOST_DISPATCH_USES_ALLOCATOR_PIECEWISE_CONSTRUCT_MSVC2012_TUPLE_CODE)
@@ -416,14 +418,14 @@ typename dtl::enable_if< dtl::is_pair<Pair>, void >::type
    (ConstructAlloc & construct_alloc, BOOST_FWD_REF(ArgAlloc) arg_alloc, Pair* p, try_emplace_t, BOOST_FWD_REF(KeyType) k, BOOST_FWD_REF(Args) ...args)
 {
    dispatch_uses_allocator(construct_alloc, arg_alloc, dtl::addressof(p->first), ::boost::forward<KeyType>(k));
-   BOOST_CONTAINER_TRY{
+   BOOST_TRY{
       dispatch_uses_allocator(construct_alloc, arg_alloc, dtl::addressof(p->second), ::boost::forward<Args>(args)...);
    }
-   BOOST_CONTAINER_CATCH(...) {
+   BOOST_CATCH(...) {
       allocator_traits<ConstructAlloc>::destroy(construct_alloc, dtl::addressof(p->first));
-      BOOST_CONTAINER_RETHROW
+      BOOST_RETHROW
    }
-   BOOST_CONTAINER_CATCH_END
+   BOOST_CATCH_END
 }
 
 #else
@@ -437,14 +439,14 @@ typename dtl::enable_if< dtl::is_pair<Pair>, void >::type
        BOOST_FWD_REF(KeyType) k BOOST_MOVE_I##N BOOST_MOVE_UREF##N)\
    {\
       dispatch_uses_allocator(construct_alloc, arg_alloc, dtl::addressof(p->first), ::boost::forward<KeyType>(k));\
-      BOOST_CONTAINER_TRY{\
+      BOOST_TRY{\
          dispatch_uses_allocator(construct_alloc, arg_alloc, dtl::addressof(p->second) BOOST_MOVE_I##N BOOST_MOVE_FWD##N);\
       }\
-      BOOST_CONTAINER_CATCH(...) {\
+      BOOST_CATCH(...) {\
          allocator_traits<ConstructAlloc>::destroy(construct_alloc, dtl::addressof(p->first));\
-         BOOST_CONTAINER_RETHROW\
+         BOOST_RETHROW\
       }\
-      BOOST_CONTAINER_CATCH_END\
+      BOOST_CATCH_END\
    }\
 //
 BOOST_MOVE_ITERATE_0TO9(BOOST_CONTAINER_DISPATCH_USES_ALLOCATOR_PAIR_TRY_EMPLACE_CODE)

@@ -18,6 +18,7 @@
 
 #include <cstddef>
 #include <boost/cstdint.hpp>
+#include <boost/static_assert.hpp>
 #include <boost/memory_order.hpp>
 #include <boost/atomic/capabilities.hpp>
 #include <boost/atomic/detail/config.hpp>
@@ -45,10 +46,13 @@ private:
 
 public:
     typedef typename base_type::value_type value_type;
+    // Deprecated, use value_type instead
+    BOOST_ATOMIC_DETAIL_STORAGE_DEPRECATED
+    typedef typename base_type::storage_type storage_type;
 
-    static_assert(sizeof(value_type) > 0u, "boost::atomic<T> requires T to be a complete type");
+    BOOST_STATIC_ASSERT_MSG(sizeof(value_type) > 0u, "boost::atomic<T> requires T to be a complete type");
 #if !defined(BOOST_ATOMIC_DETAIL_NO_CXX11_IS_TRIVIALLY_COPYABLE)
-    static_assert(atomics::detail::is_trivially_copyable< value_type >::value, "boost::atomic<T> requires T to be a trivially copyable type");
+    BOOST_STATIC_ASSERT_MSG(atomics::detail::is_trivially_copyable< value_type >::value, "boost::atomic<T> requires T to be a trivially copyable type");
 #endif
 
 public:
@@ -76,6 +80,16 @@ public:
     {
         return this->load();
     }
+
+    // Deprecated, use value() instead
+    BOOST_ATOMIC_DETAIL_STORAGE_DEPRECATED
+    BOOST_FORCEINLINE typename base_type::storage_type& storage() BOOST_NOEXCEPT { return base_type::storage(); }
+    BOOST_ATOMIC_DETAIL_STORAGE_DEPRECATED
+    BOOST_FORCEINLINE typename base_type::storage_type volatile& storage() volatile BOOST_NOEXCEPT { return base_type::storage(); }
+    BOOST_ATOMIC_DETAIL_STORAGE_DEPRECATED
+    BOOST_FORCEINLINE typename base_type::storage_type const& storage() const BOOST_NOEXCEPT { return base_type::storage(); }
+    BOOST_ATOMIC_DETAIL_STORAGE_DEPRECATED
+    BOOST_FORCEINLINE typename base_type::storage_type const volatile& storage() const volatile BOOST_NOEXCEPT { return base_type::storage(); }
 
     BOOST_DELETED_FUNCTION(atomic(atomic const&))
     BOOST_DELETED_FUNCTION(atomic& operator= (atomic const&))

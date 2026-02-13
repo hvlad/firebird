@@ -32,9 +32,9 @@ template <class T>
 class eps_tolerance
 {
 public:
-   eps_tolerance() : eps(4 * tools::epsilon<T>())
+   eps_tolerance()
    {
-
+      eps = 4 * tools::epsilon<T>();
    }
    eps_tolerance(unsigned bits)
    {
@@ -52,34 +52,34 @@ private:
 
 struct equal_floor
 {
-   equal_floor()= default;
+   equal_floor(){}
    template <class T>
    bool operator()(const T& a, const T& b)
    {
       BOOST_MATH_STD_USING
-      return (floor(a) == floor(b)) || (fabs((b-a)/b) < boost::math::tools::epsilon<T>() * 2);
+      return floor(a) == floor(b);
    }
 };
 
 struct equal_ceil
 {
-   equal_ceil()= default;
+   equal_ceil(){}
    template <class T>
    bool operator()(const T& a, const T& b)
    {
       BOOST_MATH_STD_USING
-      return (ceil(a) == ceil(b)) || (fabs((b - a) / b) < boost::math::tools::epsilon<T>() * 2);
+      return ceil(a) == ceil(b);
    }
 };
 
 struct equal_nearest_integer
 {
-   equal_nearest_integer()= default;
+   equal_nearest_integer(){}
    template <class T>
    bool operator()(const T& a, const T& b)
    {
       BOOST_MATH_STD_USING
-      return (floor(a + 0.5f) == floor(b + 0.5f)) || (fabs((b - a) / b) < boost::math::tools::epsilon<T>() * 2);
+      return floor(a + 0.5f) == floor(b + 0.5f);
    }
 };
 

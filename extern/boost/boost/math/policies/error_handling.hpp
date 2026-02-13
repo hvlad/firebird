@@ -8,23 +8,19 @@
 #ifndef BOOST_MATH_POLICY_ERROR_HANDLING_HPP
 #define BOOST_MATH_POLICY_ERROR_HANDLING_HPP
 
-#include <boost/math/tools/config.hpp>
 #include <iomanip>
 #include <string>
 #include <cstring>
-#ifndef BOOST_MATH_NO_RTTI
 #include <typeinfo>
-#endif
 #include <cerrno>
 #include <complex>
 #include <cmath>
 #include <cstdint>
+#include <stdexcept>
+#include <boost/math/tools/config.hpp>
 #include <boost/math/policies/policy.hpp>
 #include <boost/math/tools/precision.hpp>
-#ifndef BOOST_MATH_NO_EXCEPTIONS
-#include <stdexcept>
 #include <boost/math/tools/throw_exception.hpp>
-#endif
 
 #ifdef _MSC_VER
 #  pragma warning(push) // Quiet warnings in boost/format.hpp
@@ -40,21 +36,17 @@
 
 namespace boost{ namespace math{
 
-#ifndef BOOST_MATH_NO_EXCEPTIONS
-
 class evaluation_error : public std::runtime_error
 {
 public:
-   explicit evaluation_error(const std::string& s) : std::runtime_error(s){}
+   evaluation_error(const std::string& s) : std::runtime_error(s){}
 };
 
 class rounding_error : public std::runtime_error
 {
 public:
-   explicit rounding_error(const std::string& s) : std::runtime_error(s){}
+   rounding_error(const std::string& s) : std::runtime_error(s){}
 };
-
-#endif
 
 namespace policies{
 //
@@ -74,7 +66,7 @@ T user_denorm_error(const char* function, const char* message, const T& val);
 template <class T>
 T user_evaluation_error(const char* function, const char* message, const T& val);
 template <class T, class TargetType>
-TargetType user_rounding_error(const char* function, const char* message, const T& val, const TargetType& t);
+T user_rounding_error(const char* function, const char* message, const T& val, const TargetType& t);
 template <class T>
 T user_indeterminate_result_error(const char* function, const char* message, const T& val);
 
@@ -82,7 +74,7 @@ namespace detail
 {
 
 template <class T>
-inline std::string prec_format(const T& val)
+std::string prec_format(const T& val)
 {
    typedef typename boost::math::policies::precision<T, boost::math::policies::policy<> >::type prec_type;
    std::stringstream ss;
@@ -94,18 +86,6 @@ inline std::string prec_format(const T& val)
    ss << val;
    return ss.str();
 }
-
-#ifdef BOOST_MATH_USE_CHARCONV_FOR_CONVERSION
-
-template <>
-inline std::string prec_format<std::float128_t>(const std::float128_t& val)
-{
-   char buffer[128] {};
-   const auto r = std::to_chars(buffer, buffer + sizeof(buffer), val);
-   return std::string(buffer, r.ptr);
-}
-
-#endif
 
 inline void replace_all_in_string(std::string& result, const char* what, const char* with)
 {
@@ -122,7 +102,7 @@ inline void replace_all_in_string(std::string& result, const char* what, const c
 template <class T>
 inline const char* name_of()
 {
-#ifndef BOOST_MATH_NO_RTTI
+#ifndef BOOST_NO_RTTI
    return typeid(T).name();
 #else
    return "unknown";
@@ -140,22 +120,17 @@ inline const char* name_of<BOOST_MATH_FLOAT128_TYPE>()
 }
 #endif
 
-#ifndef BOOST_MATH_NO_EXCEPTIONS
 template <class E, class T>
 void raise_error(const char* pfunction, const char* message)
 {
-  if(pfunction == nullptr)
-  {
+  if(pfunction == 0)
      pfunction = "Unknown function operating on type %1%";
-  }
-  if(message == nullptr)
-  {
+  if(message == 0)
      message = "Cause unknown";
-  }
 
   std::string function(pfunction);
   std::string msg("Error in function ");
-#ifndef BOOST_MATH_NO_RTTI
+#ifndef BOOST_NO_RTTI
   replace_all_in_string(function, "%1%", boost::math::policies::detail::name_of<T>());
 #else
   replace_all_in_string(function, "%1%", "Unknown");
@@ -164,25 +139,22 @@ void raise_error(const char* pfunction, const char* message)
   msg += ": ";
   msg += message;
 
-  BOOST_MATH_THROW_EXCEPTION(E(msg))
+  E e(msg);
+  BOOST_MATH_THROW_EXCEPTION(e)
 }
 
 template <class E, class T>
 void raise_error(const char* pfunction, const char* pmessage, const T& val)
 {
-  if(pfunction == nullptr)
-  {
+  if(pfunction == 0)
      pfunction = "Unknown function operating on type %1%";
-  }
-  if(pmessage == nullptr)
-  {
+  if(pmessage == 0)
      pmessage = "Cause unknown: error caused by bad argument with value %1%";
-  }
 
   std::string function(pfunction);
   std::string message(pmessage);
   std::string msg("Error in function ");
-#ifndef BOOST_MATH_NO_RTTI
+#ifndef BOOST_NO_RTTI
   replace_all_in_string(function, "%1%", boost::math::policies::detail::name_of<T>());
 #else
   replace_all_in_string(function, "%1%", "Unknown");
@@ -194,9 +166,9 @@ void raise_error(const char* pfunction, const char* pmessage, const T& val)
   replace_all_in_string(message, "%1%", sval.c_str());
   msg += message;
 
-  BOOST_MATH_THROW_EXCEPTION(E(msg))
+  E e(msg);
+  BOOST_MATH_THROW_EXCEPTION(e)
 }
-#endif
 
 template <class T>
 inline T raise_domain_error(
@@ -205,13 +177,9 @@ inline T raise_domain_error(
            const T& val,
            const ::boost::math::policies::domain_error< ::boost::math::policies::throw_on_error>&)
 {
-#ifdef BOOST_MATH_NO_EXCEPTIONS
-   static_assert(sizeof(T) == 0, "Error handler called with throw_on_error and BOOST_MATH_NO_EXCEPTIONS set.");
-#else
    raise_error<std::domain_error, T>(function, message, val);
    // we never get here:
    return std::numeric_limits<T>::quiet_NaN();
-#endif
 }
 
 template <class T>
@@ -256,11 +224,7 @@ inline T raise_pole_error(
            const T& val,
            const  ::boost::math::policies::pole_error< ::boost::math::policies::throw_on_error>&)
 {
-#ifdef BOOST_MATH_NO_EXCEPTIONS
-   static_assert(sizeof(T) == 0, "Error handler called with throw_on_error and BOOST_MATH_NO_EXCEPTIONS set.");
-#else
    return boost::math::policies::detail::raise_domain_error(function, message, val,  ::boost::math::policies::domain_error< ::boost::math::policies::throw_on_error>());
-#endif
 }
 
 template <class T>
@@ -293,19 +257,16 @@ inline T raise_pole_error(
    return user_pole_error(function, message, val);
 }
 
+
 template <class T>
 inline T raise_overflow_error(
            const char* function,
            const char* message,
            const  ::boost::math::policies::overflow_error< ::boost::math::policies::throw_on_error>&)
 {
-#ifdef BOOST_MATH_NO_EXCEPTIONS
-   static_assert(sizeof(T) == 0, "Error handler called with throw_on_error and BOOST_MATH_NO_EXCEPTIONS set.");
-#else
    raise_error<std::overflow_error, T>(function, message ? message : "numeric overflow");
    // We should never get here:
    return std::numeric_limits<T>::has_infinity ? std::numeric_limits<T>::infinity() : boost::math::tools::max_value<T>();
-#endif
 }
 
 template <class T>
@@ -315,13 +276,9 @@ inline T raise_overflow_error(
            const T& val,
            const ::boost::math::policies::overflow_error< ::boost::math::policies::throw_on_error>&)
 {
-#ifdef BOOST_MATH_NO_EXCEPTIONS
-   static_assert(sizeof(T) == 0, "Error handler called with throw_on_error and BOOST_MATH_NO_EXCEPTIONS set.");
-#else
    raise_error<std::overflow_error, T>(function, message ? message : "numeric overflow", val);
    // We should never get here:
    return std::numeric_limits<T>::has_infinity ? std::numeric_limits<T>::infinity() : boost::math::tools::max_value<T>();
-#endif
 }
 
 template <class T>
@@ -401,13 +358,9 @@ inline T raise_underflow_error(
            const char* message,
            const  ::boost::math::policies::underflow_error< ::boost::math::policies::throw_on_error>&)
 {
-#ifdef BOOST_MATH_NO_EXCEPTIONS
-   static_assert(sizeof(T) == 0, "Error handler called with throw_on_error and BOOST_MATH_NO_EXCEPTIONS set.");
-#else
    raise_error<std::underflow_error, T>(function, message ? message : "numeric underflow");
    // We should never get here:
    return 0;
-#endif
 }
 
 template <class T>
@@ -449,13 +402,9 @@ inline T raise_denorm_error(
            const T& /* val */,
            const  ::boost::math::policies::denorm_error< ::boost::math::policies::throw_on_error>&)
 {
-#ifdef BOOST_MATH_NO_EXCEPTIONS
-   static_assert(sizeof(T) == 0, "Error handler called with throw_on_error and BOOST_MATH_NO_EXCEPTIONS set.");
-#else
    raise_error<std::underflow_error, T>(function, message ? message : "denormalised result");
    // we never get here:
    return T(0);
-#endif
 }
 
 template <class T>
@@ -500,13 +449,9 @@ inline T raise_evaluation_error(
            const T& val,
            const  ::boost::math::policies::evaluation_error< ::boost::math::policies::throw_on_error>&)
 {
-#ifdef BOOST_MATH_NO_EXCEPTIONS
-   static_assert(sizeof(T) == 0, "Error handler called with throw_on_error and BOOST_MATH_NO_EXCEPTIONS set.");
-#else
    raise_error<boost::math::evaluation_error, T>(function, message, val);
    // we never get here:
    return T(0);
-#endif
 }
 
 template <class T>
@@ -552,13 +497,9 @@ inline TargetType raise_rounding_error(
            const TargetType&,
            const  ::boost::math::policies::rounding_error< ::boost::math::policies::throw_on_error>&)
 {
-#ifdef BOOST_MATH_NO_EXCEPTIONS
-   static_assert(sizeof(T) == 0, "Error handler called with throw_on_error and BOOST_MATH_NO_EXCEPTIONS set.");
-#else
    raise_error<boost::math::rounding_error, T>(function, message, val);
    // we never get here:
    return TargetType(0);
-#endif
 }
 
 template <class T, class TargetType>
@@ -571,7 +512,7 @@ inline constexpr TargetType raise_rounding_error(
 {
    // This may or may not do the right thing, but the user asked for the error
    // to be ignored so here we go anyway:
-   static_assert(std::numeric_limits<TargetType>::is_specialized, "The target type must have std::numeric_limits specialized.");
+   static_assert(std::numeric_limits<TargetType>::is_specialized, "The target type must be specialized.");
    return  val > 0 ? (std::numeric_limits<TargetType>::max)() : (std::numeric_limits<TargetType>::is_integer ? (std::numeric_limits<TargetType>::min)() : -(std::numeric_limits<TargetType>::max)());
 }
 
@@ -586,9 +527,24 @@ inline TargetType raise_rounding_error(
    errno = ERANGE;
    // This may or may not do the right thing, but the user asked for the error
    // to be silent so here we go anyway:
-   static_assert(std::numeric_limits<TargetType>::is_specialized, "The target type must have std::numeric_limits specialized.");
+   static_assert(std::numeric_limits<TargetType>::is_specialized, "The target type must be specialized.");
    return  val > 0 ? (std::numeric_limits<TargetType>::max)() : (std::numeric_limits<TargetType>::is_integer ? (std::numeric_limits<TargetType>::min)() : -(std::numeric_limits<TargetType>::max)());
 }
+
+template <class T>
+inline T raise_rounding_error(
+           const char* ,
+           const char* ,
+           const T& val,
+           const T&,
+           const  ::boost::math::policies::rounding_error< ::boost::math::policies::errno_on_error>&) BOOST_MATH_NOEXCEPT(T)
+{
+   errno = ERANGE;
+   // This may or may not do the right thing, but the user asked for the error
+   // to be silent so here we go anyway:
+   return  val > 0 ? boost::math::tools::max_value<T>() : -boost::math::tools::max_value<T>();
+}
+
 template <class T, class TargetType>
 inline TargetType raise_rounding_error(
            const char* function,
@@ -608,13 +564,9 @@ inline T raise_indeterminate_result_error(
            const R& ,
            const ::boost::math::policies::indeterminate_result_error< ::boost::math::policies::throw_on_error>&)
 {
-#ifdef BOOST_MATH_NO_EXCEPTIONS
-   static_assert(sizeof(T) == 0, "Error handler called with throw_on_error and BOOST_MATH_NO_EXCEPTIONS set.");
-#else
    raise_error<std::domain_error, T>(function, message, val);
    // we never get here:
    return std::numeric_limits<T>::quiet_NaN();
-#endif
 }
 
 template <class T, class R>
@@ -746,19 +698,19 @@ namespace detail
 {
 
 template <class R, class T, class Policy>
-BOOST_MATH_FORCEINLINE bool check_overflow(T val, R* result, const char* function, const Policy& pol) noexcept(BOOST_MATH_IS_FLOAT(R) && BOOST_MATH_IS_FLOAT(T) && (Policy::value != throw_on_error) && (Policy::value != user_error))
+inline bool check_overflow(T val, R* result, const char* function, const Policy& pol) noexcept(BOOST_MATH_IS_FLOAT(R) && BOOST_MATH_IS_FLOAT(T) && (Policy::value != throw_on_error) && (Policy::value != user_error))
 {
    BOOST_MATH_STD_USING
    if(fabs(val) > tools::max_value<R>())
    {
-      boost::math::policies::detail::raise_overflow_error<R>(function, nullptr, pol);
+      boost::math::policies::detail::raise_overflow_error<R>(function, 0, pol);
       *result = static_cast<R>(val);
       return true;
    }
    return false;
 }
 template <class R, class T, class Policy>
-BOOST_MATH_FORCEINLINE bool check_overflow(std::complex<T> val, R* result, const char* function, const Policy& pol) noexcept(BOOST_MATH_IS_FLOAT(R) && BOOST_MATH_IS_FLOAT(T) && (Policy::value != throw_on_error) && (Policy::value != user_error))
+inline bool check_overflow(std::complex<T> val, R* result, const char* function, const Policy& pol) noexcept(BOOST_MATH_IS_FLOAT(R) && BOOST_MATH_IS_FLOAT(T) && (Policy::value != throw_on_error) && (Policy::value != user_error))
 {
    typedef typename R::value_type r_type;
    r_type re, im;
@@ -768,17 +720,17 @@ BOOST_MATH_FORCEINLINE bool check_overflow(std::complex<T> val, R* result, const
    return r;
 }
 template <class R, class T, class Policy>
-BOOST_MATH_FORCEINLINE bool check_underflow(T val, R* result, const char* function, const Policy& pol) noexcept(BOOST_MATH_IS_FLOAT(R) && BOOST_MATH_IS_FLOAT(T) && (Policy::value != throw_on_error) && (Policy::value != user_error))
+inline bool check_underflow(T val, R* result, const char* function, const Policy& pol) noexcept(BOOST_MATH_IS_FLOAT(R) && BOOST_MATH_IS_FLOAT(T) && (Policy::value != throw_on_error) && (Policy::value != user_error))
 {
    if((val != 0) && (static_cast<R>(val) == 0))
    {
-      *result = static_cast<R>(boost::math::policies::detail::raise_underflow_error<R>(function, nullptr, pol));
+      *result = static_cast<R>(boost::math::policies::detail::raise_underflow_error<R>(function, 0, pol));
       return true;
    }
    return false;
 }
 template <class R, class T, class Policy>
-BOOST_MATH_FORCEINLINE bool check_underflow(std::complex<T> val, R* result, const char* function, const Policy& pol) noexcept(BOOST_MATH_IS_FLOAT(R) && BOOST_MATH_IS_FLOAT(T) && (Policy::value != throw_on_error) && (Policy::value != user_error))
+inline bool check_underflow(std::complex<T> val, R* result, const char* function, const Policy& pol) noexcept(BOOST_MATH_IS_FLOAT(R) && BOOST_MATH_IS_FLOAT(T) && (Policy::value != throw_on_error) && (Policy::value != user_error))
 {
    typedef typename R::value_type r_type;
    r_type re, im;
@@ -788,7 +740,7 @@ BOOST_MATH_FORCEINLINE bool check_underflow(std::complex<T> val, R* result, cons
    return r;
 }
 template <class R, class T, class Policy>
-BOOST_MATH_FORCEINLINE bool check_denorm(T val, R* result, const char* function, const Policy& pol) noexcept(BOOST_MATH_IS_FLOAT(R) && BOOST_MATH_IS_FLOAT(T) && (Policy::value != throw_on_error) && (Policy::value != user_error))
+inline bool check_denorm(T val, R* result, const char* function, const Policy& pol) noexcept(BOOST_MATH_IS_FLOAT(R) && BOOST_MATH_IS_FLOAT(T) && (Policy::value != throw_on_error) && (Policy::value != user_error))
 {
    BOOST_MATH_STD_USING
    if((fabs(val) < static_cast<T>(tools::min_value<R>())) && (static_cast<R>(val) != 0))
@@ -799,7 +751,7 @@ BOOST_MATH_FORCEINLINE bool check_denorm(T val, R* result, const char* function,
    return false;
 }
 template <class R, class T, class Policy>
-BOOST_MATH_FORCEINLINE bool check_denorm(std::complex<T> val, R* result, const char* function, const Policy& pol) noexcept(BOOST_MATH_IS_FLOAT(R) && BOOST_MATH_IS_FLOAT(T) && (Policy::value != throw_on_error) && (Policy::value != user_error))
+inline bool check_denorm(std::complex<T> val, R* result, const char* function, const Policy& pol) noexcept(BOOST_MATH_IS_FLOAT(R) && BOOST_MATH_IS_FLOAT(T) && (Policy::value != throw_on_error) && (Policy::value != user_error))
 {
    typedef typename R::value_type r_type;
    r_type re, im;
@@ -811,28 +763,28 @@ BOOST_MATH_FORCEINLINE bool check_denorm(std::complex<T> val, R* result, const c
 
 // Default instantiations with ignore_error policy.
 template <class R, class T>
-BOOST_MATH_FORCEINLINE constexpr bool check_overflow(T /* val */, R* /* result */, const char* /* function */, const overflow_error<ignore_error>&) noexcept(BOOST_MATH_IS_FLOAT(R) && BOOST_MATH_IS_FLOAT(T))
+inline constexpr bool check_overflow(T /* val */, R* /* result */, const char* /* function */, const overflow_error<ignore_error>&) noexcept(BOOST_MATH_IS_FLOAT(R) && BOOST_MATH_IS_FLOAT(T)) 
 { return false; }
 template <class R, class T>
-BOOST_MATH_FORCEINLINE constexpr bool check_overflow(std::complex<T> /* val */, R* /* result */, const char* /* function */, const overflow_error<ignore_error>&) noexcept(BOOST_MATH_IS_FLOAT(R) && BOOST_MATH_IS_FLOAT(T))
+inline constexpr bool check_overflow(std::complex<T> /* val */, R* /* result */, const char* /* function */, const overflow_error<ignore_error>&) noexcept(BOOST_MATH_IS_FLOAT(R) && BOOST_MATH_IS_FLOAT(T)) 
 { return false; }
 template <class R, class T>
-BOOST_MATH_FORCEINLINE constexpr bool check_underflow(T /* val */, R* /* result */, const char* /* function */, const underflow_error<ignore_error>&) noexcept(BOOST_MATH_IS_FLOAT(R) && BOOST_MATH_IS_FLOAT(T))
+inline constexpr bool check_underflow(T /* val */, R* /* result */, const char* /* function */, const underflow_error<ignore_error>&) noexcept(BOOST_MATH_IS_FLOAT(R) && BOOST_MATH_IS_FLOAT(T)) 
 { return false; }
 template <class R, class T>
-BOOST_MATH_FORCEINLINE constexpr bool check_underflow(std::complex<T> /* val */, R* /* result */, const char* /* function */, const underflow_error<ignore_error>&) noexcept(BOOST_MATH_IS_FLOAT(R) && BOOST_MATH_IS_FLOAT(T))
+inline constexpr bool check_underflow(std::complex<T> /* val */, R* /* result */, const char* /* function */, const underflow_error<ignore_error>&) noexcept(BOOST_MATH_IS_FLOAT(R) && BOOST_MATH_IS_FLOAT(T)) 
 { return false; }
 template <class R, class T>
-BOOST_MATH_FORCEINLINE constexpr bool check_denorm(T /* val */, R* /* result*/, const char* /* function */, const denorm_error<ignore_error>&) noexcept(BOOST_MATH_IS_FLOAT(R) && BOOST_MATH_IS_FLOAT(T))
+inline constexpr bool check_denorm(T /* val */, R* /* result*/, const char* /* function */, const denorm_error<ignore_error>&) noexcept(BOOST_MATH_IS_FLOAT(R) && BOOST_MATH_IS_FLOAT(T)) 
 { return false; }
 template <class R, class T>
-BOOST_MATH_FORCEINLINE constexpr bool check_denorm(std::complex<T> /* val */, R* /* result*/, const char* /* function */, const denorm_error<ignore_error>&) noexcept(BOOST_MATH_IS_FLOAT(R) && BOOST_MATH_IS_FLOAT(T))
+inline constexpr bool check_denorm(std::complex<T> /* val */, R* /* result*/, const char* /* function */, const denorm_error<ignore_error>&) noexcept(BOOST_MATH_IS_FLOAT(R) && BOOST_MATH_IS_FLOAT(T)) 
 { return false; }
 
 } // namespace detail
 
 template <class R, class Policy, class T>
-BOOST_MATH_FORCEINLINE R checked_narrowing_cast(T val, const char* function) noexcept(BOOST_MATH_IS_FLOAT(R) && BOOST_MATH_IS_FLOAT(T) && is_noexcept_error_policy<Policy>::value)
+inline R checked_narrowing_cast(T val, const char* function) noexcept(BOOST_MATH_IS_FLOAT(R) && BOOST_MATH_IS_FLOAT(T) && is_noexcept_error_policy<Policy>::value)
 {
    typedef typename Policy::overflow_error_type overflow_type;
    typedef typename Policy::underflow_error_type underflow_type;

@@ -7,7 +7,7 @@
 #ifndef BOOST_EXCEPTION_618474C2DE1511DEB74A388C56D89593
 #define BOOST_EXCEPTION_618474C2DE1511DEB74A388C56D89593
 
-#include <boost/exception/detail/requires_cxx11.hpp>
+#include <boost/config.hpp>
 #include <boost/exception/exception.hpp>
 #include <boost/exception/info.hpp>
 #include <boost/exception/diagnostic_information.hpp>
@@ -26,7 +26,7 @@
 #include <stdlib.h>
 
 #ifndef BOOST_EXCEPTION_ENABLE_WARNINGS
-#if defined(__GNUC__) && __GNUC__*100+__GNUC_MINOR__>301
+#if __GNUC__*100+__GNUC_MINOR__>301
 #pragma GCC system_header
 #endif
 #ifdef __clang__
@@ -64,7 +64,8 @@ boost
         inline
         wrap_exception_ptr( std::exception_ptr const & e )
             {
-            exception_detail::clone_base const & base = boost::enable_current_exception(std_exception_ptr_wrapper(e));
+            exception_detail::clone_base const & base =
+                boost::enable_current_exception(std_exception_ptr_wrapper(std::current_exception()));
             return shared_ptr<exception_detail::clone_base const>(base.clone());
             }
 #endif
@@ -111,24 +112,14 @@ boost
             }
         };
 
-    namespace
-    exception_detail
-        {
-        template <class E>
-        inline
-        exception_ptr
-        copy_exception_impl( E const & e )
-            {
-            return exception_ptr(boost::make_shared<E>(e));
-            }
-        }
-
     template <class E>
     inline
     exception_ptr
     copy_exception( E const & e )
         {
-        return exception_detail::copy_exception_impl(boost::enable_current_exception(e));
+        E cp = e;
+        exception_detail::copy_boost_exception(&cp, &e);
+        return exception_ptr(boost::make_shared<wrapexcept<E> >(cp));
         }
 
     template <class T>
@@ -394,9 +385,6 @@ boost
                         {
                         return exception_ptr(shared_ptr<exception_detail::clone_base const>(e.clone()));
                         }
-
-#ifdef BOOST_NO_CXX11_HDR_EXCEPTION
-
                     catch(
                     std::domain_error & e )
                         {
@@ -469,19 +457,19 @@ boost
                         {
                         return exception_detail::current_exception_std_exception(e);
                         }
+#ifdef BOOST_NO_CXX11_HDR_EXCEPTION
+                    // this case can be handled losslesly with std::current_exception() (see below)
                     catch(
                     std::exception & e )
                         {
                         return exception_detail::current_exception_unknown_std_exception(e);
                         }
+#endif
                     catch(
                     boost::exception & e )
                         {
                         return exception_detail::current_exception_unknown_boost_exception(e);
                         }
-
-#endif // #ifdef BOOST_NO_CXX11_HDR_EXCEPTION
-
                     catch(
                     ... )
                         {

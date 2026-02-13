@@ -23,16 +23,12 @@ namespace impl {
 template <typename T>
 inline T trunc BOOST_PREVENT_MACRO_SUBSTITUTION (const T arg)
 {
-    if (arg > 0)
-    {
-       using std::floor;
-
-       return floor(arg);
-    }
-
+    using std::floor;
     using std::ceil;
 
-    return ceil(arg);}
+    return (arg > 0) ? floor(arg) : ceil(arg);
+}
+
 } // namespace impl
 
 #ifdef BOOST_MP_MATH_AVAILABLE
@@ -54,25 +50,23 @@ inline int itrunc BOOST_PREVENT_MACRO_SUBSTITUTION (const T arg)
 template <typename T>
 inline long long lltrunc BOOST_PREVENT_MACRO_SUBSTITUTION (const T arg)
 {
-    T t = boost::multiprecision::detail::impl::trunc(arg);
-    if (t > LLONG_MAX)
+    if (arg > LLONG_MAX)
     {
         BOOST_MP_THROW_EXCEPTION(std::domain_error("arg cannot be converted into a long long"));
     }
 
-    return static_cast<long long>(t);
+    return static_cast<long long>(boost::multiprecision::detail::impl::trunc(arg));
 }
 
 template <typename T>
 inline int itrunc BOOST_PREVENT_MACRO_SUBSTITUTION (const T arg)
 {
-    T t = boost::multiprecision::detail::impl::trunc(arg);
-    if (t > static_cast<T>(INT_MAX))
+    if (arg > INT_MAX)
     {
         BOOST_MP_THROW_EXCEPTION(std::domain_error("arg cannot be converted into an int"));
     }
 
-    return static_cast<int>(t);
+    return static_cast<int>(boost::multiprecision::detail::impl::trunc(arg));
 }
 
 #endif

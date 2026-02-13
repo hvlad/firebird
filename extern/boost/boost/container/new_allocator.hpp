@@ -33,7 +33,7 @@ namespace container {
 
 template<bool Value>
 struct new_allocator_bool
-{  BOOST_STATIC_CONSTEXPR bool value = Value;  };
+{  static const bool value = Value;  };
 
 template<class T>
 class new_allocator;
@@ -129,23 +129,25 @@ class new_allocator
 
    //!Default constructor
    //!Never throws
-   inline new_allocator() BOOST_NOEXCEPT_OR_NOTHROW
+   new_allocator() BOOST_NOEXCEPT_OR_NOTHROW
    {}
 
    //!Constructor from other new_allocator.
    //!Never throws
-   inline new_allocator(const new_allocator &) BOOST_NOEXCEPT_OR_NOTHROW
+   new_allocator(const new_allocator &) BOOST_NOEXCEPT_OR_NOTHROW
    {}
 
    //!Copy assignment operator from other new_allocator.
    //!Never throws
-   inline new_allocator& operator=(const new_allocator &) BOOST_NOEXCEPT_OR_NOTHROW
-   {  return *this;  }
+   new_allocator& operator=(const new_allocator &) BOOST_NOEXCEPT_OR_NOTHROW
+   {
+       return *this;
+   }
 
    //!Constructor from related new_allocator.
    //!Never throws
    template<class T2>
-   inline new_allocator(const new_allocator<T2> &) BOOST_NOEXCEPT_OR_NOTHROW
+   new_allocator(const new_allocator<T2> &) BOOST_NOEXCEPT_OR_NOTHROW
    {}
 
    //!Allocates memory for an array of count elements.
@@ -160,34 +162,27 @@ class new_allocator
 
    //!Deallocates previously allocated memory.
    //!Never throws
-   void deallocate(pointer ptr, size_type n) BOOST_NOEXCEPT_OR_NOTHROW
-   {
-      (void)n;
-      # if __cpp_sized_deallocation
-      ::operator delete((void*)ptr, n * sizeof(T));
-      #else
-      ::operator delete((void*)ptr);
-      # endif
-   }
+   void deallocate(pointer ptr, size_type) BOOST_NOEXCEPT_OR_NOTHROW
+     { ::operator delete((void*)ptr); }
 
    //!Returns the maximum number of elements that could be allocated.
    //!Never throws
-   inline size_type max_size() const BOOST_NOEXCEPT_OR_NOTHROW
+   size_type max_size() const BOOST_NOEXCEPT_OR_NOTHROW
    {  return std::size_t(-1)/(2*sizeof(T));   }
 
    //!Swaps two allocators, does nothing
    //!because this new_allocator is stateless
-   inline friend void swap(new_allocator &, new_allocator &) BOOST_NOEXCEPT_OR_NOTHROW
+   friend void swap(new_allocator &, new_allocator &) BOOST_NOEXCEPT_OR_NOTHROW
    {}
 
    //!An new_allocator always compares to true, as memory allocated with one
    //!instance can be deallocated by another instance
-   inline friend bool operator==(const new_allocator &, const new_allocator &) BOOST_NOEXCEPT_OR_NOTHROW
+   friend bool operator==(const new_allocator &, const new_allocator &) BOOST_NOEXCEPT_OR_NOTHROW
    {  return true;   }
 
    //!An new_allocator always compares to false, as memory allocated with one
    //!instance can be deallocated by another instance
-   inline friend bool operator!=(const new_allocator &, const new_allocator &) BOOST_NOEXCEPT_OR_NOTHROW
+   friend bool operator!=(const new_allocator &, const new_allocator &) BOOST_NOEXCEPT_OR_NOTHROW
    {  return false;   }
 };
 

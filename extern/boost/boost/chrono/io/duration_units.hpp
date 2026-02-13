@@ -10,7 +10,6 @@
 
 #include <boost/chrono/config.hpp>
 #include <boost/ratio/ratio_io.hpp>
-#include <boost/ratio/config.hpp>
 #include <boost/chrono/duration.hpp>
 #include <boost/chrono/io/duration_style.hpp>
 #include <boost/chrono/io/ios_base_state.hpp>
@@ -984,9 +983,9 @@ namespace boost
             if (duration_units_default_holder<CharT>::initialized_)
             {
               delete[] duration_units_default_holder<CharT>::n_d_valid_units_;
-              duration_units_default_holder<CharT>::n_d_valid_units_ = BOOST_NULLPTR;
+              duration_units_default_holder<CharT>::n_d_valid_units_ = 0;
               delete[] duration_units_default_holder<CharT>::valid_units_;
-              duration_units_default_holder<CharT>::valid_units_ = BOOST_NULLPTR;
+              duration_units_default_holder<CharT>::valid_units_ = 0;
               duration_units_default_holder<CharT>::initialized_ = false;
             }
         }

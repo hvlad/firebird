@@ -84,13 +84,13 @@ struct void_t { typedef void type; };
 template <class T, class=void>
 struct is_transparent_base
 {
-   BOOST_STATIC_CONSTEXPR bool value = false;
+   static const bool value = false;
 };
 
 template <class T>
 struct is_transparent_base<T, typename void_t<typename T::is_transparent>::type>
 {
-   BOOST_STATIC_CONSTEXPR bool value = true;
+   static const bool value = true;
 };
 
 template <class T>
@@ -112,7 +112,7 @@ template<typename...> using variadic_void_t = void;
 template<typename Allocator, typename = void>
 struct is_allocator
 {
-   BOOST_STATIC_CONSTEXPR bool value = false;
+   static const bool value = false;
 };
 
 template <typename T>
@@ -123,7 +123,7 @@ struct is_allocator < Allocator,
    variadic_void_t< typename Allocator::value_type
                   , decltype(ctad_declval<Allocator&>().allocate(size_t{})) >>
 {
-   BOOST_STATIC_CONSTEXPR bool value = true;
+   static const bool value = true;
 };
 
 template<class T>

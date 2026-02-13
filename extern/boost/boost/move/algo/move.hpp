@@ -28,6 +28,7 @@
 #include <boost/move/detail/iterator_traits.hpp>
 #include <boost/move/detail/iterator_to_raw_pointer.hpp>
 #include <boost/move/detail/addressof.hpp>
+#include <boost/core/no_exceptions_support.hpp>
 #if defined(BOOST_MOVE_USE_STANDARD_LIBRARY_MOVE)
 #include <algorithm>
 #endif
@@ -121,20 +122,20 @@ F uninitialized_move(I f, I l, F r
    typedef typename boost::movelib::iterator_traits<I>::value_type input_value_type;
 
    F back = r;
-   BOOST_MOVE_TRY{
+   BOOST_TRY{
       while (f != l) {
          void * const addr = static_cast<void*>(::boost::move_detail::addressof(*r));
          ::new(addr) input_value_type(::boost::move(*f));
          ++f; ++r;
       }
    }
-   BOOST_MOVE_CATCH(...){
+   BOOST_CATCH(...){
       for (; back != r; ++back){
          boost::movelib::iterator_to_raw_pointer(back)->~input_value_type();
       }
-      BOOST_MOVE_RETHROW;
+      BOOST_RETHROW;
    }
-   BOOST_MOVE_CATCH_END
+   BOOST_CATCH_END
    return r;
 }
 

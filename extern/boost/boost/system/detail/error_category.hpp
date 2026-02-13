@@ -13,12 +13,14 @@
 #include <boost/system/detail/config.hpp>
 #include <boost/cstdint.hpp>
 #include <boost/config.hpp>
-#include <boost/config/workaround.hpp>
 #include <string>
 #include <functional>
 #include <cstddef>
-#include <system_error>
-#include <atomic>
+
+#if defined(BOOST_SYSTEM_HAS_SYSTEM_ERROR)
+# include <system_error>
+# include <atomic>
+#endif
 
 namespace boost
 {
@@ -46,11 +48,6 @@ class std_category;
 #pragma GCC diagnostic ignored "-Wnon-virtual-dtor"
 #endif
 
-#if defined(BOOST_MSVC) && BOOST_MSVC < 1900
-#pragma warning(push)
-#pragma warning(disable: 4351) //  new behavior: elements of array will be default initialized
-#endif
-
 class BOOST_SYMBOL_VISIBLE error_category
 {
 private:
@@ -61,64 +58,86 @@ private:
     friend class error_code;
     friend class error_condition;
 
+#if !defined(BOOST_NO_CXX11_DELETED_FUNCTIONS)
 public:
 
     error_category( error_category const & ) = delete;
     error_category& operator=( error_category const & ) = delete;
 
+#else
+private:
+
+    error_category( error_category const & );
+    error_category& operator=( error_category const & );
+
+#endif
+
 private:
 
     boost::ulong_long_type id_;
 
-    static std::size_t const stdcat_size_ = 4 * sizeof( void const* );
+#if defined(BOOST_SYSTEM_HAS_SYSTEM_ERROR)
 
-    union
-    {
-        mutable unsigned char stdcat_[ stdcat_size_ ];
-        void const* stdcat_align_;
-    };
+    mutable std::atomic< boost::system::detail::std_category* > ps_;
 
-    mutable std::atomic< unsigned > sc_init_;
+#else
+
+    boost::system::detail::std_category* ps_;
+
+#endif
 
 protected:
 
+#if !defined(BOOST_NO_CXX11_DEFAULTED_FUNCTIONS) && !defined(BOOST_NO_CXX11_NON_PUBLIC_DEFAULTED_FUNCTIONS)
+
     ~error_category() = default;
 
-    constexpr error_category() noexcept: id_( 0 ), stdcat_(), sc_init_()
+#else
+
+    // We'd like to make the destructor protected, to make code that deletes
+    // an error_category* not compile; unfortunately, doing the below makes
+    // the destructor user-provided and hence breaks use after main, as the
+    // categories may get destroyed before code that uses them
+
+    // ~error_category() {}
+
+#endif
+
+    BOOST_SYSTEM_CONSTEXPR error_category() BOOST_NOEXCEPT: id_( 0 ), ps_()
     {
     }
 
-    explicit constexpr error_category( boost::ulong_long_type id ) noexcept: id_( id ), stdcat_(), sc_init_()
+    explicit BOOST_SYSTEM_CONSTEXPR error_category( boost::ulong_long_type id ) BOOST_NOEXCEPT: id_( id ), ps_()
     {
     }
 
 public:
 
-    virtual const char * name() const noexcept = 0;
+    virtual const char * name() const BOOST_NOEXCEPT = 0;
 
-    virtual error_condition default_error_condition( int ev ) const noexcept;
-    virtual bool equivalent( int code, const error_condition & condition ) const noexcept;
-    virtual bool equivalent( const error_code & code, int condition ) const noexcept;
+    virtual error_condition default_error_condition( int ev ) const BOOST_NOEXCEPT;
+    virtual bool equivalent( int code, const error_condition & condition ) const BOOST_NOEXCEPT;
+    virtual bool equivalent( const error_code & code, int condition ) const BOOST_NOEXCEPT;
 
     virtual std::string message( int ev ) const = 0;
-    virtual char const * message( int ev, char * buffer, std::size_t len ) const noexcept;
+    virtual char const * message( int ev, char * buffer, std::size_t len ) const BOOST_NOEXCEPT;
 
-    virtual bool failed( int ev ) const noexcept
+    virtual bool failed( int ev ) const BOOST_NOEXCEPT
     {
         return ev != 0;
     }
 
-    friend BOOST_SYSTEM_CONSTEXPR bool operator==( error_category const & lhs, error_category const & rhs ) noexcept
+    friend BOOST_SYSTEM_CONSTEXPR bool operator==( error_category const & lhs, error_category const & rhs ) BOOST_NOEXCEPT
     {
         return rhs.id_ == 0? &lhs == &rhs: lhs.id_ == rhs.id_;
     }
 
-    friend BOOST_SYSTEM_CONSTEXPR bool operator!=( error_category const & lhs, error_category const & rhs ) noexcept
+    friend BOOST_SYSTEM_CONSTEXPR bool operator!=( error_category const & lhs, error_category const & rhs ) BOOST_NOEXCEPT
     {
         return !( lhs == rhs );
     }
 
-    friend BOOST_SYSTEM_CONSTEXPR bool operator<( error_category const & lhs, error_category const & rhs ) noexcept
+    friend BOOST_SYSTEM_CONSTEXPR bool operator<( error_category const & lhs, error_category const & rhs ) BOOST_NOEXCEPT
     {
         if( lhs.id_ < rhs.id_ )
         {
@@ -138,18 +157,14 @@ public:
         return std::less<error_category const *>()( &lhs, &rhs );
     }
 
-    void init_stdcat() const;
-
+#if defined(BOOST_SYSTEM_HAS_SYSTEM_ERROR)
 # if defined(__SUNPRO_CC) // trailing __global is not supported
     operator std::error_category const & () const;
 # else
     operator std::error_category const & () const BOOST_SYMBOL_VISIBLE;
 # endif
-};
-
-#if defined(BOOST_MSVC) && BOOST_MSVC < 1900
-#pragma warning(pop)
 #endif
+};
 
 #if ( defined( BOOST_GCC ) && BOOST_GCC >= 40600 ) || defined( BOOST_CLANG )
 #pragma GCC diagnostic pop
