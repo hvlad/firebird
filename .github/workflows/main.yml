@@ -10,7 +10,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 10
 
@@ -32,7 +32,7 @@ jobs:
           (cd Firebird-*-linux-x64; sudo ./install.sh -silent)
 
       - name: Upload installer
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: firebird-ubuntu-20.04-clang-x64
           path: gen/Firebird-*-linux-x64.tar.gz
@@ -54,7 +54,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 10
 
@@ -65,7 +65,7 @@ jobs:
         uses: ./.github/actions/get-release-notes
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
         if: ${{ startsWith(matrix.arch, 'arm') }}
 
       - name: Build
@@ -74,13 +74,13 @@ jobs:
           ./run-${{ matrix.arch }}.sh
 
       - name: Upload installer
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: firebird-linux-${{ matrix.arch }}
           path: gen/Firebird-*-linux-${{ matrix.arch }}.tar.gz
 
       - name: Upload debug symbols
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: firebird-linux-${{ matrix.arch }}-debugSymbols
           path: gen/Firebird-*-linux-${{ matrix.arch }}-debugSymbols.tar.gz
@@ -98,7 +98,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 10
 
@@ -127,7 +127,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 10
 
@@ -147,7 +147,7 @@ jobs:
           tar xzvf gen/Firebird-*-linux-x64.tar.gz
 
       - name: Upload installer
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: firebird-alpine-x64
           path: gen/Firebird-*-linux-x64.tar.gz
@@ -167,7 +167,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 10
 
@@ -198,13 +198,13 @@ jobs:
           call run_tests.bat
 
       - name: Upload zip
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: firebird-windows-vs-${{ env.VS_VERSION }}-${{ matrix.platform }}-zip
           path: builds/install_images/Firebird-*-windows-${{ matrix.platform }}.zip
 
       - name: Upload installer
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: firebird-windows-vs-${{ env.VS_VERSION }}-${{ matrix.platform }}-installer
           path: builds/install_images/*-windows-${{ matrix.platform }}.exe
@@ -218,7 +218,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 10
 
@@ -246,25 +246,25 @@ jobs:
           call run_tests.bat
 
       - name: Upload zip
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: firebird-windows-arm64-zip
           path: builds/install_images/Firebird-*-windows-arm64.zip
 
       - name: Upload zip (withDebugSymbols)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: firebird-windows-arm64-withDebugSymbols-zip
           path: builds/install_images/Firebird-*-windows-arm64-withDebugSymbols.zip
 
       - name: Upload installer
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: firebird-windows-arm64-installer
           path: builds/install_images/*-windows-arm64.exe
 
       - name: Upload installer (withDebugSymbols)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: firebird-windows-arm64-withDebugSymbols-installer
           path: builds/install_images/*-windows-arm64-withDebugSymbols.exe
@@ -290,7 +290,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 10
 
@@ -303,7 +303,7 @@ jobs:
       # firebirdsql/firebird-builder-windows image is private
       - name: Login to Docker Hub
         id: dockerhub-login
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         continue-on-error: true
         with:
           username: firebirdsql
@@ -348,25 +348,25 @@ jobs:
           call run.bat C:\fbscripts\build-%PLATFORM%.bat
 
       - name: Upload zip
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: firebird-windows-${{ matrix.platform }}-zip
           path: builds/install_images/Firebird-*-windows-${{ matrix.platform }}.zip
 
       - name: Upload zip (withDebugSymbols)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: firebird-windows-${{ matrix.platform }}-withDebugSymbols-zip
           path: builds/install_images/Firebird-*-windows-${{ matrix.platform }}-withDebugSymbols.zip
 
       - name: Upload installer
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: firebird-windows-${{ matrix.platform }}-installer
           path: builds/install_images/*-windows-${{ matrix.platform }}.exe
 
       - name: Upload installer (withDebugSymbols)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: firebird-windows-${{ matrix.platform }}-withDebugSymbols-installer
           path: builds/install_images/*-windows-${{ matrix.platform }}-withDebugSymbols.exe
@@ -395,7 +395,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 10
           submodules: 'true'
@@ -408,7 +408,7 @@ jobs:
           brew install --quiet automake autoconf-archive libtool ninja
 
       - name: Restore vcpkg cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         id: restore-vcpkg-cache
         with:
           path: ~/.cache/vcpkg/archives
@@ -443,7 +443,7 @@ jobs:
           mv gen/Release/*.pkg gen/artifacts
 
       - name: Save vcpkg cache
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         # Saves if the key changed (hashes on vcpkg/**, vcpkg.json, vcpkg-configuration.json)
         if: steps.restore-vcpkg-cache.outputs.cache-hit != 'true'
         with:
@@ -451,7 +451,7 @@ jobs:
           key: ${{ steps.restore-vcpkg-cache.outputs.cache-primary-key }}
 
       - name: Upload installer
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: firebird-macos-${{ matrix.arch }}
           path: gen/artifacts
@@ -482,7 +482,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 10
 
@@ -509,7 +509,7 @@ jobs:
           builds/install/arch-specific/android/BuildPackage.sh $ARCH
 
       - name: Upload initial build
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: firebird-android-initial-${{ matrix.arch }}
           path: |
@@ -534,7 +534,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 10
 
@@ -548,7 +548,7 @@ jobs:
           sudo udevadm trigger --name-match=kvm
 
       - name: Download initial build
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: firebird-android-initial-${{ matrix.arch }}
           path: gen
@@ -592,19 +592,19 @@ jobs:
             NDK=/usr/local/lib/android/sdk/ndk/28.2.13676358 builds/install/arch-specific/android/BuildFinalPackage.sh $ARCH
 
       - name: Upload installer
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: firebird-android-${{ matrix.arch }}
           path: gen/Firebird-*-android-${{ matrix.arch }}.tar.gz
 
       - name: Upload installer (withDebugSymbols)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: firebird-android-${{ matrix.arch }}-withDebugSymbols
           path: gen/Firebird-*-android-${{ matrix.arch }}-withDebugSymbols.tar.gz
 
       - name: Delete initial build
-        uses: geekyeggo/delete-artifact@v5
+        uses: geekyeggo/delete-artifact@v6
         with:
           name: firebird-android-initial-${{ matrix.arch }}
 
@@ -621,7 +621,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 10
 
@@ -629,25 +629,25 @@ jobs:
         uses: ./.github/actions/adjust-snapshot-buildno
 
       - name: Download final build (x86)
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: firebird-android-x86
           path: android/temp
 
       - name: Download final build (x64)
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: firebird-android-x64
           path: android/temp
 
       - name: Download final build (arm32)
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: firebird-android-arm32
           path: android/temp
 
       - name: Download final build (arm64)
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: firebird-android-arm64
           path: android/temp
@@ -674,7 +674,7 @@ jobs:
              embedded/build/outputs/aar/Firebird-$FB_VERSION-android-embedded.aar
 
       - name: Upload installer
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: firebird-android-aar
           path: android/embedded/build/outputs/aar/Firebird-*-android-embedded.aar
