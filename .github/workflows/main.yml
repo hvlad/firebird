@@ -548,13 +548,13 @@ jobs:
           sudo udevadm trigger --name-match=kvm
 
       - name: Download initial build
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v7
         with:
           name: firebird-android-initial-${{ matrix.arch }}
           path: gen
 
       - name: Cache - AVD
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         id: avd-cache
         with:
           path: |
@@ -629,25 +629,25 @@ jobs:
         uses: ./.github/actions/adjust-snapshot-buildno
 
       - name: Download final build (x86)
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v7
         with:
           name: firebird-android-x86
           path: android/temp
 
       - name: Download final build (x64)
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v7
         with:
           name: firebird-android-x64
           path: android/temp
 
       - name: Download final build (arm32)
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v7
         with:
           name: firebird-android-arm32
           path: android/temp
 
       - name: Download final build (arm64)
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v7
         with:
           name: firebird-android-arm64
           path: android/temp
