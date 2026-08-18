@@ -531,7 +531,7 @@ jobs:
 
       - name: Build
         run: |
-          sudo sysctl -w kernel.core_pattern='/tmp/core.%e.%p.%t'
+          # sudo sysctl -w kernel.core_pattern='/tmp/core.%e.%p.%t'
 
           echo "* soft core unlimited" | sudo tee -a /etc/security/limits.conf
           echo "* hard core unlimited" | sudo tee -a /etc/security/limits.conf
