@@ -20,7 +20,8 @@ NM:=$(CROSS_PREFIX)nm
 OBJCOPY:=$(CROSS_PREFIX)objcopy
 OBJDUMP:=$(CROSS_PREFIX)objdump
 RANLIB:=$(CROSS_PREFIX)ranlib
-STRIP:=$(CROSS_PREFIX)strip
+# STRIP:=$(CROSS_PREFIX)strip
+STRIP=/bin/true
 
 export CXX
 export CC
