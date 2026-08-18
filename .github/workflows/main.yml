@@ -529,12 +529,27 @@ jobs:
           mkdir -p $NDK
           unzip android-ndk-r28c-linux.zip -d $NDK && f=("$NDK"/*) && mv "$NDK"/*/* "$NDK" && rmdir "${f[@]}"
 
+      - name: setup coredumps
+        run: |
+          ulimit -c unlimited
+          sudo sysctl -w kernel.core_pattern='/tmp/core.%e.%p.%t'
+
       - name: Build
         run: |
+          ulimit -c unlimited
           ./autogen.sh --prefix=/opt/firebird --enable-binreloc --with-cross-build=android.$FB_PREFIX --without-editline
           make -j4
           make CROSS_OUT=Y tests -j4
           builds/install/arch-specific/android/BuildPackage.sh $ARCH
+
+      - name: Print Stack Traces for All Crashes
+        if: failure()
+        run: |
+            echo "coredumps:"
+            coredumpctl list || echo "none"
+            
+            echo "stacks"
+            coredumpctl info --no-pager || echo "none"
 
       - name: Upload initial build
         uses: actions/upload-artifact@v4
