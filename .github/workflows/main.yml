@@ -584,9 +584,11 @@ jobs:
                 echo "full path real: $REAL_EXE"
                 gdb -batch -ex "thread apply all bt full" "$REAL_EXE" "$core"
               else
-                echo "full path raw: $RAW_LINE"
-                # gdb -batch -ex "thread apply all bt full" -core="$core"
-                gdb -batch -ex "thread apply all bt full" "$RAW_LINE" "$core"
+                #echo "full path raw: $RAW_LINE"
+                gdb -batch -ex "thread apply all bt full" -core="$core"
+
+                echo "2 dump of: gen/examples/isql"
+                gdb -batch -ex "thread apply all bt full" "/home/runner/work/firebird/firebird/gen/examples/isql" "$core"
               fi
             done
 
