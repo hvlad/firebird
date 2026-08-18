@@ -5,7 +5,8 @@ on: [push, pull_request]
 jobs:
 
   build-linux-ubuntu-x64-clang:
-    if: github.ref_type != 'tag'
+    # Disabled
+    if: ${{ false && github.ref_type != 'tag' }}
     runs-on: ubuntu-24.04
 
     steps:
@@ -38,6 +39,8 @@ jobs:
           path: gen/Firebird-*-linux-x64.tar.gz
 
   build-linux-docker:
+    # Disabled
+    if: ${{ false && github.ref_type != 'tag' }}
     name: build-linux-docker-${{ matrix.arch }}
     runs-on: ${{ (startsWith(matrix.arch, 'arm') && 'ubuntu-24.04-arm') || 'ubuntu-24.04' }}
     env:
@@ -93,6 +96,8 @@ jobs:
           uploadFiles: gen/Firebird-*-linux-${{ matrix.arch }}*.tar.gz
 
   build-src-bundle-docker:
+    # Disabled
+    if: ${{ false && github.ref_type != 'tag' }}
     name: build-src-bundle-docker
     runs-on: ubuntu-24.04
 
@@ -154,7 +159,8 @@ jobs:
           path: gen/Firebird-*-linux-x64.tar.gz
 
   build-windows:
-    if: github.ref_type != 'tag'
+    # Disabled
+    if: ${{ false && github.ref_type != 'tag' }}
     runs-on: ${{ matrix.os }}
     env:
       VS_VERSION: 2026
@@ -212,7 +218,8 @@ jobs:
 
   # Windows ARM container is not yet available, so official build is done directly in Windows 11 runner
   build-windows-arm64:
-    #if: github.ref_type != 'tag'
+    # Disabled
+    if: ${{ false && github.ref_type != 'tag' }}
     runs-on: windows-11-arm
     env:
       VS_VERSION: 2022
@@ -282,6 +289,8 @@ jobs:
             builds/install_images/Firebird-*-windows-arm64*.zip
 
   build-windows-docker:
+    # Disabled
+    if: ${{ false && github.ref_type != 'tag' }}
     runs-on: windows-2025
 
     strategy:
@@ -400,6 +409,8 @@ jobs:
             builds/install_images/Firebird-*-windows-${{ matrix.platform }}*.zip
 
   build-macos:
+    # Disabled
+    if: ${{ false && github.ref_type != 'tag' }}
     name: build-macos-${{ matrix.arch }}
     runs-on: ${{ (matrix.arch == 'arm64' && 'macos-15') || 'macos-15-intel' }}
 
